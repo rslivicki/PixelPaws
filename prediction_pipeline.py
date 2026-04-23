@@ -913,9 +913,18 @@ def compute_brightness_category_b(X, log_fn=None):
 # ---------------------------------------------------------------------------
 
 # Features added post-cache by augment_features_post_cache() — missing these
-# columns from a cache is NOT a reason to re-extract.
+# columns from a cache is NOT a reason to re-extract.  Keep in sync with:
+#   - egocentric features (Ego_* prefix)
+#   - contact features in calculate_contact_features
+#   - lag features in calculate_lag_features
+#   - brightness Category B in compute_brightness_category_b
+#   - normalized distances in compute_normalized_distances
 _POST_CACHE_RE = re.compile(
-    r'^Ego_|_ContactState$|_ContactTransition$|_DutyCycle$|^N_InContact$|_lag[mp]\d+$'
+    r'^Ego_'
+    r'|_ContactState$|_ContactTransition$|_DutyCycle$|^N_InContact$'
+    r'|_lag[mp]\d+$'
+    r'|^Pix_(baseline_sub|std_temporal|jerk|onset|prequi|corr|velprod)_'
+    r'|^Dis_norm_'
 )
 
 
