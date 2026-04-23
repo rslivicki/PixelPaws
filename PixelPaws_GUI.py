@@ -9956,17 +9956,23 @@ Left/Right  - Previous/Next frame
             self.pred_video_combo['values'] = list(self.pred_video_options.keys())
 
     def _on_pred_video_selected(self, event=None):
-        """Set full video path and auto-find DLC/features when dropdown selection changes."""
+        """Set full video path and auto-find DLC/features/labels when dropdown selection changes."""
         name = self.pred_video_combo.get()
         if name in self.pred_video_options:
             self.pred_video_path.set(self.pred_video_options[name])
         # Clear stale paths so auto-find re-detects for new video
         self.pred_dlc_path.set('')
         self.pred_features_path.set('')
+        _hl = getattr(self, 'pred_human_labels_path', None)
+        if _hl is not None:
+            _hl.set('')
         self._auto_find_pred_files()
 
     def _auto_find_pred_files(self):
-        """Silently populate DLC path and features cache for the currently selected video."""
+        """Silently populate DLC path, features cache, and human-labels CSV for
+        the currently selected video.  Each of the three is only set when the
+        corresponding entry field is empty — manual paths are never overwritten.
+        """
         video_path = self.pred_video_path.get()
         if not video_path or not os.path.isfile(video_path):
             return
@@ -9995,6 +10001,37 @@ Left/Right  - Previous/Next frame
                 matches = glob.glob(os.path.join(loc, f"{video_base}_features*.pkl"))
                 if matches:
                     self.pred_features_path.set(matches[0])
+                    break
+
+        # --- Human-labels CSV (if the user has a labelled copy on disk) ---
+        # Mirrors the candidate list used by find_session_triplets in
+        # evaluation_tab.py.  First hit wins; canonical locations come first.
+        _hl = getattr(self, 'pred_human_labels_path', None)
+        if _hl is not None and not _hl.get():
+            label_candidates = []
+            if project_folder:
+                label_candidates += [
+                    # Canonical new location
+                    os.path.join(project_folder, 'behavior_labels', f'{video_base}_labels.csv'),
+                    os.path.join(project_folder, 'behavior_labels', f'{video_base}.csv'),
+                    # Legacy project-level label folders
+                    os.path.join(project_folder, 'labels',  f'{video_base}_labels.csv'),
+                    os.path.join(project_folder, 'labels',  f'{video_base}_Labels.csv'),
+                    os.path.join(project_folder, 'Labels',  f'{video_base}_labels.csv'),
+                    os.path.join(project_folder, 'Labels',  f'{video_base}.csv'),
+                    os.path.join(project_folder, 'Targets', f'{video_base}.csv'),
+                    os.path.join(project_folder, 'targets', f'{video_base}.csv'),
+                    os.path.join(project_folder, 'targets', f'{video_base}_labels.csv'),
+                ]
+            label_candidates += [
+                # Per-video fallbacks
+                os.path.join(video_folder, f'{video_base}_labels.csv'),
+                os.path.join(video_folder, f'{video_base}_Labels.csv'),
+                os.path.join(video_folder, f'{video_base}_perframe.csv'),  # BORIS legacy
+            ]
+            for _lbl in label_candidates:
+                if os.path.isfile(_lbl):
+                    _hl.set(_lbl)
                     break
 
     def _parse_time_to_frames(self, time_str, fps):
