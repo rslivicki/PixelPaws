@@ -291,13 +291,22 @@ class ActiveLearningEngine:
             columns=names, fill_value=0.0).values.astype(np.float32)
 
     # ---- scoring + candidate generation across all sessions ----
-    def score_and_candidates(self, model, calibrator: Optional[Callable] = None,
+    def score_and_candidates(self, model=None, calibrator: Optional[Callable] = None,
                              batch_size: int = 20, pos_quota_frac: float = 0.4,
-                             diversity: bool = True) -> List[EngineBout]:
+                             diversity: bool = True,
+                             probas_by_session: Optional[List[np.ndarray]] = None) -> List[EngineBout]:
+        """Score every session and return a globally-selected batch.
+        Provide EITHER `model` (engine reindexes the cache to its feature_names_in_)
+        OR `probas_by_session` (per-session P(positive) arrays) — use the latter to
+        warm-start from a pre-trained classifier whose features need
+        augment_features_post_cache first (the engine stays agnostic to that)."""
         cal = calibrator or (lambda p: p)
         pooled: List[EngineBout] = []
         for k, s in enumerate(self.sessions):
-            p = cal(model.predict_proba(self._align(model, s['features']))[:, 1])
+            if probas_by_session is not None:
+                p = cal(np.asarray(probas_by_session[k], dtype=float))
+            else:
+                p = cal(model.predict_proba(self._align(model, s['features']))[:, 1])
             ent = binary_entropy(p)
             pooled += find_candidate_bouts(
                 s['labels'], ent, p, session_idx=k,
