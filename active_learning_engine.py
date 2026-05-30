@@ -272,6 +272,24 @@ class ActiveLearningEngine:
         X, y, _ = self._pool_labeled()
         return self._fit(X, y, train_fn)
 
+    def _align(self, model, X):
+        """Align a feature matrix to an EXTERNAL model's feature_names_in_ (by the
+        session feature_cols) — needed when warm-starting from a pre-trained / SHAP-
+        pruned classifier. Identity for engine-trained models (numpy, no names)."""
+        names = getattr(model, "feature_names_in_", None)
+        if names is None or self.feature_cols is None:
+            return X
+        names = list(names)
+        if list(self.feature_cols) == names:
+            return X
+        import pandas as pd
+        missing = [c for c in names if c not in set(self.feature_cols)]
+        if len(missing) > max(5, int(0.10 * len(names))):
+            raise ValueError(f"init classifier needs {len(missing)}/{len(names)} features absent "
+                             f"from the feature cache (schema mismatch); aborting.")
+        return pd.DataFrame(X, columns=self.feature_cols).reindex(
+            columns=names, fill_value=0.0).values.astype(np.float32)
+
     # ---- scoring + candidate generation across all sessions ----
     def score_and_candidates(self, model, calibrator: Optional[Callable] = None,
                              batch_size: int = 20, pos_quota_frac: float = 0.4,
@@ -279,7 +297,7 @@ class ActiveLearningEngine:
         cal = calibrator or (lambda p: p)
         pooled: List[EngineBout] = []
         for k, s in enumerate(self.sessions):
-            p = cal(model.predict_proba(s['features'])[:, 1])
+            p = cal(model.predict_proba(self._align(model, s['features']))[:, 1])
             ent = binary_entropy(p)
             pooled += find_candidate_bouts(
                 s['labels'], ent, p, session_idx=k,

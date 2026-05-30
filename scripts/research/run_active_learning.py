@@ -67,6 +67,21 @@ def oracle_labeler(eng, sessions, gt_arrays):
     return _lab
 
 
+def load_classifier(path):
+    """Load an encyclopedia/AL classifier pkl (joblib+lz4 or plain pickle) and
+    return its sklearn/xgboost model (with feature_names_in_)."""
+    cd = None
+    try:
+        import joblib
+        cd = joblib.load(path)
+    except Exception:
+        with open(path, "rb") as f:
+            cd = pickle.load(f)
+    if isinstance(cd, dict):
+        return cd.get("clf_model") or cd.get("model")
+    return cd
+
+
 def interactive_labeler(batch):
     dec = {}
     print(f"\n--- label {len(batch)} bouts (y=behavior, n=not, s=skip) ---")
@@ -95,6 +110,9 @@ def main():
     ap.add_argument("--min-gap", type=int, default=30)
     ap.add_argument("--confidence-threshold", type=float, default=0.3)
     ap.add_argument("--oracle", default=None, help="if set, auto-label from the 'gt' column")
+    ap.add_argument("--init-classifier", default=None,
+                    help="warm-start: existing classifier pkl used as the iteration-0 model "
+                         "when there are no/insufficient seed labels (e.g. best encyclopedia model)")
     args = ap.parse_args()
 
     if len(args.features) != len(args.labels):
@@ -109,20 +127,31 @@ def main():
                                  min_bout_frames=args.min_bout, min_frame_gap=args.min_gap)
     labeler = oracle_labeler(eng, sess_dicts, gts) if args.oracle else interactive_labeler
 
+    init_model = load_classifier(args.init_classifier) if args.init_classifier else None
+    if init_model is not None:
+        print(f"[AL] warm-start classifier loaded: {os.path.basename(args.init_classifier)}")
     print(f"[AL] {len(sess_dicts)} session(s); {eng.n_labeled()} labeled ({eng.n_positive()} pos) at start")
     while True:
-        if eng.n_positive() < 1 or (eng.n_labeled() - eng.n_positive()) < 1:
-            print("[AL] need >=1 positive and >=1 negative seed label to train; stopping.")
+        have_both = eng.n_positive() >= 1 and (eng.n_labeled() - eng.n_positive()) >= 1
+        if have_both:
+            model = eng.train()
+            X, y, _ = eng._pool_labeled()
+            cal = E.fit_calibrator(model.predict_proba(X)[:, 1], y)
+            ev = eng.evaluate(); eng.f1_history.append(ev["f1"])
+            print(f"[AL] iter {eng.iteration}: trained; labeled={eng.n_labeled()} pos={eng.n_positive()} "
+                  f"F1={ev['f1']} pos_recall={ev['pos_recall']}")
+            stop = eng.should_stop(model, cal, args.confidence_threshold, args.max_iters)
+            if stop:
+                print(f"[AL] STOP: {stop}"); break
+        elif init_model is not None:
+            model = init_model; cal = (lambda p: p)
+            print(f"[AL] iter {eng.iteration}: warm-start scoring from init classifier "
+                  f"(no/insufficient seed labels yet)")
+            if eng.iteration >= args.max_iters:
+                print(f"[AL] STOP: hard cap ({args.max_iters})"); break
+        else:
+            print("[AL] need >=1 pos and >=1 neg seed label, or --init-classifier; stopping.")
             break
-        model = eng.train()
-        X, y, _ = eng._pool_labeled()
-        cal = E.fit_calibrator(model.predict_proba(X)[:, 1], y)
-        ev = eng.evaluate(); eng.f1_history.append(ev["f1"])
-        print(f"[AL] iter {eng.iteration}: labeled={eng.n_labeled()} pos={eng.n_positive()} "
-              f"F1={ev['f1']} pos_recall={ev['pos_recall']}")
-        stop = eng.should_stop(model, cal, args.confidence_threshold, args.max_iters)
-        if stop:
-            print(f"[AL] STOP: {stop}"); break
         batch = eng.score_and_candidates(model, cal, batch_size=args.batch_size,
                                          pos_quota_frac=args.pos_quota)
         if not batch:
