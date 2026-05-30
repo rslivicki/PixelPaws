@@ -30,8 +30,13 @@ import active_learning_engine as E
 
 
 def load_session(features_pkl: str, labels_csv: str, label_col=0):
-    with open(features_pkl, "rb") as f:
-        feats = pickle.load(f)
+    # encyclopedia feature caches are joblib+LZ4; joblib.load also reads plain pickles
+    try:
+        import joblib
+        feats = joblib.load(features_pkl)
+    except Exception:
+        with open(features_pkl, "rb") as f:
+            feats = pickle.load(f)
     cols = None
     if isinstance(feats, pd.DataFrame):
         cols = list(feats.columns); feats = feats.values
@@ -69,17 +74,34 @@ def oracle_labeler(eng, sessions, gt_arrays):
 
 def load_classifier(path):
     """Load an encyclopedia/AL classifier pkl (joblib+lz4 or plain pickle) and
-    return its sklearn/xgboost model (with feature_names_in_)."""
-    cd = None
+    return the full clf_data dict (warm-start needs the model + calibrator +
+    augmentation config)."""
     try:
         import joblib
-        cd = joblib.load(path)
+        return joblib.load(path)
     except Exception:
         with open(path, "rb") as f:
-            cd = pickle.load(f)
-    if isinstance(cd, dict):
-        return cd.get("clf_model") or cd.get("model")
-    return cd
+            return pickle.load(f)
+
+
+def warmstart_probas(clf_data, sess_dicts, dlc_paths, feature_cols):
+    """Per-session P(positive) from a pre-trained classifier the established way:
+    augment_features_post_cache (adds the egocentric/contact/lag/Cat-B features the
+    encyclopedia models expect) -> predict_with_xgboost. Needs each session's DLC h5."""
+    import pandas as pd
+    from prediction_pipeline import augment_features_post_cache, predict_with_xgboost
+    model = clf_data["clf_model"] if isinstance(clf_data, dict) else clf_data
+    out = []
+    for sd, dlc in zip(sess_dicts, dlc_paths):
+        cols = sd.get("_cols") or feature_cols or [f"f{i}" for i in range(sd["features"].shape[1])]
+        Xdf = pd.DataFrame(sd["features"], columns=cols)
+        Xa = augment_features_post_cache(Xdf.copy(), clf_data, model, dlc or "")
+        p = predict_with_xgboost(
+            model, Xa,
+            calibrator=(clf_data.get("prob_calibrator") if isinstance(clf_data, dict) else None),
+            fold_models=(clf_data.get("fold_models") if isinstance(clf_data, dict) else None))
+        out.append(np.asarray(p, dtype=float))
+    return out
 
 
 def interactive_labeler(batch):
@@ -111,12 +133,18 @@ def main():
     ap.add_argument("--confidence-threshold", type=float, default=0.3)
     ap.add_argument("--oracle", default=None, help="if set, auto-label from the 'gt' column")
     ap.add_argument("--init-classifier", default=None,
-                    help="warm-start: existing classifier pkl used as the iteration-0 model "
+                    help="warm-start: existing classifier pkl used to score iteration-0 "
                          "when there are no/insufficient seed labels (e.g. best encyclopedia model)")
+    ap.add_argument("--dlc", action="append", default=None,
+                    help="DLC h5 per session (paired with --features by order); needed by "
+                         "warm-start to augment features before predicting")
     args = ap.parse_args()
 
     if len(args.features) != len(args.labels):
         ap.error("--features and --labels must be given the same number of times")
+    dlc_paths = args.dlc if args.dlc else [""] * len(args.features)
+    if len(dlc_paths) != len(args.features):
+        ap.error("--dlc, if given, must be given the same number of times as --features")
     sess_dicts, gts, csv_paths, cols0 = [], [], [], None
     for fpkl, lcsv in zip(args.features, args.labels):
         sd, cols = load_session(fpkl, lcsv)
@@ -127,12 +155,13 @@ def main():
                                  min_bout_frames=args.min_bout, min_frame_gap=args.min_gap)
     labeler = oracle_labeler(eng, sess_dicts, gts) if args.oracle else interactive_labeler
 
-    init_model = load_classifier(args.init_classifier) if args.init_classifier else None
-    if init_model is not None:
+    init_clf_data = load_classifier(args.init_classifier) if args.init_classifier else None
+    if init_clf_data is not None:
         print(f"[AL] warm-start classifier loaded: {os.path.basename(args.init_classifier)}")
     print(f"[AL] {len(sess_dicts)} session(s); {eng.n_labeled()} labeled ({eng.n_positive()} pos) at start")
     while True:
         have_both = eng.n_positive() >= 1 and (eng.n_labeled() - eng.n_positive()) >= 1
+        _warm_probas = None
         if have_both:
             model = eng.train()
             X, y, _ = eng._pool_labeled()
@@ -143,17 +172,26 @@ def main():
             stop = eng.should_stop(model, cal, args.confidence_threshold, args.max_iters)
             if stop:
                 print(f"[AL] STOP: {stop}"); break
-        elif init_model is not None:
-            model = init_model; cal = (lambda p: p)
+        elif init_clf_data is not None:
             print(f"[AL] iter {eng.iteration}: warm-start scoring from init classifier "
-                  f"(no/insufficient seed labels yet)")
+                  f"(augment + predict; no seed labels yet)")
+            try:
+                _warm_probas = warmstart_probas(init_clf_data, sess_dicts, dlc_paths, cols0)
+            except Exception as ex:
+                print(f"[AL] warm-start failed ({type(ex).__name__}: {ex}); supply seed labels "
+                      f"or check --dlc paths. stopping."); break
+            cal = (lambda p: p)
             if eng.iteration >= args.max_iters:
                 print(f"[AL] STOP: hard cap ({args.max_iters})"); break
         else:
             print("[AL] need >=1 pos and >=1 neg seed label, or --init-classifier; stopping.")
             break
-        batch = eng.score_and_candidates(model, cal, batch_size=args.batch_size,
-                                         pos_quota_frac=args.pos_quota)
+        if _warm_probas is not None:
+            batch = eng.score_and_candidates(probas_by_session=_warm_probas,
+                                             batch_size=args.batch_size, pos_quota_frac=args.pos_quota)
+        else:
+            batch = eng.score_and_candidates(model, cal, batch_size=args.batch_size,
+                                             pos_quota_frac=args.pos_quota)
         if not batch:
             print("[AL] no candidate bouts; stopping."); break
         dec = labeler(batch)
