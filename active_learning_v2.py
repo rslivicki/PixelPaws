@@ -55,16 +55,27 @@ def _align_features(model, features: np.ndarray, feature_cols) -> np.ndarray:
     if not hasattr(model, 'feature_names_in_') or feature_cols is None:
         return features
     model_cols = list(model.feature_names_in_)
-    if list(feature_cols) == model_cols:
+    fc = list(feature_cols)
+    if fc == model_cols:
         return features
-    df = pd.DataFrame(features, columns=feature_cols)
+    missing = [c for c in model_cols if c not in set(fc)]
+    if missing:
+        msg = (f"_align_features: {len(missing)}/{len(model_cols)} model features missing from the "
+               f"provided columns (e.g. {missing[:5]}) — 0-filling. This usually means a feature-schema "
+               f"mismatch (wrong cache/body parts/versions).")
+        print("[_align_features] WARNING: " + msg, flush=True)
+        import warnings as _w
+        _w.warn(msg)
+        # Hard-fail when the gap is large: predicting on a mostly-zero feature set is garbage.
+        if len(missing) > max(5, int(0.10 * len(model_cols))):
+            raise ValueError(msg + " Refusing to predict on a badly misaligned feature set.")
+    df = pd.DataFrame(features, columns=fc)
     return df.reindex(columns=model_cols, fill_value=0.0).values.astype(np.float32)
 
 
-from ui_utils import ToolTip, _bind_tight_layout_on_resize
+from ui_utils import ToolTip, _bind_tight_layout_on_resize, FONT_FAMILY
 from dialogs import ConfidenceHistogramDialog
-
-
+from io_utils import atomic_pickle_save, atomic_dataframe_to_csv
 # Optional UMAP + HDBSCAN
 try:
     import umap
@@ -82,10 +93,13 @@ try:
 except ImportError:
     SKLEARN_AVAILABLE = False
 
-def _make_bout_groups(frame_indices, min_bout=1):
+def _make_bout_groups(frame_indices, min_bout=1, session_ids=None):
     """
     Assign group IDs to labeled frame indices so that a new group
-    starts whenever consecutive frames are more than min_bout apart.
+    starts whenever consecutive frames are more than min_bout apart,
+    OR whenever the session changes (when session_ids is provided).
+    Forcing a break at session boundaries prevents cross-session bouts
+    from being merged into one GroupKFold group (label leakage).
     Returns int array same length as frame_indices.
     """
     if len(frame_indices) == 0:
@@ -93,10 +107,47 @@ def _make_bout_groups(frame_indices, min_bout=1):
     groups = np.zeros(len(frame_indices), dtype=int)
     gid = 0
     for i in range(1, len(frame_indices)):
-        if frame_indices[i] - frame_indices[i - 1] > min_bout:
+        new_session = session_ids is not None and session_ids[i] != session_ids[i - 1]
+        if new_session or frame_indices[i] - frame_indices[i - 1] > min_bout:
             gid += 1
         groups[i] = gid
     return groups
+
+
+def _fallback_sweep(oof_proba, y):
+    """Threshold F1 sweep — fallback when the GUI's _sweep_postprocessing is
+    unavailable (e.g. headless engine). Returns the same keys the caller expects."""
+    import numpy as _np
+    from sklearn.metrics import f1_score as _f1s
+    y = _np.asarray(y).astype(int)
+    best = {'thresh': 0.5, 'min_bout': 1, 'min_after_bout': 1, 'max_gap': 0, 'f1': 0.0}
+    for t in _np.linspace(0.05, 0.95, 19):
+        f = float(_f1s(y, (oof_proba >= float(t)).astype(int), zero_division=0))
+        if f > best['f1']:
+            best = {'thresh': float(t), 'min_bout': 1, 'min_after_bout': 1, 'max_gap': 0, 'f1': f}
+    return best
+
+
+def _engine_select_bouts(all_bouts, subs_features, n_bouts, min_gap=30, pos_quota=0.4, seed=0):
+    """Pick a global batch from a pooled multi-session BoutCandidate list using the
+    headless engine's strategy (uncertainty x feature-space diversity x class-balance
+    quota x temporal min-gap). Returns the chosen BoutCandidates (subset of all_bouts).
+    Raises on any error so callers can fall back to the legacy round-robin."""
+    from active_learning_engine import EngineBout, select_batch
+    ebs = []
+    for b in all_bouts:
+        feats = subs_features[b.session_idx]
+        s = max(0, int(b.start_frame)); e = min(len(feats) - 1, int(b.end_frame))
+        fm = feats[s:e + 1].mean(axis=0) if e >= s else None
+        eb = EngineBout(session_idx=int(b.session_idx), start=int(b.start_frame),
+                        end=int(b.end_frame), score=float(b.mean_uncertainty),
+                        peak_score=float(b.mean_uncertainty),
+                        pred_pos=bool(b.mean_proba >= 0.5), feat_mean=fm)
+        eb._src = b
+        ebs.append(eb)
+    chosen = select_batch(ebs, batch_size=n_bouts, min_frame_gap=min_gap,
+                          pos_quota_frac=pos_quota, seed=seed)
+    return [eb._src for eb in chosen]
 
 
 # Session discovery
@@ -565,7 +616,7 @@ class ALSessionV2:
         """Retrain from current labels, record to tracker, optionally save snapshot pkl."""
         import pickle, os, time
 
-        prev_cv = self.tracker.records[-1].cv_f1 if self.tracker.records else None
+        prev_cv = self.tracker.records[-1].oof_f1 if self.tracker.records else None
 
         model = self.train_model()
         probas = self.get_full_probas(model)
@@ -579,18 +630,17 @@ class ALSessionV2:
             ts = time.strftime('%Y%m%d_%H%M%S')
             fname = f"al_iter{record.iteration}_{ts}.pkl"
             snapshot_path = os.path.join(snapshot_dir, fname)
-            with open(snapshot_path, 'wb') as f:
-                pickle.dump({
-                    'clf_model': model,
-                    'iteration': record.iteration,
-                    'train_f1': record.train_f1,
-                    'cv_f1': record.cv_f1,
-                    'n_labeled_total': record.n_labeled_total,
-                }, f)
+            atomic_pickle_save({
+                'clf_model': model,
+                'iteration': record.iteration,
+                'train_f1': record.train_f1,
+                'cv_f1': record.oof_f1,
+                'n_labeled_total': record.n_labeled_total,
+            }, snapshot_path)
 
         delta_cv = None
-        if prev_cv is not None and record.cv_f1 is not None:
-            delta_cv = record.cv_f1 - prev_cv
+        if prev_cv is not None and record.oof_f1 is not None:
+            delta_cv = record.oof_f1 - prev_cv
 
         return {
             'model': model, 'probas': probas, 'record': record,
@@ -732,7 +782,7 @@ class ALSessionV2:
             # Update all rows within current df
             n = min(len(df), n_lbl)
             df.loc[:n - 1, col] = out[:n]
-            df.to_csv(self.labels_csv, index=False)
+            atomic_dataframe_to_csv(df, self.labels_csv, index=False)
         except Exception:
             traceback.print_exc()
 
@@ -835,25 +885,34 @@ class MultiSessionAL:
                 b.session_idx = i
                 b.video_path = sub['video_path']
             all_bouts.extend(bouts)
-        # Round-robin interleave by session so every video is represented
-        from collections import deque as _deque
-        _by_sess = {}
-        for _b in all_bouts:
-            _by_sess.setdefault(_b.session_idx, []).append(_b)
-        # Each per-session list is already ordered by descending uncertainty
-        # (find_uncertain_bouts returns top n_bouts sorted that way)
-        _queues = [_deque(_bouts) for _bouts in _by_sess.values()]
-        _selected = []
-        while len(_selected) < n_bouts and _queues:
-            _next_queues = []
-            for _q in _queues:
-                if _q:
-                    _selected.append(_q.popleft())
-                    if len(_selected) >= n_bouts:
-                        break
-                if _q:
-                    _next_queues.append(_q)
-            _queues = _next_queues
+        # Global selection via the headless engine: uncertainty x feature-space
+        # diversity (k-means++) x class-balance quota x temporal min-gap, pooled
+        # across ALL videos ("select globally"). Falls back to the legacy
+        # per-session round-robin interleave on any error.
+        _selected = None
+        try:
+            _selected = _engine_select_bouts(
+                all_bouts, [sub['features'] for sub in self._subs], n_bouts,
+                min_gap=self._engine.min_frame_spacing, seed=self._iteration)
+        except Exception:
+            _selected = None
+        if not _selected:
+            from collections import deque as _deque
+            _by_sess = {}
+            for _b in all_bouts:
+                _by_sess.setdefault(_b.session_idx, []).append(_b)
+            _queues = [_deque(_bouts) for _bouts in _by_sess.values()]
+            _selected = []
+            while len(_selected) < n_bouts and _queues:
+                _next_queues = []
+                for _q in _queues:
+                    if _q:
+                        _selected.append(_q.popleft())
+                        if len(_selected) >= n_bouts:
+                            break
+                    if _q:
+                        _next_queues.append(_q)
+                _queues = _next_queues
         # Seen-bout deduplication: prefer bouts not shown in prior iterations
         _unseen = [b for b in _selected
                    if (b.session_idx, b.start_frame, b.end_frame) not in self._seen_bouts]
@@ -956,7 +1015,7 @@ class MultiSessionAL:
                               snapshot_dir: str = None) -> dict:
         import pickle, os, time
 
-        prev_cv = self.tracker.records[-1].cv_f1 if self.tracker.records else None
+        prev_cv = self.tracker.records[-1].oof_f1 if self.tracker.records else None
 
         model = self.train_model()
         all_p = np.concatenate([
@@ -979,18 +1038,17 @@ class MultiSessionAL:
             ts = time.strftime('%Y%m%d_%H%M%S')
             fname = f"al_iter{record.iteration}_{ts}.pkl"
             snapshot_path = os.path.join(snapshot_dir, fname)
-            with open(snapshot_path, 'wb') as f:
-                pickle.dump({
-                    'clf_model': model,
-                    'iteration': record.iteration,
-                    'train_f1': record.train_f1,
-                    'cv_f1': record.cv_f1,
-                    'n_labeled_total': record.n_labeled_total,
-                }, f)
+            atomic_pickle_save({
+                'clf_model': model,
+                'iteration': record.iteration,
+                'train_f1': record.train_f1,
+                'cv_f1': record.oof_f1,
+                'n_labeled_total': record.n_labeled_total,
+            }, snapshot_path)
 
         delta_cv = None
-        if prev_cv is not None and record.cv_f1 is not None:
-            delta_cv = record.cv_f1 - prev_cv
+        if prev_cv is not None and record.oof_f1 is not None:
+            delta_cv = record.oof_f1 - prev_cv
 
         return {
             'model': model, 'probas': all_p, 'record': record,
@@ -1005,7 +1063,7 @@ class MultiSessionAL:
             n = min(len(df), len(sub['labels']))
             df.loc[:n-1, col] = sub['labels'][:n].astype(float)
             df.loc[df[col] == -1, col] = np.nan
-            df.to_csv(sub['labels_csv'], index=False)
+            atomic_dataframe_to_csv(df, sub['labels_csv'], index=False)
         except Exception:
             import traceback
             traceback.print_exc()
@@ -1195,7 +1253,7 @@ class LabelingInterface:
         ttk.Label(
             title_frame,
             text=f"🧠 Active Learning - {self.behavior_name}",
-            font=("Arial", 16, "bold")
+            font=(FONT_FAMILY, 16, "bold")
         ).pack()
 
         # Progress
@@ -1205,7 +1263,7 @@ class LabelingInterface:
         self.progress_label = ttk.Label(
             progress_frame,
             text=f"Frame 1 of {len(self.suggested_frames)}",
-            font=("Arial", 12)
+            font=(FONT_FAMILY, 12)
         )
         self.progress_label.pack()
 
@@ -1231,7 +1289,7 @@ class LabelingInterface:
         self.info_label = ttk.Label(
             info_frame,
             text="",
-            font=("Arial", 10)
+            font=(FONT_FAMILY, 10)
         )
         self.info_label.pack()
 
@@ -1242,7 +1300,7 @@ class LabelingInterface:
         ttk.Label(
             question_frame,
             text=f"Is this {self.behavior_name} behavior?",
-            font=("Arial", 14, "bold")
+            font=(FONT_FAMILY, 14, "bold")
         ).pack()
 
         # Buttons
@@ -1290,7 +1348,7 @@ class LabelingInterface:
         ttk.Label(
             self.window,
             text="Shortcuts: Y=Yes | N=No | S=Skip | Space=Play Context",
-            font=("Arial", 9),
+            font=(FONT_FAMILY, 9),
             foreground="gray"
         ).pack(pady=5)
 
@@ -1533,9 +1591,9 @@ class BoutLabelingInterface:
         hdr = ttk.Frame(self._window)
         hdr.pack(fill='x', padx=10, pady=(8, 2))
         self._header_label = ttk.Label(hdr, text=f"Active Learning — {self.behavior_name}",
-                                       font=('Arial', 13, 'bold'))
+                                       font=(FONT_FAMILY, 13, 'bold'))
         self._header_label.pack(side='left')
-        self._progress_label = ttk.Label(hdr, text="", font=('Arial', 10))
+        self._progress_label = ttk.Label(hdr, text="", font=(FONT_FAMILY, 10))
         self._progress_label.pack(side='right')
 
         ttk.Separator(self._window, orient='horizontal').pack(fill='x', padx=8, pady=2)
@@ -1547,7 +1605,7 @@ class BoutLabelingInterface:
         # Info bar
         self._info_var = tk.StringVar(value="")
         ttk.Label(self._window, textvariable=self._info_var,
-                  font=('Arial', 9), foreground='navy').pack()
+                  font=(FONT_FAMILY, 9), foreground='navy').pack()
 
         ttk.Separator(self._window, orient='horizontal').pack(fill='x', padx=8, pady=2)
 
@@ -1599,11 +1657,11 @@ class BoutLabelingInterface:
         # Selection status label
         self._sel_var = tk.StringVar(value="Selection: full bout")
         ttk.Label(self._window, textvariable=self._sel_var,
-                  font=('Arial', 9), foreground='darkorange').pack(pady=1)
+                  font=(FONT_FAMILY, 9), foreground='darkorange').pack(pady=1)
 
         ttk.Label(self._window,
                   text="Shortcuts: Y=Yes  N=No  S/Enter=Next Bout  Space=Pause/Resume  ←/→=Step  I=Mark In  O=Mark Out  C=Clear",
-                  font=('Arial', 9), foreground='gray').pack(pady=2)
+                  font=(FONT_FAMILY, 9), foreground='gray').pack(pady=2)
 
         self._window.bind('y', lambda e: self._label_bout(1))
         self._window.bind('Y', lambda e: self._label_bout(1))
@@ -1925,7 +1983,7 @@ class ActiveLearningTabV2(ttk.Frame):
         hdr = ttk.Frame(self)
         hdr.pack(fill='x', padx=10, pady=(8, 2))
         ttk.Label(hdr, text="🧠 Active Learning v2",
-                  font=('Arial', 14, 'bold')).pack(side='left')
+                  font=(FONT_FAMILY, 14, 'bold')).pack(side='left')
 
         paned = ttk.PanedWindow(self, orient='horizontal')
         paned.pack(fill='both', expand=True, padx=6, pady=4)
@@ -2051,7 +2109,7 @@ class ActiveLearningTabV2(ttk.Frame):
         ToolTip(_thresh_scale, "Frames whose model confidence is within this distance of P=0.5 are considered uncertain and eligible for labeling.")
         ttk.Label(thresh_row, textvariable=tk.StringVar()).pack(side='left')  # placeholder
         ttk.Label(tf, textvariable=self._eligible_count_var,
-                  font=('Arial', 9), foreground='navy').pack(anchor='w', pady=2)
+                  font=(FONT_FAMILY, 9), foreground='navy').pack(anchor='w', pady=2)
 
         # Buttons
         btn_f = ttk.LabelFrame(parent, text="Actions", padding=5)
@@ -2391,9 +2449,14 @@ class ActiveLearningTabV2(ttk.Frame):
                         import pandas as _pd
                         feat_df = _pd.DataFrame(sess._features, columns=sess._feature_cols)
                         # Compute post-cache features (lag, contact) that model may need
-                        feat_df = augment_features_post_cache(
-                            feat_df, clf_data_full, model,
-                            getattr(sess, '_dlc_path', '') or '')
+                        try:
+                            from prediction_pipeline import augment_features_post_cache as _aug_post
+                            feat_df = _aug_post(
+                                feat_df, clf_data_full, model,
+                                getattr(sess, '_dlc_path', '') or '')
+                        except Exception as _aug_e:
+                            self.app.root.after(0, lambda e=_aug_e: self._log_msg(
+                                f"⚠ Skipped post-cache augmentation ({type(e).__name__}); using cached features as-is."))
                         missing = [c for c in sel_cols if c not in feat_df.columns]
                         if missing:
                             self.app.root.after(0, lambda: self._log_msg(
@@ -2605,13 +2668,15 @@ class ActiveLearningTabV2(ttk.Frame):
                     X = self._session._features[mask]
                     y = self._session._labels[mask]
                     _lab_indices = np.where(self._session._labels >= 0)[0]
+                    _sess_ids = None
                 else:
                     import pandas as _pd_fin
                     _sub_dfs_lbl = []
                     ys = []
                     _lab_idx_parts = []
+                    _sess_id_parts = []
                     _offset = 0
-                    for sub in self._session._subs:
+                    for _si, sub in enumerate(self._session._subs):
                         m = sub['labels'] >= 0
                         if m.any():
                             _sub_dfs_lbl.append(_pd_fin.DataFrame(
@@ -2620,12 +2685,14 @@ class ActiveLearningTabV2(ttk.Frame):
                             ys.append(sub['labels'][m])
                         _idx = np.where(sub['labels'] >= 0)[0] + _offset
                         _lab_idx_parts.append(_idx)
+                        _sess_id_parts.append(np.full(len(_idx), _si, dtype=int))
                         _offset += len(sub['labels'])
                     X_df = _pd_fin.concat(_sub_dfs_lbl, ignore_index=True).fillna(0.0)
                     feature_cols = list(X_df.columns)
                     X = X_df.values.astype(np.float32)
                     y = np.concatenate(ys)
                     _lab_indices = np.concatenate(_lab_idx_parts) if _lab_idx_parts else np.array([], dtype=int)
+                    _sess_ids = np.concatenate(_sess_id_parts) if _sess_id_parts else np.array([], dtype=int)
 
                 n_labeled = len(y)
                 if not hasattr(self._session, '_labels'):
@@ -2641,15 +2708,23 @@ class ActiveLearningTabV2(ttk.Frame):
                 # --- 3-fold CV for OOF predictions (bout-aware if possible) ---
                 from sklearn.model_selection import GroupKFold
                 from active_learning_v2 import _make_bout_groups
-                n_splits = min(3, int((y == 1).sum()), int((y == 0).sum()))
-                n_splits = max(n_splits, 2)
-                _groups = _make_bout_groups(_lab_indices, _al_min_bout)
+                n_splits = min(3, n_pos, n_neg)
+                _groups = _make_bout_groups(_lab_indices, _al_min_bout, session_ids=_sess_ids)
                 _n_groups = int(_groups.max()) + 1 if len(_groups) > 0 else 0
                 _cv_mode = 'frame-level'
                 oof_proba = np.full(n_labeled, 0.5)
                 fold_f1s = []
-                if self._bout_aware_cv_var.get() and _n_groups >= n_splits:
-                    _gkf = GroupKFold(n_splits=n_splits)
+                if n_splits < 2:
+                    # Too few samples of one class for cross-validation; skip CV,
+                    # fit once and report resubstitution F1 (clearly flagged no-CV).
+                    _cv_mode = 'no-CV (insufficient class samples)'
+                    _tmp = XGBClassifier(n_estimators=200, max_depth=6, learning_rate=0.1,
+                                         scale_pos_weight=spw, random_state=42, verbosity=0)
+                    _tmp.fit(X, y)
+                    oof_proba = _tmp.predict_proba(X)[:, 1]
+                    fold_f1s = [float(_f1(y, (oof_proba >= 0.5).astype(int), zero_division=0))]
+                elif self._bout_aware_cv_var.get() and _n_groups >= n_splits:
+                    _gkf = GroupKFold(n_splits=min(n_splits, _n_groups))
                     for tr_idx, val_idx in _gkf.split(X, y, groups=_groups):
                         fold_clf = XGBClassifier(n_estimators=200, max_depth=6,
                                                  learning_rate=0.1, scale_pos_weight=spw,
@@ -2676,7 +2751,10 @@ class ActiveLearningTabV2(ttk.Frame):
                 std_cv_f1  = float(np.std(fold_f1s))
 
                 # --- OOF parameter sweep ---
-                best_params = self.app._sweep_postprocessing(oof_proba, y)
+                if hasattr(self.app, '_sweep_postprocessing'):
+                    best_params = self.app._sweep_postprocessing(oof_proba, y)
+                else:
+                    best_params = _fallback_sweep(oof_proba, y)
 
                 # --- Final model on all labeled data ---
                 final_clf = XGBClassifier(n_estimators=300, max_depth=6,
@@ -2741,7 +2819,7 @@ class ActiveLearningTabV2(ttk.Frame):
                     os.makedirs(snap_dir, exist_ok=True)
                     fname = f"PixelPaws_{behavior_name}_AL.pkl"
                     saved_path = os.path.join(snap_dir, fname)
-                    _atomic_pickle_save(clf_data, saved_path)
+                    atomic_pickle_save(clf_data, saved_path)
 
                 # --- Learning curve record (for plot) ---
                 n_below = int(np.sum(np.abs(probas_all - 0.5) * 2 < threshold_var_val))
@@ -2819,7 +2897,7 @@ class ActiveLearningTabV2(ttk.Frame):
 
         # Read fps from video
         _cap = cv2.VideoCapture(video_path)
-        fps = _cap.get(cv2.CAP_PROP_FPS) or 30.0
+        fps = _cap.get(cv2.CAP_PROP_FPS) or 60.0
         _cap.release()
 
         interface = BoutLabelingInterface(
