@@ -15,6 +15,7 @@ Features extracted:
 - Signed velocity components (x and y directions separately)
 """
 
+import os
 import numpy as np
 import pandas as pd
 from typing import List, Tuple, Optional
@@ -22,6 +23,15 @@ import itertools
 
 # Increment this when the feature set changes so cached files are invalidated
 POSE_FEATURE_VERSION = 5
+
+
+# Module-level LRU cache for parsed DLC files. Keyed by (normpath, mtime, size)
+# — including size catches mtime-preserving operations like `cp -p`, Dropbox
+# re-download of a corrupted file, and `git checkout` round-trips that can
+# leave mtime unchanged but content different. Bounded to avoid blowing up
+# memory in long-running sessions. Populated lazily by `load_dlc_data`.
+_DLC_LOAD_CACHE: "dict[tuple[str, float, int], pd.DataFrame]" = {}
+_DLC_LOAD_CACHE_MAX = 8
 
 
 class PoseFeatureExtractor:
@@ -33,7 +43,8 @@ class PoseFeatureExtractor:
                  bodyparts: List[str],
                  likelihood_threshold: float = 0.8,
                  velocity_delta: int = 2,
-                 contact_threshold: float = 15.0):
+                 contact_threshold: float = 15.0,
+                 mm_per_pixel: Optional[float] = None):
         """
         Initialize pose feature extractor.
 
@@ -42,19 +53,62 @@ class PoseFeatureExtractor:
             likelihood_threshold: Minimum confidence for including data points (default 0.8)
             velocity_delta: Time steps for middle velocity calculation (default 2)
                            Note: Velocities are always calculated for dt=1, dt=velocity_delta, and dt=10
-            contact_threshold: Height (px) below which a body part is considered in contact (default 15.0)
+            contact_threshold: Height below which a body part is considered in contact.
+                Default 15.0 is in pixels (legacy). When ``mm_per_pixel`` is
+                set and contact_threshold is left at the default, it is
+                auto-converted to the equivalent mm value (15 px × mm_per_pixel).
+                When you pass a non-default contact_threshold AND mm_per_pixel,
+                you are expected to supply the threshold in mm.
+            mm_per_pixel: Per-pixel calibration (mm). When set (e.g. from
+                PawCapture metadata via ``pawcapture_meta.read_calibration``
+                or a project-fixed value), all coordinate-derived features
+                (distances, velocities, contact heights) come out in
+                physical units (mm) instead of pixels. Angles and
+                probabilities are unaffected. ``feature_cache`` includes
+                this value in the cache key so mm and pixel caches do
+                not collide. Default ``None`` keeps legacy pixel behaviour.
         """
         self.bodyparts = bodyparts
         self.likelihood_threshold = likelihood_threshold
         self.velocity_delta = velocity_delta
+        self.mm_per_pixel = mm_per_pixel
+        # Auto-convert the legacy 15-px default to mm when calibration is on
+        # and the caller did not override the threshold. Keeps existing
+        # rig-tuned thresholds intact for callers that already pass a value.
+        if mm_per_pixel is not None and contact_threshold == 15.0:
+            contact_threshold = 15.0 * float(mm_per_pixel)
         self.contact_threshold = contact_threshold
         
     def load_dlc_data(self, filepath: str) -> pd.DataFrame:
         """
-        Load DeepLabCut H5 or CSV file.
-"""
+        Load DeepLabCut H5 or CSV file, with a module-level mtime-keyed cache.
+
+        Repeated loads of the same file in one process (e.g. transitions tab
+        looping over K classifiers per session, or eval re-reading after a
+        brightness-preserve fallback) skip the parse entirely. Cache entries
+        are auto-invalidated when the file's mtime changes.
+        """
+        try:
+            _stat = os.stat(filepath)
+            mtime = _stat.st_mtime
+            size = _stat.st_size
+        except OSError:
+            mtime = 0.0
+            size = -1
+        key = (os.path.normpath(filepath), mtime, size)
+        cached = _DLC_LOAD_CACHE.get(key)
+        if cached is not None:
+            return cached.copy()
+        if len(_DLC_LOAD_CACHE) >= _DLC_LOAD_CACHE_MAX:
+            _DLC_LOAD_CACHE.pop(next(iter(_DLC_LOAD_CACHE)))
+        df = self._load_dlc_data_uncached(filepath)
+        _DLC_LOAD_CACHE[key] = df
+        return df.copy()
+
+    def _load_dlc_data_uncached(self, filepath: str) -> pd.DataFrame:
+        """Parse a DLC H5 or CSV file from disk (no caching)."""
         file_extension = filepath.split('.')[-1]
-        
+
         if file_extension == 'csv':
             # Load CSV with first 3 rows as headers
             df = pd.read_csv(filepath)
@@ -91,7 +145,12 @@ class PoseFeatureExtractor:
         Extract x, y coordinates and probabilities for all body parts.
 
         Expects flattened columns: bodypart_x, bodypart_y, bodypart_prob
-        
+
+        When ``self.mm_per_pixel`` is set, x/y coordinates are scaled
+        to millimetres so every downstream feature (distances,
+        velocities, contact heights) emerges in physical units.
+        Probabilities are not scaled.
+
         Returns:
             Tuple of (x_coords, y_coords, probabilities)
         """
@@ -99,17 +158,17 @@ class PoseFeatureExtractor:
         bp_xcord = df.iloc[:, ::3].reset_index(drop=True)
         bp_ycord = df.iloc[:, 1::3].reset_index(drop=True)
         bp_prob = df.iloc[:, 2::3].reset_index(drop=True)
-        
+
         # Filter to requested bodyparts using substring matching
         if self.bodyparts:
             included_columns_x = [col for col in bp_xcord.columns if any(substr in col for substr in self.bodyparts)]
             included_columns_y = [col for col in bp_ycord.columns if any(substr in col for substr in self.bodyparts)]
             included_columns_p = [col for col in bp_prob.columns if any(substr in col for substr in self.bodyparts)]
-            
+
             bp_xcord = bp_xcord[included_columns_x]
             bp_ycord = bp_ycord[included_columns_y]
             bp_prob = bp_prob[included_columns_p]
-        
+
         # Validate that we got some body parts
         if bp_xcord.empty or bp_ycord.empty:
             available_bodyparts = list(set([c.split('_x')[0] for c in df.columns if '_x' in c]))
@@ -118,7 +177,17 @@ class PoseFeatureExtractor:
                 f"Requested: {self.bodyparts}\n"
                 f"Available in file: {available_bodyparts}"
             )
-        
+
+        # Apply mm/pixel calibration once at the entry point so every
+        # downstream feature (distances, velocities, contact heights,
+        # multiscale rolling stats) emerges in mm. Cache key includes
+        # mm_per_pixel (feature_cache.compute_hash) so px and mm caches
+        # do not collide.
+        if self.mm_per_pixel is not None:
+            scale = float(self.mm_per_pixel)
+            bp_xcord = bp_xcord * scale
+            bp_ycord = bp_ycord * scale
+
         return bp_xcord, bp_ycord, bp_prob
     
     def calculate_distances(self, bp_xcord: pd.DataFrame, bp_ycord: pd.DataFrame) -> pd.DataFrame:
@@ -127,27 +196,25 @@ class PoseFeatureExtractor:
 
         Naming convention: Dis_bp1-bp2
         """
-        new_columns = []
-        
-        for i in range(len(bp_xcord.columns)):
-            for j in range(i + 1, len(bp_xcord.columns)):
-                distances = np.sqrt(
-                    (bp_xcord.iloc[:, i] - bp_xcord.iloc[:, j]) ** 2 + 
-                    (bp_ycord.iloc[:, i] - bp_ycord.iloc[:, j]) ** 2
-                )
-                
-                bp1name = bp_xcord.columns[i].replace("_x", "")
-                bp2name = bp_xcord.columns[j].replace("_x", "")
-                column_name = f"Dis_{bp1name}-{bp2name}"
-                
-                new_columns.append(pd.DataFrame({column_name: distances}))
-        
-        if not new_columns:
-            # No distances to calculate (need at least 2 body parts)
+        n_bp = len(bp_xcord.columns)
+        if n_bp < 2:
             return pd.DataFrame()
-        
-        BP_distances = pd.concat(new_columns, axis=1)
-        return BP_distances
+
+        # Single fancy-indexed broadcast over upper-triangle pairs. Roughly
+        # matches the per-pair Python loop in wall time at M=15 because the
+        # compute is memory-bandwidth bound, but produces one DataFrame in one
+        # allocation instead of `pd.concat` of M*(M-1)/2 single-column frames.
+        xc = bp_xcord.to_numpy(dtype=np.float64, copy=False)
+        yc = bp_ycord.to_numpy(dtype=np.float64, copy=False)
+        i_idx, j_idx = np.triu_indices(n_bp, k=1)
+        dx = xc[:, i_idx] - xc[:, j_idx]
+        dy = yc[:, i_idx] - yc[:, j_idx]
+        pair_dists = np.sqrt(dx * dx + dy * dy)
+
+        bp_names = [str(c).replace("_x", "") for c in bp_xcord.columns]
+        columns = [f"Dis_{bp_names[i]}-{bp_names[j]}"
+                   for i, j in zip(i_idx, j_idx)]
+        return pd.DataFrame(pair_dists, columns=columns, index=bp_xcord.index)
     
     def calculate_angles(self, bp_xcord: pd.DataFrame, bp_ycord: pd.DataFrame) -> pd.DataFrame:
         """
@@ -807,9 +874,11 @@ class PoseFeatureExtractor:
             return pd.DataFrame()
         return pd.concat(result_cols, axis=1).fillna(0)
 
-    def calculate_contact_features(self, height_df: pd.DataFrame,
-                                    contact_threshold: float = None,
-                                    window: int = 30) -> pd.DataFrame:
+    def calculate_contact_features(
+            self, height_df: pd.DataFrame,
+            contact_threshold: float = None,
+            window: int = 30,
+            per_bodypart_threshold: dict = None) -> pd.DataFrame:
         """Derive binary contact state from Height columns.
 
         Returns per body part:
@@ -818,18 +887,26 @@ class PoseFeatureExtractor:
           {bp}_DutyCycle         — rolling mean of ContactState over *window* frames
         Plus one global column:
           N_InContact            — sum of ContactState across all body parts
+
+        ``per_bodypart_threshold`` is an optional ``{bodypart: threshold}``
+        override. The 15 px global default is paw-calibrated; midline
+        keypoints like ``centroid`` / ``tailbase`` typically need a much
+        looser threshold because they sit higher above the floor than
+        paws. Bodyparts not in the dict fall through to ``contact_threshold``.
         """
         if contact_threshold is None:
             contact_threshold = self.contact_threshold
         height_cols = [c for c in height_df.columns if c.endswith('_Height')]
         if not height_cols:
             return pd.DataFrame()
+        per_bp = per_bodypart_threshold or {}
 
         result_cols = []
         contact_states = []
         for col in height_cols:
             bp_name = col.replace('_Height', '')
-            state = (height_df[col] < contact_threshold).astype(int)
+            thresh = float(per_bp.get(bp_name, contact_threshold))
+            state = (height_df[col] < thresh).astype(int)
             state.name = f'{bp_name}_ContactState'
             contact_states.append(state)
             result_cols.append(state)
@@ -874,6 +951,71 @@ class PoseFeatureExtractor:
         if not lag_dfs:
             return pd.DataFrame()
         return pd.concat(lag_dfs, axis=1)
+
+    def calculate_multiscale_features(
+            self,
+            feature_df: pd.DataFrame,
+            fps: float,
+            base_col_filter=None,
+            windows_ms: tuple = (100, 700),
+            stats: tuple = ('std', 'max'),
+    ) -> pd.DataFrame:
+        """Rolling-window statistics over multiple timescales.
+
+        Lean MARS-style multi-timescale aggregation. Returns a DataFrame
+        of new columns with names ``{base}_{stat}_{ms}ms`` (e.g.
+        ``hlpaw_Vel1_std_100ms``). Caller is responsible for concat-ing
+        the result back onto ``feature_df``.
+
+        Window frame counts are derived per-call from the session's
+        own fps so the column names stay time-anchored
+        (`100ms`, `700ms`) while the actual sliding-window sizes adapt.
+        """
+        if base_col_filter is None:
+            base_col_filter = self._default_multiscale_filter
+
+        cols = [c for c in feature_df.columns if base_col_filter(c)]
+        if not cols:
+            return pd.DataFrame(index=feature_df.index)
+
+        win_frames = [max(2, int(round(w_ms / 1000.0 * fps)))
+                      for w_ms in windows_ms]
+
+        out = {}
+        for col in cols:
+            s = feature_df[col]
+            for w_ms, w_f in zip(windows_ms, win_frames):
+                roll = s.rolling(w_f, center=True, min_periods=1)
+                if 'std' in stats:
+                    out[f'{col}_std_{w_ms}ms'] = roll.std().fillna(0.0)
+                if 'max' in stats:
+                    out[f'{col}_max_{w_ms}ms'] = roll.max()
+                if 'mean' in stats:
+                    out[f'{col}_mean_{w_ms}ms'] = roll.mean()
+                if 'min' in stats:
+                    out[f'{col}_min_{w_ms}ms'] = roll.min()
+        return pd.DataFrame(out, index=feature_df.index)
+
+    @staticmethod
+    def _default_multiscale_filter(col: str) -> bool:
+        """Lean scope: only Vel1 and raw Pix_<bp> columns get expanded."""
+        # Skip already-derived feature families
+        for tag in ('_lag', '_BrightAccel', '_BrightOnsetPeak',
+                    '_BrightAsymmetry', '_SurfaceZ',
+                    '_Vel10', '_Vel2', '_VelCorr', 'Ego_',
+                    '_ContactState', '_DutyCycle', '_ContactTransition',
+                    'baseline_sub', 'std_temporal', '_jerk',
+                    'norm_', '_mean_', '_std_', '_min_', '_max_'):
+            if tag in col:
+                return False
+        if col.endswith('_Vel1'):
+            return True
+        if col.startswith('Pix_'):
+            rest = col[4:]
+            # raw brightness columns are bare bodypart names: Pix_hlpaw, Pix_snout
+            if '_' not in rest and '/' not in rest:
+                return True
+        return False
 
     def normalize_egocentric(self, bp_xcord: pd.DataFrame,
                              bp_ycord: pd.DataFrame,

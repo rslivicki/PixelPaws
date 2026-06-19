@@ -143,6 +143,13 @@ def parse_args():
                    help='Disable hindpaw footprint trail')
     p.add_argument('--no-skeleton', action='store_true',
                    help='Disable skeleton lines')
+    p.add_argument('--preview', action='store_true',
+                   help='Side-by-side output: original cropped video on '
+                         'the left, skeleton render on the right (output '
+                         'video is 2x wider).')
+    p.add_argument('--preview-labels', action='store_true',
+                   help='When --preview is on, label the two halves '
+                         '"ORIGINAL" / "SKELETON" in the top-left of each.')
     for _bp in ('hrpaw', 'hlpaw', 'frpaw', 'flpaw'):
         p.add_argument(f'--color-{_bp}', type=str, default=None, metavar='B,G,R',
                        help=f'Override colour for {_bp} as B,G,R (0-255 each)')
@@ -342,9 +349,12 @@ def _render_clip(cap, data, body_parts, colors, args,
     """
     n_render = end_frame - start_frame
     own_writer = writer is None
+    # Side-by-side preview doubles the output width (original | skeleton).
+    write_w = out_w * 2 if getattr(args, 'preview', False) else out_w
     if own_writer:
-        print(f'[render] Output: {out_path}  ({out_w}x{out_h} @ {fps:.1f} fps)')
-        writer = cv2.VideoWriter(str(out_path), fourcc, fps, (out_w, out_h))
+        print(f'[render] Output: {out_path}  ({write_w}x{out_h} @ {fps:.1f} fps)'
+              + ('  [+ side-by-side preview]' if args.preview else ''))
+        writer = cv2.VideoWriter(str(out_path), fourcc, fps, (write_w, out_h))
         if not writer.isOpened():
             sys.exit(f'Cannot open VideoWriter for: {out_path}')
     print(f'[render] Frames {start_frame}-{end_frame}  ({n_render} frames, '
@@ -445,7 +455,25 @@ def _render_clip(cap, data, body_parts, colors, args,
                 show_label = True                            # no mask: always show
             if show_label:
                 _draw_label(out_frame, label)
-        writer.write(out_frame)
+
+        # Side-by-side preview: hstack the cropped original on the left,
+        # the skeleton render on the right, separated by a 1-px white
+        # divider. Optional small "ORIGINAL" / "SKELETON" labels.
+        if getattr(args, 'preview', False):
+            combo = np.zeros((out_h, out_w * 2, 3), dtype=np.uint8)
+            combo[:, :out_w] = bgr
+            combo[:, out_w:] = out_frame
+            combo[:, out_w - 1:out_w + 1] = (255, 255, 255)
+            if args.preview_labels:
+                cv2.putText(combo, 'ORIGINAL', (10, 24),
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                              (255, 255, 255), 2, cv2.LINE_AA)
+                cv2.putText(combo, 'SKELETON', (out_w + 10, 24),
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                              (255, 255, 255), 2, cv2.LINE_AA)
+            writer.write(combo)
+        else:
+            writer.write(out_frame)
 
         done = frame_idx - start_frame + 1
         if done % 100 == 0 or frame_idx == end_frame - 1:
@@ -507,7 +535,7 @@ def main():
     if not cap.isOpened():
         sys.exit(f'Cannot open video: {video_path}')
 
-    fps        = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    fps        = cap.get(cv2.CAP_PROP_FPS) or 60.0
     vid_w      = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     vid_h      = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     vid_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -564,8 +592,10 @@ def main():
             sys.exit('[bouts] No bouts found — nothing to render.')
 
         total_bouts = len(bouts)
-        print(f'[bouts] Writing {total_bouts} bout clip(s) to: {out_path}')
-        writer = cv2.VideoWriter(str(out_path), fourcc, fps, (out_w, out_h))
+        write_w = out_w * 2 if args.preview else out_w
+        print(f'[bouts] Writing {total_bouts} bout clip(s) to: {out_path}'
+              + ('  [+ side-by-side preview]' if args.preview else ''))
+        writer = cv2.VideoWriter(str(out_path), fourcc, fps, (write_w, out_h))
         if not writer.isOpened():
             sys.exit(f'Cannot open VideoWriter for: {out_path}')
 

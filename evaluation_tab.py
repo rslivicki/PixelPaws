@@ -29,6 +29,7 @@ import pandas as pd
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
+from ui_utils import FONT_FAMILY
 
 try:
     import matplotlib
@@ -36,6 +37,155 @@ try:
     import matplotlib.pyplot as plt
 except ImportError:
     plt = None
+
+
+def render_session_diagnostic(y_true, y_pred, behavior_name, base_name, out_path,
+                              fps=60.0, threshold=None, y_proba=None):
+    """Render a human-vs-model diagnostic figure for ONE session → save to out_path.
+
+    Top row: raster (Human black / Model orange) | normalized confusion matrix + F1 |
+    time-bins (10 s) seconds/bin + Pearson R. When ``y_proba`` is given, a 4th full-width
+    panel plots the probability trace with the decision threshold and shaded human bouts
+    (the layout the Predict/Eval tabs export). Returns {'f1','r','n_frames'}.
+
+    Shared by the Eval tab (``_generate_session_raster_plots``) and the Predict tab's
+    ``export_diagnostic_plot`` so both produce an identical figure.
+    """
+    if plt is None:
+        raise RuntimeError("matplotlib not available")
+    from sklearn.metrics import f1_score as _f1, confusion_matrix as _cm
+    from matplotlib.lines import Line2D
+    try:
+        from scipy.stats import pearsonr
+    except ImportError:
+        pearsonr = None
+
+    y_true = np.asarray(y_true).astype(int)
+    y_pred = np.asarray(y_pred).astype(int)
+    n = int(min(len(y_true), len(y_pred)))
+    y_true, y_pred = y_true[:n], y_pred[:n]
+    if y_proba is not None:
+        y_proba = np.asarray(y_proba, dtype=float)[:n]
+
+    def _bouts(arr):
+        p = np.concatenate([[0], arr.astype(int), [0]])
+        d = np.diff(p)
+        s = np.where(d == 1)[0]
+        e = np.where(d == -1)[0]
+        return list(zip(s.tolist(), (e - s).tolist()))
+
+    f1 = _f1(y_true, y_pred, zero_division=0)
+    cm_raw = _cm(y_true, y_pred, labels=[0, 1]).astype(float)
+    rs = cm_raw.sum(axis=1, keepdims=True)
+    rs[rs == 0] = 1
+    cm_norm = cm_raw / rs
+
+    bin_frames = max(1, int(10 * fps))
+    n_bins = max(1, int(np.ceil(n / bin_frames)))
+    human_s = np.zeros(n_bins)
+    model_s = np.zeros(n_bins)
+    for k in range(n_bins):
+        sl = slice(k * bin_frames, (k + 1) * bin_frames)
+        human_s[k] = y_true[sl].sum() / fps
+        model_s[k] = y_pred[sl].sum() / fps
+    r_val = float('nan')
+    if pearsonr is not None and n_bins > 1:
+        try:
+            r_val, _ = pearsonr(human_s, model_s)
+        except Exception:
+            pass
+
+    has_trace = y_proba is not None
+    bt = _bouts(y_true)
+    bp = _bouts(y_pred)
+
+    fig = plt.figure(figsize=(16, 8 if has_trace else 4), constrained_layout=True)
+    if has_trace:
+        gs = fig.add_gridspec(2, 3, width_ratios=[5, 2, 4], height_ratios=[4, 3])
+        ax_raster = fig.add_subplot(gs[0, 0])
+        ax_cm = fig.add_subplot(gs[0, 1])
+        ax_bins = fig.add_subplot(gs[0, 2])
+        ax_tr = fig.add_subplot(gs[1, :])
+    else:
+        gs = fig.add_gridspec(1, 3, width_ratios=[5, 2, 4], wspace=0.35)
+        ax_raster, ax_cm, ax_bins = gs.subplots()
+        ax_tr = None
+
+    # Panel 1 — raster
+    if bt:
+        ax_raster.broken_barh(bt, (2.6, 0.8), facecolors='black')
+    if bp:
+        ax_raster.broken_barh(bp, (1.2, 0.8), facecolors='#E87722')
+    ax_raster.set_yticks([1.6, 3.0])
+    ax_raster.set_yticklabels(['Model', 'Human'])
+    ax_raster.set_ylim(0.8, 3.8)
+    ax_raster.set_xlabel('Frame')
+    ax_raster.set_ylabel('Labels')
+    thr_txt = f"\n(thr={threshold:.2f})" if threshold is not None else ""
+    ax_raster.set_title(f"{behavior_name} raster: {base_name}{thr_txt}")
+    ax_raster.legend(handles=[
+        Line2D([0], [0], color='black', linewidth=8, label='Human'),
+        Line2D([0], [0], color='#E87722', linewidth=8, label='Model'),
+    ], loc='upper left', fontsize=10)
+
+    # Panel 2 — confusion matrix
+    ax_cm.imshow(cm_norm, cmap='RdPu', vmin=0, vmax=1)
+    for rr in range(2):
+        for cc in range(2):
+            v = cm_norm[rr, cc]
+            ax_cm.text(cc, rr, f"{v:.2f}", ha='center', va='center',
+                       color='white' if v > 0.5 else 'black', fontsize=10)
+    ax_cm.set_xticks([0, 1])
+    ax_cm.set_yticks([0, 1])
+    ax_cm.set_xticklabels(['0', '1'])
+    ax_cm.set_yticklabels(['0', '1'])
+    ax_cm.set_xlabel('Pred')
+    ax_cm.set_ylabel('True')
+    ax_cm.set_title(f"F1={f1:.2f}")
+
+    # Panel 3 — time bins (10 s)
+    x_centers = np.arange(n_bins) * 10 + 5
+    width = 0.4
+    ax_bins.bar(x_centers - width / 2, human_s, width=width, color='steelblue', label='Human')
+    ax_bins.bar(x_centers + width / 2, model_s, width=width, color='#E87722', label='Model')
+    ax_bins.set_xlabel('Time (s)')
+    ax_bins.set_ylabel('Seconds/bin')
+    r_str = f"{r_val:.2f}" if not np.isnan(r_val) else "n/a"
+    ax_bins.set_title(f"Time bins (10s);  R = {r_str}")
+    ax_bins.legend(fontsize=10)
+    ax_bins.spines['top'].set_visible(False)
+    ax_bins.spines['right'].set_visible(False)
+
+    # Panel 4 — probability trace (only when probabilities are supplied)
+    if ax_tr is not None:
+        frames = np.arange(n)
+        ax_tr.plot(frames, y_proba, color='#1f77b4', linewidth=0.8, label='Probability')
+        if threshold is not None:
+            ax_tr.axhline(threshold, color='red', linestyle='--', linewidth=1.2,
+                          label=f'Threshold = {threshold:.2f}')
+        for s, length in bt:                      # shade human-positive bouts
+            ax_tr.axvspan(s, s + length, color='green', alpha=0.15)
+        ax_tr.set_ylim(0, 1.02)
+        ax_tr.set_xlim(0, max(1, n))
+        ax_tr.set_xlabel('Frame')
+        ax_tr.set_ylabel('Probability')
+        ax_tr.legend(loc='upper right', fontsize=9)
+
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return {'f1': float(f1),
+            'r': (None if np.isnan(r_val) else float(r_val)),
+            'n_frames': n}
+
+try:
+    from pawcapture_meta import (
+        read_calibration as _pc_read_calibration,
+        find_session_for_video as _pc_find_session,
+        read_session_manifest as _pc_read_manifest,
+    )
+    _PAWCAPTURE_OK = True
+except ImportError:
+    _PAWCAPTURE_OK = False
 
 try:
     from feature_cache import FeatureCacheManager
@@ -48,41 +198,154 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Helper — applies the same bout-filtering rules as the prediction pipeline
 # ---------------------------------------------------------------------------
-def _apply_bout_filtering(y_pred, min_bout, min_after_bout, max_gap):
-    """Apply bout filtering: min-bout removal and gap bridging."""
-    y_filtered = y_pred.copy()
+def _find_runs(y):
+    """Run-length encoding for a 0/1 sequence.
 
-    # --- min_bout: remove bouts shorter than threshold ---
-    in_bout = False
-    bout_start = 0
-    for i in range(len(y_filtered)):
-        if y_filtered[i] == 1 and not in_bout:
-            bout_start = i
-            in_bout = True
-        elif y_filtered[i] == 0 and in_bout:
-            if (i - bout_start) < min_bout:
-                y_filtered[bout_start:i] = 0
-            in_bout = False
-    if in_bout and (len(y_filtered) - bout_start) < min_bout:
-        y_filtered[bout_start:] = 0
+    Returns
+    -------
+    starts : np.ndarray (n_pos_runs,)
+        Start frame index of each positive (==1) run.
+    ends   : np.ndarray (n_pos_runs,)
+        Exclusive end frame index of each positive run.
 
-    # --- max_gap: bridge short gaps between bouts ---
-    if max_gap > 0:
-        i = 0
-        while i < len(y_filtered):
-            if y_filtered[i] == 1:
-                gap_start = i + 1
-                while gap_start < len(y_filtered) and y_filtered[gap_start] == 0:
-                    gap_start += 1
-                gap_len = gap_start - i - 1
-                if 0 < gap_len <= max_gap and gap_start < len(y_filtered):
-                    if y_filtered[gap_start] == 1:
-                        y_filtered[i + 1:gap_start] = 1
-                i = gap_start
-            else:
-                i += 1
+    Empty arrays when *y* contains no positives.
+    """
+    y = np.asarray(y, dtype=np.int8)
+    if y.size == 0:
+        return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+    # Pad with sentinels so edge runs are detected
+    diff = np.diff(np.concatenate(([0], y, [0])).astype(np.int8))
+    starts = np.where(diff == 1)[0].astype(np.int64)
+    ends   = np.where(diff == -1)[0].astype(np.int64)
+    return starts, ends
+
+
+def _apply_bout_filtering(y_pred, min_bout, min_after_bout, max_gap, polish_repeat=1):
+    """Apply bout filtering: min-bout removal, gap bridging, and refractory.
+
+    Order matters (one pass):
+      1. min_bout       — drop positive runs shorter than ``min_bout``.
+      2. max_gap        — bridge zero-runs ``≤ max_gap`` between two
+                          consecutive positive runs (treat as one bout).
+      3. min_after_bout — refractory: after step 2, if two positive
+                          bouts are separated by ``< min_after_bout``
+                          zeros, drop the SECOND bout. Models a hard
+                          minimum inter-bout interval.
+
+    ``polish_repeat`` (BAREfoot parity, default 1 = unchanged): run the whole
+    1→2→3 pass this many times. A second pass lets the filter converge — e.g. a
+    gap-bridge in pass 1 can create a newly-short residual the next min_bout pass
+    cleans up. Idempotent once stable, so values >2 rarely change anything.
+
+    (BAREfoot's separate ``min_after_gap`` knob is NOT implemented: its exact
+    semantics aren't in the public filter source, and ``min_after_bout`` already
+    provides a post-bridge refractory. Left out deliberately rather than guessed.)
+
+    Until 2026-05-01 the ``min_after_bout`` parameter was silently
+    dropped — the function accepted it but never acted on it. Implementing the
+    documented semantic changes predictions for any classifier whose stored
+    ``min_after_bout`` is non-zero.
+    """
+    y_filtered = np.asarray(y_pred).copy()
+    n = len(y_filtered)
+    if n == 0:
+        return y_filtered
+
+    def _one_pass(arr):
+        # --- min_bout: remove bouts shorter than threshold (vectorized) -------
+        if min_bout > 1:
+            starts, ends = _find_runs(arr)
+            if starts.size:
+                short_mask = (ends - starts) < min_bout
+                for s, e in zip(starts[short_mask], ends[short_mask]):
+                    arr[s:e] = 0
+
+        # --- max_gap: bridge short gaps between bouts (vectorized) ------------
+        if max_gap > 0:
+            starts, ends = _find_runs(arr)
+            if starts.size > 1:
+                gap_lens = starts[1:] - ends[:-1]
+                bridge_mask = (gap_lens > 0) & (gap_lens <= max_gap)
+                for i_b in np.where(bridge_mask)[0]:
+                    arr[ends[i_b]:starts[i_b + 1]] = 1
+
+        # --- min_after_bout: refractory period after a bout ends --------------
+        # Walk the (post-bridge) bouts left-to-right; if a bout starts within
+        # ``min_after_bout`` frames of the previous SURVIVING bout's end, zero it.
+        if min_after_bout > 0:
+            starts, ends = _find_runs(arr)
+            if starts.size > 1:
+                prev_end = ends[0]
+                for i_b in range(1, starts.size):
+                    if (starts[i_b] - prev_end) < min_after_bout:
+                        arr[starts[i_b]:ends[i_b]] = 0
+                    else:
+                        prev_end = ends[i_b]
+        return arr
+
+    for _ in range(max(1, int(polish_repeat))):
+        before = y_filtered.copy()
+        y_filtered = _one_pass(y_filtered)
+        if np.array_equal(before, y_filtered):
+            break   # converged — further passes are no-ops
 
     return y_filtered
+
+
+def bout_level_prf(y_true, y_pred, session_ids=None, tol=6):
+    """Event/bout-level precision/recall/F1 with temporal tolerance.
+
+    A predicted bout (contiguous run of 1s) is a true positive if it overlaps — or
+    falls within ``tol`` frames of — a ground-truth bout, matched one-to-one (greedy
+    by start frame). This complements frame-wise F1, which over-penalizes boundary
+    jitter introduced by rolling-window features. Matching is done WITHIN each session
+    (no cross-session bridging) when ``session_ids`` is given.
+
+    Returns ``{'f1','precision','recall','tp','fp','fn','n_true','n_pred','tol'}``.
+    """
+    y_true = np.asarray(y_true, dtype=np.int8)
+    y_pred = np.asarray(y_pred, dtype=np.int8)
+    tol = int(max(0, tol))
+
+    # Session blocks (so a bout never spans two sessions).
+    if session_ids is None:
+        blocks = [(0, len(y_true))]
+    else:
+        sid = np.asarray(session_ids)
+        change = np.where(sid[1:] != sid[:-1])[0] + 1
+        starts = np.concatenate([[0], change])
+        ends = np.concatenate([change, [len(sid)]])
+        blocks = list(zip(starts.tolist(), ends.tolist()))
+
+    tp = fp = fn = n_true = n_pred = 0
+    for (bs, be) in blocks:
+        ts, te = _find_runs(y_true[bs:be])
+        ps, pe = _find_runs(y_pred[bs:be])
+        n_true += len(ts); n_pred += len(ps)
+        matched_pred = np.zeros(len(ps), dtype=bool)
+        for i in range(len(ts)):
+            # A true bout [ts,te) matches a pred bout [ps,pe) if, after expanding the
+            # true bout by tol on each side, the intervals overlap.
+            lo, hi = ts[i] - tol, te[i] + tol
+            hit = -1
+            for j in range(len(ps)):
+                if matched_pred[j]:
+                    continue
+                if ps[j] < hi and pe[j] > lo:   # overlap within tolerance
+                    hit = j
+                    break
+            if hit >= 0:
+                matched_pred[hit] = True
+                tp += 1
+            else:
+                fn += 1
+        fp += int((~matched_pred).sum())
+
+    prec = tp / (tp + fp) if (tp + fp) else 0.0
+    rec = tp / (tp + fn) if (tp + fn) else 0.0
+    f1 = 2 * prec * rec / (prec + rec) if (prec + rec) else 0.0
+    return {'f1': f1, 'precision': prec, 'recall': rec, 'tp': tp, 'fp': fp,
+            'fn': fn, 'n_true': n_true, 'n_pred': n_pred, 'tol': tol}
 
 
 def fit_hmm_transitions(y):
@@ -127,23 +390,40 @@ def viterbi_smooth(probas, log_trans, log_prior):
     -------
     np.ndarray of int (0/1), shape (n,)
     """
+    # Plain-Python 2-state forward DP — byte-identical to the prior numpy version
+    # (same first-max tie-break as np.argmax) but ~10× faster: numpy on size-2 arrays
+    # per frame is dominated by call overhead, so scalars win on long streams.
     probas = np.clip(np.asarray(probas, dtype=float), 1e-10, 1 - 1e-10)
-    log_emit = np.column_stack([np.log(1 - probas), np.log(probas)])  # (n, 2)
     n = len(probas)
-    vt = np.full((n, 2), -np.inf)
-    bp = np.zeros((n, 2), dtype=np.int8)
-    vt[0] = log_prior + log_emit[0]
+    if n == 0:
+        return np.empty(0, dtype=int)
+    le0 = np.log(1.0 - probas).tolist()   # log P(obs | state 0)
+    le1 = np.log(probas).tolist()         # log P(obs | state 1)
+    # transition INTO state s FROM state f = log_trans[f, s]
+    t0_0 = float(log_trans[0, 0]); t1_0 = float(log_trans[1, 0])   # → state 0
+    t0_1 = float(log_trans[0, 1]); t1_1 = float(log_trans[1, 1])   # → state 1
+    v0 = float(log_prior[0]) + le0[0]
+    v1 = float(log_prior[1]) + le1[0]
+    bp0 = [0] * n   # backpointer: best previous state when arriving in state 0 at t
+    bp1 = [0] * n   # …state 1
     for t in range(1, n):
-        for s in range(2):
-            scores = vt[t - 1] + log_trans[:, s]
-            best = int(np.argmax(scores))
-            bp[t, s] = best
-            vt[t, s] = scores[best] + log_emit[t, s]
-    path = np.empty(n, dtype=int)
-    path[-1] = int(np.argmax(vt[-1]))
+        a = v0 + t0_0; b = v1 + t1_0          # into state 0
+        if a >= b:
+            bp0[t] = 0; nv0 = a
+        else:
+            bp0[t] = 1; nv0 = b
+        a = v0 + t0_1; b = v1 + t1_1          # into state 1
+        if a >= b:
+            bp1[t] = 0; nv1 = a
+        else:
+            bp1[t] = 1; nv1 = b
+        v0 = nv0 + le0[t]
+        v1 = nv1 + le1[t]
+    path = [0] * n
+    path[-1] = 0 if v0 >= v1 else 1
     for t in range(n - 2, -1, -1):
-        path[t] = bp[t + 1, path[t + 1]]
-    return path
+        path[t] = bp0[t + 1] if path[t + 1] == 0 else bp1[t + 1]
+    return np.asarray(path, dtype=int)
 
 
 def count_bouts(y_pred: np.ndarray, fps: float) -> dict:
@@ -354,6 +634,38 @@ def find_session_triplets(
             session_display = base if rel == '.' else f"{rel}/{base}".replace('\\', '/')
         else:
             session_display = base
+        # ── PawCapture calibration (mm_per_pixel, rig label) ─────────────
+        # Best-effort: read MP4 udta atom via ffprobe; fall back to a
+        # session_*.json sidecar when present. None when neither hits or
+        # ffprobe is missing.
+        mm_per_pixel = None
+        session_manifest = None
+        rig_label = None
+        if _PAWCAPTURE_OK:
+            try:
+                cal = _pc_read_calibration(video_path)
+                if cal and 'mm_per_pixel' in cal:
+                    mm_per_pixel = float(cal['mm_per_pixel'])
+            except Exception:
+                pass
+            if mm_per_pixel is None:
+                try:
+                    sess_path = _pc_find_session(video_path)
+                    if sess_path is not None:
+                        session_manifest = str(sess_path)
+                        sess = _pc_read_manifest(sess_path)
+                        if sess:
+                            target = os.path.normcase(os.path.abspath(video_path))
+                            for cam in sess.get('cameras', []):
+                                f = cam.get('file')
+                                if f and os.path.normcase(os.path.abspath(f)) == target:
+                                    if cam.get('mm_per_pixel') is not None:
+                                        mm_per_pixel = float(cam['mm_per_pixel'])
+                                    rig_label = cam.get('label')
+                                    break
+                except Exception:
+                    pass
+
         sessions.append({
             'session_name': session_display,
             'video':        video_path,
@@ -361,6 +673,10 @@ def find_session_triplets(
             'labels':       labels_path,
             'video_dir':    video_dir,
             'project_dir':  project_root,
+            # PawCapture (camsync) calibration — None when not present
+            'mm_per_pixel':     mm_per_pixel,
+            'session_manifest': session_manifest,
+            'rig_label':        rig_label,
             # Aliases kept for backward compatibility with training code
             'video_path':   video_path,
             'pose_path':    best_dlc,
@@ -472,7 +788,7 @@ class EvaluationTab(ttk.Frame):
                    command=self._browse_dlc_config).grid(row=2, column=2, pady=2)
         ttk.Label(tst,
                   text='(For DLC crop offset correction — same config used during training)',
-                  font=('Arial', 8), foreground='gray').grid(row=3, column=1, sticky='w', padx=5)
+                  font=(FONT_FAMILY, 8), foreground='gray').grid(row=3, column=1, sticky='w', padx=5)
 
         ttk.Button(tst, text='🔍 Scan Test Sessions',
                    command=self.scan_sessions).grid(row=4, column=1, sticky='w', pady=5)
@@ -573,19 +889,23 @@ class EvaluationTab(ttk.Frame):
         pf = getattr(self.app, 'current_project_folder', None)
         self.eval_classifier_options = {}
 
-        # Local project classifiers
+        import glob
+
+        # Local project classifiers — recursive so per-run subfolders are found
         clf_dir = os.path.join(pf.get() if pf else '', 'classifiers')
         if os.path.isdir(clf_dir):
-            for f in sorted(os.listdir(clf_dir)):
-                if f.endswith('.pkl'):
-                    self.eval_classifier_options[f"[Project] {f}"] = os.path.join(clf_dir, f)
+            for full in sorted(glob.glob(
+                    os.path.join(clf_dir, '**', '*.pkl'), recursive=True)):
+                basename = os.path.basename(full)
+                self.eval_classifier_options[f"[Project] {basename}"] = full
 
-        # Global classifiers library
+        # Global classifiers library — recursive for the same reason
         gcf = get_global_classifiers_folder()
         if os.path.isdir(gcf):
-            for f in sorted(os.listdir(gcf)):
-                if f.endswith('.pkl'):
-                    self.eval_classifier_options[f"[Global] {f}"] = os.path.join(gcf, f)
+            for full in sorted(glob.glob(
+                    os.path.join(gcf, '**', '*.pkl'), recursive=True)):
+                basename = os.path.basename(full)
+                self.eval_classifier_options[f"[Global] {basename}"] = full
 
         if hasattr(self, 'eval_classifier_combo'):
             self.eval_classifier_combo['values'] = list(self.eval_classifier_options.keys())
@@ -975,8 +1295,21 @@ class EvaluationTab(ttk.Frame):
 
                 # Use the same hash function as training (bp_include_list always None in training).
                 # crop_offset is NOT in the hash so zero-offset eval caches are shared with training.
+                # mm_per_pixel: prefer the value baked into the classifier
+                # (training_mm_per_pixel) so eval reads the same cache the
+                # training run wrote. Falls back to per-session value
+                # under 'auto' calibration.
+                _hash_extra = {'bp_include_list': None}
+                _train_mm = clf_data.get('training_mm_per_pixel')
+                if _train_mm is not None:
+                    _hash_extra['mm_per_pixel'] = float(_train_mm)
+                else:
+                    _sess_mm = session.get('mm_per_pixel')
+                    if _sess_mm is not None and clf_data.get(
+                            'training_calibration_mode', 'off') == 'auto':
+                        _hash_extra['mm_per_pixel'] = float(_sess_mm)
                 cfg_hash = _gui.PixelPawsGUI._feature_hash_key(
-                    {**clf_data, 'bp_include_list': None})
+                    {**clf_data, **_hash_extra})
                 _cache_fname = f'{base_name}_features_{cfg_hash}.pkl'
                 cache_file = os.path.join(cache_dir, _cache_fname)
 
@@ -1012,6 +1345,13 @@ class EvaluationTab(ttk.Frame):
                                 break
 
                 try:
+                    _eff_mm = _hash_extra.get('mm_per_pixel')
+                    # Per-session mm_per_pixel for post-cache augmentation
+                    # (egocentric / contact). training_mm_per_pixel takes
+                    # precedence inside augment; this fallback covers the
+                    # 'auto' mode where the trained value is None.
+                    if _eff_mm is not None:
+                        clf_data['mm_per_pixel_at_runtime'] = float(_eff_mm)
                     X = _gui._load_features_for_prediction(
                         cache_file=cache_file,
                         model=model,
@@ -1026,6 +1366,7 @@ class EvaluationTab(ttk.Frame):
                             crop_offset_y=crop_y,
                             config_yaml_path=dlc_config_path or None,
                             cancel_flag=self._eval_cancel_flag,
+                            mm_per_pixel=_eff_mm,
                         ),
                         save_path=cache_file,
                         log_fn=self._log,
@@ -1229,7 +1570,7 @@ class EvaluationTab(ttk.Frame):
         except Exception as e:
             err = traceback.format_exc()
             self._log(f'\n✗ ERROR:\n{err}')
-            self._safe_after(lambda: messagebox.showerror(
+            self._safe_after(lambda e=e: messagebox.showerror(
                 'Evaluation Error', f'Evaluation failed:\n\n{str(e)}'))
 
     @staticmethod
@@ -1255,7 +1596,7 @@ class EvaluationTab(ttk.Frame):
             return f1, prec, rec, acc
 
     @staticmethod
-    def _compute_bout_metrics(y_true, y_pred, fps=30.0):
+    def _compute_bout_metrics(y_true, y_pred, fps=60.0):
         """Bout-level precision, recall, F1.
 
         A predicted bout is a true positive if it overlaps any labeled bout.
@@ -1369,7 +1710,7 @@ class EvaluationTab(ttk.Frame):
         dialog.transient(self.root)
 
         ttk.Label(dialog, text='Cross-Validated Parameter Optimization',
-                  font=('Arial', 12, 'bold')).pack(pady=10)
+                  font=(FONT_FAMILY, 12, 'bold')).pack(pady=10)
 
         log_text = scrolledtext.ScrolledText(dialog, height=22, wrap=tk.WORD)
         log_text.pack(fill='both', expand=True, padx=10, pady=5)
@@ -1490,8 +1831,17 @@ class EvaluationTab(ttk.Frame):
                 cache_dir = os.path.join(pf, 'features') if pf and os.path.isdir(pf) else os.path.join(video_dir, 'features')
                 os.makedirs(cache_dir, exist_ok=True)
 
+                _hash_extra = {'bp_include_list': None}
+                _train_mm = clf_data.get('training_mm_per_pixel')
+                if _train_mm is not None:
+                    _hash_extra['mm_per_pixel'] = float(_train_mm)
+                else:
+                    _sess_mm = session.get('mm_per_pixel')
+                    if _sess_mm is not None and clf_data.get(
+                            'training_calibration_mode', 'off') == 'auto':
+                        _hash_extra['mm_per_pixel'] = float(_sess_mm)
                 cfg_hash = _gui.PixelPawsGUI._feature_hash_key(
-                    {**clf_data, 'bp_include_list': None})
+                    {**clf_data, **_hash_extra})
                 _cache_fname = f'{base_name}_features_{cfg_hash}.pkl'
                 cache_file = os.path.join(cache_dir, _cache_fname)
 
@@ -1513,6 +1863,7 @@ class EvaluationTab(ttk.Frame):
                                 break
 
                 try:
+                    _eff_mm = _hash_extra.get('mm_per_pixel')
                     X = _gui._load_features_for_prediction(
                         cache_file=cache_file,
                         model=model,
@@ -1526,6 +1877,7 @@ class EvaluationTab(ttk.Frame):
                             crop_offset_x=crop_x,
                             crop_offset_y=crop_y,
                             config_yaml_path=dlc_config_path or None,
+                            mm_per_pixel=_eff_mm,
                         ),
                         save_path=cache_file,
                         log_fn=log_fn,
@@ -1746,30 +2098,18 @@ class EvaluationTab(ttk.Frame):
 
     def _generate_session_raster_plots(self, per_video_results, behavior_name,
                                         output_folder, best_thresh):
-        """Generate per-session 3-panel diagnostic PNGs (raster | CM | time-bins)."""
-        try:
-            from scipy.stats import pearsonr
-        except ImportError:
-            pearsonr = None
+        """Generate per-session diagnostic PNGs (raster | CM | time-bins [| prob trace]).
 
-        def _bouts_from_array(arr):
-            padded = np.concatenate([[0], arr.astype(int), [0]])
-            diff   = np.diff(padded)
-            starts = np.where(diff ==  1)[0]
-            ends   = np.where(diff == -1)[0]
-            return list(zip(starts.tolist(), (ends - starts).tolist()))
-
-        from sklearn.metrics import f1_score as _f1, confusion_matrix as _cm
-        from matplotlib.lines import Line2D
-
+        Delegates to the shared ``render_session_diagnostic``; passes per-session
+        probabilities when present so the figure also gets the probability-trace panel.
+        """
         for r in per_video_results:
             y_true = r['y_true']
             y_pred = r['y_pred']
             base   = r['base_name']
             vpath  = r.get('video_path', '')
 
-            # FPS
-            fps = 30.0
+            fps = 60.0
             if vpath and os.path.isfile(vpath):
                 try:
                     import cv2
@@ -1781,83 +2121,13 @@ class EvaluationTab(ttk.Frame):
                 except Exception:
                     pass
 
-            # Metrics
-            f1     = _f1(y_true, y_pred, zero_division=0)
-            cm_raw = _cm(y_true, y_pred, labels=[0, 1])
-            row_sums = cm_raw.sum(axis=1, keepdims=True)
-            row_sums[row_sums == 0] = 1
-            cm_norm = cm_raw / row_sums
-
-            # Time bins (10 s)
-            bin_frames = max(1, int(10 * fps))
-            n_frames   = len(y_true)
-            n_bins     = max(1, int(np.ceil(n_frames / bin_frames)))
-            human_s = np.zeros(n_bins)
-            model_s = np.zeros(n_bins)
-            for k in range(n_bins):
-                sl = slice(k * bin_frames, (k + 1) * bin_frames)
-                human_s[k] = y_true[sl].sum() / fps
-                model_s[k] = y_pred[sl].sum() / fps
-            r_val = float('nan')
-            if pearsonr is not None and n_bins > 1:
-                r_val, _ = pearsonr(human_s, model_s)
-
-            # Figure — 3-panel layout matching training-tab rasters
-            fig = plt.figure(figsize=(16, 4), constrained_layout=True)
-            gs  = fig.add_gridspec(1, 3, width_ratios=[5, 2, 4], wspace=0.35)
-            ax_raster, ax_cm, ax_bins = gs.subplots()
-
-            # Panel 1 — Raster
-            bouts_true = _bouts_from_array(y_true)
-            bouts_pred = _bouts_from_array(y_pred)
-            if bouts_true:
-                ax_raster.broken_barh(bouts_true, (2.6, 0.8), facecolors='black')
-            if bouts_pred:
-                ax_raster.broken_barh(bouts_pred, (1.2, 0.8), facecolors='#E87722')
-            ax_raster.set_yticks([1.6, 3.0])
-            ax_raster.set_yticklabels(['Model', 'Human'])
-            ax_raster.set_ylim(0.8, 3.8)
-            ax_raster.set_xlabel('Frame')
-            ax_raster.set_ylabel('Labels')
-            ax_raster.set_title(
-                f"{behavior_name} raster: {base}\n(thr={best_thresh:.2f})")
-            ax_raster.legend(handles=[
-                Line2D([0], [0], color='black',   linewidth=8, label='Human'),
-                Line2D([0], [0], color='#E87722', linewidth=8, label='Model'),
-            ], loc='upper left', fontsize=10)
-
-            # Panel 2 — Confusion Matrix
-            ax_cm.imshow(cm_norm, cmap='RdPu', vmin=0, vmax=1)
-            for row in range(2):
-                for col in range(2):
-                    v = cm_norm[row, col]
-                    ax_cm.text(col, row, f"{v:.2f}", ha='center', va='center',
-                               color='white' if v > 0.5 else 'black', fontsize=10)
-            ax_cm.set_xticks([0, 1]); ax_cm.set_yticks([0, 1])
-            ax_cm.set_xticklabels(['0', '1']); ax_cm.set_yticklabels(['0', '1'])
-            ax_cm.set_xlabel('Pred'); ax_cm.set_ylabel('True')
-            ax_cm.set_title(f"F1={f1:.2f}")
-
-            # Panel 3 — Time Bins
-            x_centers = np.arange(n_bins) * 10 + 5
-            width = 0.4
-            ax_bins.bar(x_centers - width / 2, human_s,
-                        width=width, color='steelblue', label='Human')
-            ax_bins.bar(x_centers + width / 2, model_s,
-                        width=width, color='#E87722', label='Model')
-            ax_bins.set_xlabel('Time (s)')
-            ax_bins.set_ylabel('Seconds/bin')
-            r_str = f"{r_val:.2f}" if not np.isnan(r_val) else "n/a"
-            ax_bins.set_title(f"Time bins (10s);  R = {r_str}")
-            ax_bins.legend(fontsize=10)
-            ax_bins.spines['top'].set_visible(False)
-            ax_bins.spines['right'].set_visible(False)
-
             out_path = os.path.join(
                 output_folder,
                 f'PixelPaws_{behavior_name}_Raster_{base}.png')
-            fig.savefig(out_path, dpi=150, bbox_inches='tight')
-            plt.close(fig)
+            render_session_diagnostic(
+                y_true, y_pred, behavior_name, base, out_path,
+                fps=fps, threshold=best_thresh,
+                y_proba=r.get('y_proba'))   # None → 3-panel (unchanged); present → +trace
             self._log(f'  ✓ Raster: {os.path.basename(out_path)}')
 
     # --------------------------------------------------------- SHAP --------
@@ -1898,10 +2168,10 @@ class EvaluationTab(ttk.Frame):
         dialog.grab_set()
 
         ttk.Label(dialog, text='Select Data Source for SHAP Analysis',
-                  font=('Arial', 12, 'bold')).pack(pady=10)
+                  font=(FONT_FAMILY, 12, 'bold')).pack(pady=10)
         ttk.Label(dialog,
                   text='SHAP will explain which features drive the model\'s predictions.',
-                  font=('Arial', 9), foreground='gray').pack(pady=4)
+                  font=(FONT_FAMILY, 9), foreground='gray').pack(pady=4)
 
         source_var = tk.StringVar(value='test')
         ttk.Radiobutton(dialog, text='Use test data folder (if specified above)',
@@ -1918,7 +2188,7 @@ class EvaluationTab(ttk.Frame):
         ttk.Spinbox(dialog, from_=100, to=50000, textvariable=n_samples_var,
                     width=10, increment=1000).pack()
         ttk.Label(dialog, text='Recommended: 1000–5000 (100 samples ≈ 1 second)',
-                  font=('Arial', 8), foreground='gray').pack(pady=4)
+                  font=(FONT_FAMILY, 8), foreground='gray').pack(pady=4)
 
         result = {'cancelled': True}
 
@@ -2021,7 +2291,7 @@ class EvaluationTab(ttk.Frame):
                         X = data
                     _log_shap(f'✓ Loaded features from: {os.path.basename(file_path)}')
                 except Exception as e:
-                    self._safe_after(lambda: messagebox.showerror(
+                    self._safe_after(lambda e=e: messagebox.showerror(
                         'Error', f'Failed to load features:\n{e}'))
                     return
 
@@ -2139,6 +2409,6 @@ class EvaluationTab(ttk.Frame):
                 '  • SHAP_report.txt'))
 
         except Exception as e:
-            self._safe_after(lambda: messagebox.showerror(
+            self._safe_after(lambda e=e: messagebox.showerror(
                 'SHAP Error', f'Error during SHAP analysis:\n\n{str(e)}'))
             traceback.print_exc()

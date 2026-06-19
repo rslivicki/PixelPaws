@@ -1,0 +1,63 @@
+{
+  "cv_f1_mean": 0.7672762919805778,
+  "mean_cv_f1": 0.7672762919805778,
+  "cv_f1_std": 0.08295049277729712,
+  "cv_f1_per_fold": [
+    0.7980031833309217,
+    0.7784140204754468,
+    0.8011794439764112,
+    0.6083223249669749,
+    0.8504624871531347
+  ],
+  "oof_best_f1": 0.9397056316417571,
+  "best_thresh": 0.25,
+  "min_bout": 12,
+  "min_after_bout": 0,
+  "max_gap": 20,
+  "n_train_sessions": 7,
+  "training_sessions": [
+    "260318_JG_9417_Baseline",
+    "260318_JG_9418_Baseline",
+    "260318_JG_9419_Baseline",
+    "260318_JG_9420_Baseline",
+    "260318_JG_9424_Baseline",
+    "260318_JG_9433_Baseline",
+    "260318_JG_9435_Baseline"
+  ],
+  "feature_schema": {
+    "pose_feature_version": 5,
+    "brightness_feature_version": 1,
+    "include_optical_flow": true,
+    "square_size": [
+      40,
+      40,
+      40
+    ],
+    "bp_pixbrt_list": [
+      "hrpaw",
+      "hlpaw",
+      "snout"
+    ]
+  },
+  "expected_fps": 60,
+  "status": "SHIP_GUI_CSV",
+  "source_cohort": "2603_SNLT_JG/Baseline",
+  "bout_optimization": {
+    "method": "GUI's _sweep_postprocessing (sparse CSV labels, 37\u00d78\u00d74\u00d77=8288 combos)",
+    "best": {
+      "thresh": 0.25,
+      "min_bout": 12,
+      "max_gap": 20,
+      "min_after_bout": 0,
+      "bout_f1": 0.7996184217499602,
+      "bout_count_pearson_r": null,
+      "mean_bout_duration_error_sec": null
+    }
+  },
+  "recommended_post_processing": {
+    "best_thresh": 0.25,
+    "min_bout": 12,
+    "max_gap": 20,
+    "min_after_bout": 0
+  }
+}

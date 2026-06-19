@@ -72,9 +72,14 @@ except ImportError:
 try:
     from analysis_tab import AnalysisTab
     ANALYSIS_TAB_AVAILABLE = True
-except ImportError:
+except ImportError as _at_err:
     ANALYSIS_TAB_AVAILABLE = False
-    print("Warning: analysis_tab.py not found. Analysis tab will be disabled.")
+    # Pre-2026-05-01 the message said "not found", but the file is
+    # always present — the ImportError is virtually always a missing
+    # transitive dep (e.g. seaborn). Surface the real reason.
+    print(f"Warning: could not import analysis_tab ({_at_err}). "
+          "Analysis tab will be disabled. "
+          "If a dep is missing, `pip install seaborn` typically fixes it.")
 
 try:
     from evaluation_tab import EvaluationTab, _apply_bout_filtering, count_bouts, find_session_triplets, fit_hmm_transitions
@@ -97,6 +102,12 @@ try:
     GAIT_LIMB_TAB_AVAILABLE = True
 except ImportError:
     GAIT_LIMB_TAB_AVAILABLE = False
+
+try:
+    from body_contact_tab import BodyContactTab
+    BODY_CONTACT_TAB_AVAILABLE = True
+except ImportError:
+    BODY_CONTACT_TAB_AVAILABLE = False
 
 try:
     from transitions_tab import TransitionsTab
@@ -163,7 +174,7 @@ except ImportError:
 
 try:
     from sklearn.metrics import f1_score, precision_score, recall_score, confusion_matrix
-    from sklearn.model_selection import KFold
+    from sklearn.model_selection import KFold, GroupKFold
     from sklearn.utils import resample
 except ImportError:
     pass
@@ -171,13 +182,14 @@ except ImportError:
 # Import new PixelPaws modules
 try:
     from pose_features import PoseFeatureExtractor, POSE_FEATURE_VERSION
-    from brightness_features import PixelBrightnessExtractor
+    from brightness_features import PixelBrightnessExtractor, BRIGHTNESS_FEATURE_VERSION
     from classifier_training import BehaviorClassifier
     PIXELPAWS_MODULES_AVAILABLE = True
     pass  # modules loaded
 except ImportError as e:
     PIXELPAWS_MODULES_AVAILABLE = False
     POSE_FEATURE_VERSION = 5  # fallback if module unavailable
+    BRIGHTNESS_FEATURE_VERSION = 1  # fallback if module unavailable
     print(f"Error: Could not import PixelPaws modules: {e}")
     print("Please ensure pose_features.py, brightness_features.py, and classifier_training.py are in the same directory")
 
@@ -203,7 +215,8 @@ except ImportError:
 # ============================================================================
 
 from ui_utils import (ToolTip, bind_mousewheel,
-                      _bind_tight_layout_on_resize, _draw_canvas_fit)
+                      _bind_tight_layout_on_resize, _draw_canvas_fit,
+                      FONT_FAMILY)
 from sidebar_nav import SidebarNav
 
 
@@ -293,6 +306,21 @@ class PixelPawsGUI:
         self.status_text = tk.StringVar(value="Ready")
         self._project_display_name = tk.StringVar(value="")
 
+        # ── Shared label-bout-length filter (Train + Active Learning) ──────────
+        # Exclude labeled positive bouts shorter than / longer than these frame
+        # counts from training (set to -1, in-memory). 0 = off. Created here so
+        # both the Train tab and the AL panel can bind to the SAME vars.
+        self.train_min_label_bout = tk.IntVar(value=0)
+        self.train_max_label_bout = tk.IntVar(value=0)
+
+        # ── Shared CV-eligibility (Train + AL): sparse sessions become training-only
+        # (still train the model, not held out for evaluation). 'auto' = adaptive
+        # cutoff from the cohort's bout distribution; 'manual' = use the spinboxes;
+        # 'off' = every session is CV-eligible (legacy). Default 'auto'.
+        self.train_cv_eligibility_mode = tk.StringVar(value='auto')
+        self.train_min_cv_pos_frames = tk.IntVar(value=0)
+        self.train_min_cv_pos_bouts = tk.IntVar(value=0)
+
         # ── Shared project folder ─────────────────────────────────────────────
         # A single StringVar written by any "browse project" action; observed by
         # training, batch, and evaluation tabs so users don't re-enter it.
@@ -306,6 +334,8 @@ class PixelPawsGUI:
         self.train_viz_window = None
         
         # Initialize training variables (will be created in create_training_tab)
+        self.train_ladder_start = None
+        self._ladder_mode = False
         self.train_project_folder = None
         self.train_single_folder = None
         self.train_video_ext = None
@@ -316,6 +346,7 @@ class PixelPawsGUI:
         self.train_bp_pixbrt = None
         self.train_square_sizes = None
         self.train_pix_threshold = None
+        self.train_use_any_cache = None
         self.train_n_estimators = None
         self.train_max_depth = None
         self.train_learning_rate = None
@@ -330,6 +361,13 @@ class PixelPawsGUI:
         self.train_generate_plots = None
         self.train_opt_strategy = None
         self.train_trim_to_last_positive = None
+        self.train_trim_to_first_positive = None
+        self.train_bout_window_only = None
+        self.train_bout_window_frames = None
+        self.train_bout_window_honest_eval = None
+        self.train_use_multiscale = None
+        self._prev_corr_filter_state = True
+        self._corr_filter_cb = None
         self.train_use_optuna = None
         self.train_optuna_trials = None
         self.train_use_lag_features = None
@@ -391,11 +429,13 @@ class PixelPawsGUI:
         self.pred_save_video = None
         self.pred_save_summary = None
         self.pred_generate_ethogram = None
+        self.pred_export_diagnostic = None
         self.pred_results_text = None
 
         # Last prediction results (populated by _predict_thread on success)
         self._last_pred_y_pred        = None
         self._last_pred_y_proba       = None
+        self._last_pred_threshold     = None          # decision threshold used (clf best_thresh)
         self._last_pred_fps           = None
         self._last_pred_n_frames      = None
         self._last_pred_video_path    = None
@@ -458,7 +498,11 @@ class PixelPawsGUI:
         )
         try:
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            ico_path = os.path.join(script_dir, "pixelpaws_icon.ico")
+            # Icon moved to assets/ in the 2026-05-01 folder restructure.
+            # Fall back to the legacy root location for older installs.
+            ico_path = os.path.join(script_dir, "assets", "pixelpaws_icon.ico")
+            if not os.path.isfile(ico_path):
+                ico_path = os.path.join(script_dir, "pixelpaws_icon.ico")
 
             # Windows: give the process its own App User Model ID so Windows
             # shows it as a distinct taskbar entry instead of grouping it under
@@ -507,7 +551,7 @@ class PixelPawsGUI:
             "Predict & Evaluate": ["🎬 Predict", "📊 Evaluate", "📦 Batch"],
             "Analyze": ["📈 Analysis", "🔀 Transitions"],
             "Discover": ["🔍 Discover"],
-            "Locomotion": ["🐾 Gait & Limb Use"],
+            "Locomotion": ["🐾 Gait & Limb Use", "🫃 Body Contact"],
             "Tools": ["🛠 Tools"],
         })
         self.notebook.pack(fill='both', expand=True)
@@ -549,6 +593,15 @@ class PixelPawsGUI:
             self.wb_tab = GaitLimbTab(self.wb_tab_frame, self)
             self.wb_tab.pack(fill='both', expand=True)
 
+        # Body Contact analysis tab (centroid + tailbase, midline keypoints)
+        if BODY_CONTACT_TAB_AVAILABLE:
+            self.body_contact_tab_frame = ttk.Frame(self.notebook)
+            self.notebook.add(self.body_contact_tab_frame,
+                              text="🫃 Body Contact")
+            self.body_contact_tab = BodyContactTab(
+                self.body_contact_tab_frame, self)
+            self.body_contact_tab.pack(fill='both', expand=True)
+
         self.create_tools_tab()  # New tab for enhanced tools
 
         # Hide sidebar items for unavailable modules
@@ -558,6 +611,8 @@ class PixelPawsGUI:
             self.notebook.hide_item("🔍 Discover")
         if not GAIT_LIMB_TAB_AVAILABLE:
             self.notebook.hide_item("🐾 Gait & Limb Use")
+        if not BODY_CONTACT_TAB_AVAILABLE:
+            self.notebook.hide_item("🫃 Body Contact")
         if not TRANSITIONS_TAB_AVAILABLE:
             self.notebook.hide_item("🔀 Transitions")
 
@@ -568,7 +623,7 @@ class PixelPawsGUI:
         status_inner = ttk.Frame(status_frame)
         status_inner.pack(fill='x')
         ttk.Label(status_inner, textvariable=self._project_display_name,
-                 font=('Arial', 9, 'bold'), anchor='w').pack(side='left', padx=(4, 10))
+                 font=(FONT_FAMILY, 9, 'bold'), anchor='w').pack(side='left', padx=(4, 10))
         ttk.Label(status_inner, textvariable=self.status_text,
                  relief='sunken', anchor='w').pack(fill='x', expand=True)
         
@@ -658,6 +713,11 @@ class PixelPawsGUI:
         tools_menu.add_command(label="Crop Video for DLC\u2026",
                                command=self.crop_video_for_dlc)
         tools_menu.add_separator()
+        tools_menu.add_command(label="Diagnose Frame Rate\u2026",
+                               command=self.open_frame_rate_diagnose)
+        tools_menu.add_command(label="Normalize Project Frame Rate\u2026",
+                               command=self.open_frame_rate_normalize)
+        tools_menu.add_separator()
         tools_menu.add_command(label="Key File (Group Assignment)\u2026",
                                command=self._open_key_file_dialog)
         tools_menu.add_separator()
@@ -724,7 +784,7 @@ class PixelPawsGUI:
                 self.root.after(0, lambda: messagebox.showinfo(
                     "Export Complete", f"Project exported to:\n{dest}.zip"))
             except Exception as exc:
-                self.root.after(0, lambda: messagebox.showerror(
+                self.root.after(0, lambda exc=exc: messagebox.showerror(
                     "Export Failed", str(exc)))
 
         threading.Thread(target=_do_zip, daemon=True).start()
@@ -825,37 +885,35 @@ class PixelPawsGUI:
         ttk.Label(behavior_frame, text="(Must match CSV column name)", 
                  foreground='gray').grid(row=0, column=3, sticky='w')
         
-        # Filtering parameters
-        ttk.Label(behavior_frame, text="Min Bout (frames):").grid(row=2, column=0, sticky='w', pady=2)
+        # Bout post-processing params (min_bout / min_after_bout / max_gap) are now
+        # AUTO-TUNED by the honest sweep — the deployed values come from
+        # _sweep_postprocessing_fast, not from the UI. The manual spinboxes + the
+        # "Auto-Suggest Bout Parameters" button were display-only and have been removed.
+        # These IntVars are kept (defaults) so legacy config/pkl code paths stay valid.
         self.train_min_bout = tk.IntVar(value=3)
-        ttk.Spinbox(behavior_frame, from_=1, to=100, textvariable=self.train_min_bout, width=10).grid(
-            row=2, column=1, sticky='w', padx=5, pady=2)
-        ttk.Label(behavior_frame, text="Minimum consecutive frames for valid bout", 
-                 foreground='gray').grid(row=2, column=3, sticky='w')
-        
-        ttk.Label(behavior_frame, text="Min After Bout (frames):").grid(row=3, column=0, sticky='w', pady=2)
         self.train_min_after_bout = tk.IntVar(value=1)
-        ttk.Spinbox(behavior_frame, from_=1, to=100, textvariable=self.train_min_after_bout, width=10).grid(
-            row=3, column=1, sticky='w', padx=5, pady=2)
-        ttk.Label(behavior_frame, text="Minimum frames after bout ends", 
-                 foreground='gray').grid(row=3, column=3, sticky='w')
-        
-        ttk.Label(behavior_frame, text="Max Gap (frames):").grid(row=4, column=0, sticky='w', pady=2)
         self.train_max_gap = tk.IntVar(value=5)
-        ttk.Spinbox(behavior_frame, from_=0, to=100, textvariable=self.train_max_gap, width=10).grid(
-            row=4, column=1, sticky='w', padx=5, pady=2)
-        ttk.Label(behavior_frame, text="Maximum frames to bridge between bouts", 
-                 foreground='gray').grid(row=4, column=3, sticky='w')
-        
-        # Auto-suggest button
-        ttk.Button(behavior_frame, text="🤖 Auto-Suggest Bout Parameters", 
-                  command=self.auto_suggest_bout_params).grid(row=5, column=0, columnspan=4, pady=10)
-        
+        ttk.Label(behavior_frame,
+                  text="Bout smoothing (min bout / gap / refractory) is auto-tuned during training.",
+                  foreground='gray').grid(row=2, column=0, columnspan=4, sticky='w', pady=2)
+
         # === FEATURE CONFIGURATION ===
         feature_frame = ttk.LabelFrame(scrollable_frame, text="Feature Configuration", padding=10)
         feature_frame.pack(fill='x', padx=15, pady=8)
         self._feature_frame = feature_frame
-        
+
+        # Match the feature settings to whatever cache the project already has, so
+        # training reuses it instead of re-extracting (hash must match exactly).
+        ttk.Button(feature_frame, text="🔗 Match Config to Existing Cache",
+                   command=self._match_config_to_cache).grid(
+            row=99, column=0, columnspan=2, sticky='w', pady=(2, 2))
+        # Escape hatch: skip hash-matching entirely and just load whatever cache exists.
+        self.train_use_any_cache = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            feature_frame,
+            text="Use any available feature cache as-is (ignore config hash; skip post-cache features)",
+            variable=self.train_use_any_cache).grid(row=100, column=0, columnspan=3, sticky='w', pady=(0, 6))
+
         ttk.Label(feature_frame, text="Pixel Brightness Body Parts:").grid(row=0, column=0, sticky='w', pady=2)
         self.train_bp_pixbrt = tk.StringVar(value="hrpaw,hlpaw,snout")
         ttk.Entry(feature_frame, textvariable=self.train_bp_pixbrt, width=30).grid(
@@ -902,7 +960,7 @@ class PixelPawsGUI:
         # Runtime warning banner — empty by default, populated by trace callbacks
         self._train_warning_lbl = tk.Label(
             scrollable_frame, text="",
-            foreground='#b8860b', font=('Arial', 9, 'bold'),
+            foreground='#b8860b', font=(FONT_FAMILY, 9, 'bold'),
             anchor='w')
         self._train_warning_lbl.pack(fill='x', padx=18, pady=(0, 2))
 
@@ -994,18 +1052,21 @@ class PixelPawsGUI:
                        variable=self.train_generate_plots).grid(row=7, column=1, sticky='w', pady=2)
         ttk.Label(params_frame, text="Creates threshold curve and feature importance figures", foreground='gray').grid(row=7, column=2, sticky='w')
 
-        # Gain-importance pruning (2nd-pass retrain on top-N features)
-        self.train_prune_by_gain = tk.BooleanVar(value=True)
-        ttk.Checkbutton(params_frame, text="Prune by gain + retrain (2nd pass with top features only)",
-                       variable=self.train_prune_by_gain).grid(row=8, column=1, sticky='w', pady=2)
-        ttk.Label(params_frame, text="Train on all features first, then retrain on top features by XGBoost gain importance — reduces noise", foreground='gray').grid(row=8, column=2, sticky='w')
-
-        ttk.Label(params_frame, text="Top Features (by gain):").grid(row=9, column=0, sticky='w', pady=2)
+        # The old "Prune by gain (2nd-pass top-N)" checkbox was removed — the SHAP
+        # Ladder below supersedes it (it tree-SHAP-ranks features, CVs at decreasing
+        # counts, and auto-keeps the most-parsimonious best). These vars are kept
+        # (hidden defaults) only as the ladder's fallback + for config back-compat.
+        self.train_prune_by_gain = tk.BooleanVar(value=False)   # normal training = all features
         self.train_prune_top_n = tk.IntVar(value=120)
-        ttk.Spinbox(params_frame, from_=10, to=200, increment=5,
-                   textvariable=self.train_prune_top_n, width=10).grid(
-            row=9, column=1, sticky='w', padx=5, pady=2)
-        ttk.Label(params_frame, text="Number of features to keep after pruning (10–200)", foreground='gray').grid(row=9, column=2, sticky='w')
+
+        # SHAP feature-ladder: starting feature count (decrements by 50 down to 50)
+        ttk.Label(params_frame, text="Ladder start features:").grid(row=12, column=0, sticky='w', pady=2)
+        self.train_ladder_start = tk.IntVar(value=600)
+        ttk.Spinbox(params_frame, from_=50, to=700, increment=50,
+                   textvariable=self.train_ladder_start, width=10).grid(
+            row=12, column=1, sticky='w', padx=5, pady=2)
+        ttk.Label(params_frame, text="'Run SHAP Ladder' (below) CVs at this many features down to 50 in 50-step decrements, then auto-keeps the most-parsimonious best",
+                 foreground='gray').grid(row=12, column=2, sticky='w')
 
         # Trim to last positive
         self.train_trim_to_last_positive = tk.BooleanVar(value=True)
@@ -1016,52 +1077,172 @@ class PixelPawsGUI:
                       "(prevents BORIS trailing zeros from flooding training)",
                  foreground='gray').grid(row=10, column=2, sticky='w')
 
-        # Correlation pre-filter
-        self.train_correlation_filter = tk.BooleanVar(value=True)
-        ttk.Checkbutton(params_frame, text="Drop highly correlated features (|r| > 0.95)",
-                       variable=self.train_correlation_filter).grid(row=11, column=1, sticky='w', pady=2)
-        ttk.Label(params_frame, text="Removes near-duplicate features before training — reduces noise, never alters cached files",
+        # Trim to first positive
+        self.train_trim_to_first_positive = tk.BooleanVar(value=False)
+        ttk.Checkbutton(params_frame, text="Trim sessions to first labeled event",
+                        variable=self.train_trim_to_first_positive).grid(row=11, column=1, sticky='w', pady=2)
+        ttk.Label(params_frame,
+                 text="Remove frames before the first '1' in each label file "
+                      "(off by default — pre-bout quiet frames usually help the "
+                      "model learn 'not a flinch')",
                  foreground='gray').grid(row=11, column=2, sticky='w')
+
+        # Label-bout-length filter (shared with Active Learning) — exclude labeled
+        # positive bouts that are too short/long (likely mis-labels) from training.
+        _lbl_row = ttk.Frame(params_frame)
+        _lbl_row.grid(row=8, column=1, sticky='w', pady=2)
+        ttk.Label(_lbl_row, text="Exclude labeled bouts  <").pack(side='left')
+        ttk.Spinbox(_lbl_row, from_=0, to=100000, width=6,
+                    textvariable=self.train_min_label_bout).pack(side='left', padx=2)
+        ttk.Label(_lbl_row, text="fr   or  >").pack(side='left')
+        ttk.Spinbox(_lbl_row, from_=0, to=100000, width=6,
+                    textvariable=self.train_max_label_bout).pack(side='left', padx=2)
+        ttk.Label(_lbl_row, text="fr").pack(side='left')
+        ttk.Label(params_frame,
+                 text="Drop too-short/long labeled positive bouts (→ unobserved, "
+                      "in-memory only). 0 = off. 5 fr ≈ 0.08 s @60fps. Shared with the "
+                      "Active Learning tab.",
+                 foreground='gray').grid(row=8, column=2, sticky='w')
+
+        # CV eligibility — sparse sessions used for training but not held out for eval.
+        _cve_row = ttk.Frame(params_frame)
+        _cve_row.grid(row=9, column=1, sticky='w', pady=2)
+        ttk.Label(_cve_row, text="CV eligibility:").pack(side='left')
+        ttk.Combobox(_cve_row, textvariable=self.train_cv_eligibility_mode,
+                     values=['auto', 'manual', 'off'], state='readonly',
+                     width=8).pack(side='left', padx=4)
+        ttk.Label(_cve_row, text="manual ≥").pack(side='left')
+        ttk.Spinbox(_cve_row, from_=0, to=100000, width=5,
+                    textvariable=self.train_min_cv_pos_bouts).pack(side='left', padx=2)
+        ttk.Label(_cve_row, text="bouts /").pack(side='left')
+        ttk.Spinbox(_cve_row, from_=0, to=1000000, width=6,
+                    textvariable=self.train_min_cv_pos_frames).pack(side='left', padx=2)
+        ttk.Label(_cve_row, text="frames").pack(side='left')
+        _cve_info = ttk.Label(_cve_row, text="  ⓘ", foreground='#3b6ea5')
+        _cve_info.pack(side='left')
+        ttk.Label(params_frame,
+                 text="Sparse sessions train the model but aren't scored. Default = auto. "
+                      "Hover ⓘ for details. Shared with the Active Learning tab.",
+                 foreground='gray').grid(row=9, column=2, sticky='w')
+        # Full explanation on hover (keeps the panel uncluttered).
+        _cve_tip = (
+            "CV eligibility — how 'auto' decides:\n"
+            "A session is held out for SCORING only if its positive-bout count ≥ "
+            "max(3, ¼ × median positive-bouts across your sessions).\n"
+            "Sparser sessions still TRAIN the model but aren't scored — this keeps "
+            "rare-behavior F1 stable without wasting labels.\n"
+            "Bouts are counted on cleaned labels (positive runs ≥3 frames).\n"
+            "  • auto   — adaptive cutoff from your sessions' bout distribution (recommended)\n"
+            "  • manual — use the bouts/frames thresholds shown\n"
+            "  • off    — score every session (legacy)\n"
+            "The training-window headline discloses how many sessions were train-only vs scored.")
+        try:
+            ToolTip(_cve_info, _cve_tip)
+        except Exception:
+            pass
+
+        # Bout-window subsampling (keep only ±N frames around each positive bout)
+        self.train_bout_window_only = tk.BooleanVar(value=False)
+        ttk.Checkbutton(params_frame,
+                        text="Keep only windows around labeled bouts",
+                        variable=self.train_bout_window_only).grid(
+            row=12, column=1, sticky='w', pady=2)
+        bout_win_sub = ttk.Frame(params_frame)
+        bout_win_sub.grid(row=12, column=2, sticky='w')
+        ttk.Label(bout_win_sub, text="± Frames:", foreground='gray').pack(side='left')
+        self.train_bout_window_frames = tk.IntVar(value=120)
+        ttk.Spinbox(bout_win_sub, from_=5, to=600, increment=5,
+                   textvariable=self.train_bout_window_frames, width=6).pack(
+            side='left', padx=4)
+        ttk.Label(bout_win_sub,
+                 text="For sparse-event classes (e.g. flinching). "
+                      "120 frames ≈ 2s @ 60fps. Off by default.",
+                 foreground='gray').pack(side='left', padx=4)
+
+        # Honest eval companion to bout-window: train on the window, but
+        # evaluate (OOF F1, threshold sweep, calibration) on full sessions.
+        self.train_bout_window_honest_eval = tk.BooleanVar(value=False)
+        ttk.Checkbutton(params_frame,
+                        text="Evaluate on full sessions (honest with windowing)",
+                        variable=self.train_bout_window_honest_eval).grid(
+            row=13, column=1, sticky='w', pady=2)
+        ttk.Label(params_frame,
+                 text="Only meaningful when bout-windowing is on. "
+                      "Training uses the window; OOF F1 + threshold + "
+                      "calibration use all frames so numbers reflect "
+                      "predict-time reality.",
+                 foreground='gray').grid(row=13, column=2, sticky='w')
+
+        # Multi-timescale rolling stats (lean: std + max, 100/700 ms windows)
+        self.train_use_multiscale = tk.BooleanVar(value=True)   # default ON (richer features)
+        ttk.Checkbutton(
+            params_frame,
+            text="Include multi-timescale rolling stats (100 / 700 ms)",
+            variable=self.train_use_multiscale,
+            command=self._on_multiscale_toggle,
+        ).grid(row=14, column=1, sticky='w', pady=2)
+        ttk.Label(
+            params_frame,
+            text="Adds std + max over 100 ms / 700 ms windows on velocity + "
+                 "raw brightness features (~72 columns at default rig). "
+                 "60 fps default. Auto-enables correlation filter.",
+            foreground='gray',
+        ).grid(row=14, column=2, sticky='w')
+
+        # Correlation pre-filter — capture widget ref so multiscale toggle
+        # can grey it out and prevent the user from disabling it while the
+        # multi-timescale columns inflate the matrix with correlated copies.
+        self.train_correlation_filter = tk.BooleanVar(value=True)
+        self._corr_filter_cb = ttk.Checkbutton(
+            params_frame,
+            text="Drop highly correlated features (|r| > 0.95)",
+            variable=self.train_correlation_filter,
+        )
+        self._corr_filter_cb.grid(row=15, column=1, sticky='w', pady=2)
+        ttk.Label(params_frame, text="Removes near-duplicate features before training — reduces noise, never alters cached files",
+                 foreground='gray').grid(row=15, column=2, sticky='w')
+        # Multiscale defaults ON now → sync the corr-filter widget to its forced-on state.
+        self._on_multiscale_toggle()
 
         # ── Advanced ML options (Optuna, lag features, egocentric) ──
         ttk.Separator(params_frame, orient='horizontal').grid(
-            row=12, column=0, columnspan=3, sticky='ew', pady=(8, 4))
+            row=16, column=0, columnspan=3, sticky='ew', pady=(8, 4))
 
         # Optuna auto-tuning
-        self.train_use_optuna = tk.BooleanVar(value=True)
+        self.train_use_optuna = tk.BooleanVar(value=False)
         ttk.Checkbutton(params_frame, text="Optuna auto-tune hyperparameters",
-                       variable=self.train_use_optuna).grid(row=13, column=1, sticky='w', pady=2)
+                       variable=self.train_use_optuna).grid(row=17, column=1, sticky='w', pady=2)
         ttk.Label(params_frame, text="Searches max_depth, learning_rate, colsample_bytree, subsample (slower training)",
-                 foreground='gray').grid(row=13, column=2, sticky='w')
+                 foreground='gray').grid(row=17, column=2, sticky='w')
 
-        ttk.Label(params_frame, text="Optuna Trials:").grid(row=14, column=0, sticky='w', pady=2)
+        ttk.Label(params_frame, text="Optuna Trials:").grid(row=18, column=0, sticky='w', pady=2)
         self.train_optuna_trials = tk.IntVar(value=20)
         ttk.Spinbox(params_frame, from_=10, to=100, increment=5,
                    textvariable=self.train_optuna_trials, width=10).grid(
-            row=14, column=1, sticky='w', padx=5, pady=2)
+            row=18, column=1, sticky='w', padx=5, pady=2)
         ttk.Label(params_frame, text="More trials = better search but slower (25 typical)",
-                 foreground='gray').grid(row=14, column=2, sticky='w')
+                 foreground='gray').grid(row=18, column=2, sticky='w')
 
         # Lag/lead features
         self.train_use_lag_features = tk.BooleanVar(value=True)
         ttk.Checkbutton(params_frame, text="Include lag/lead features (temporal context)",
-                       variable=self.train_use_lag_features).grid(row=15, column=1, sticky='w', pady=2)
+                       variable=self.train_use_lag_features).grid(row=19, column=1, sticky='w', pady=2)
         ttk.Label(params_frame, text="Adds +/-1,2 frame shifts of top features — helps detect onset/offset",
-                 foreground='gray').grid(row=15, column=2, sticky='w')
+                 foreground='gray').grid(row=19, column=2, sticky='w')
 
         # Egocentric normalization
-        self.train_use_egocentric = tk.BooleanVar(value=False)
+        self.train_use_egocentric = tk.BooleanVar(value=True)   # default ON (richer features)
         ttk.Checkbutton(params_frame, text="Include egocentric (centroid-relative) features",
-                       variable=self.train_use_egocentric).grid(row=16, column=1, sticky='w', pady=2)
+                       variable=self.train_use_egocentric).grid(row=20, column=1, sticky='w', pady=2)
         ttk.Label(params_frame, text="Position-invariant distances and velocities — helps if animal moves around",
-                 foreground='gray').grid(row=16, column=2, sticky='w')
+                 foreground='gray').grid(row=20, column=2, sticky='w')
 
         # Contact state features
         self.train_use_contact_features = tk.BooleanVar(value=True)
         ttk.Checkbutton(params_frame, text="Include contact state features",
-                       variable=self.train_use_contact_features).grid(row=17, column=1, sticky='w', pady=2)
+                       variable=self.train_use_contact_features).grid(row=21, column=1, sticky='w', pady=2)
         contact_sub = ttk.Frame(params_frame)
-        contact_sub.grid(row=17, column=2, sticky='w')
+        contact_sub.grid(row=21, column=2, sticky='w')
         ttk.Label(contact_sub, text="Threshold (px):", foreground='gray').pack(side='left')
         self.train_contact_threshold = tk.DoubleVar(value=15.0)
         ttk.Spinbox(contact_sub, from_=1, to=100, increment=1,
@@ -1072,31 +1253,31 @@ class PixelPawsGUI:
         # Probability calibration (isotonic fit on OOF)
         self.train_use_calibration = tk.BooleanVar(value=True)
         ttk.Checkbutton(params_frame, text="Calibrate probabilities (isotonic on OOF)",
-                       variable=self.train_use_calibration).grid(row=18, column=1, sticky='w', pady=2)
+                       variable=self.train_use_calibration).grid(row=22, column=1, sticky='w', pady=2)
         ttk.Label(params_frame, text="Fits IsotonicRegression on OOF probabilities — improves P=0.5 thresholding and AL uncertainty",
-                 foreground='gray').grid(row=18, column=2, sticky='w')
+                 foreground='gray').grid(row=22, column=2, sticky='w')
 
         # CV fold-ensemble at inference
-        self.train_use_fold_ensemble = tk.BooleanVar(value=True)
+        self.train_use_fold_ensemble = tk.BooleanVar(value=False)
         ttk.Checkbutton(params_frame, text="Save fold ensemble (average K CV models at predict time)",
-                       variable=self.train_use_fold_ensemble).grid(row=19, column=1, sticky='w', pady=2)
+                       variable=self.train_use_fold_ensemble).grid(row=23, column=1, sticky='w', pady=2)
         ttk.Label(params_frame, text="Stores all K fold models; inference averages them with the final model (larger pkl, lower variance)",
-                 foreground='gray').grid(row=19, column=2, sticky='w')
+                 foreground='gray').grid(row=23, column=2, sticky='w')
 
         # Learning curve diagnostic
-        self.train_learning_curve = tk.BooleanVar(value=True)
+        self.train_learning_curve = tk.BooleanVar(value=False)
         ttk.Checkbutton(params_frame, text="Show learning curve (~3x slower)",
-                       variable=self.train_learning_curve).grid(row=20, column=1, sticky='w', pady=2)
+                       variable=self.train_learning_curve).grid(row=24, column=1, sticky='w', pady=2)
         ttk.Label(params_frame, text="Trains on 25/50/75/100% of data to show if more labeling would help",
-                 foreground='gray').grid(row=20, column=2, sticky='w')
+                 foreground='gray').grid(row=24, column=2, sticky='w')
 
         # Post-processing optimization strategy
         ttk.Separator(params_frame, orient='horizontal').grid(
-            row=21, column=0, columnspan=3, sticky='ew', pady=(8, 4))
-        ttk.Label(params_frame, text="Post-processing\noptimization:").grid(row=22, column=0, sticky='w', pady=2)
+            row=25, column=0, columnspan=3, sticky='ew', pady=(8, 4))
+        ttk.Label(params_frame, text="Post-processing\noptimization:").grid(row=26, column=0, sticky='w', pady=2)
         self.train_opt_strategy = tk.StringVar(value='auto')
         opt_radio_frame = ttk.Frame(params_frame)
-        opt_radio_frame.grid(row=22, column=1, columnspan=2, sticky='w')
+        opt_radio_frame.grid(row=26, column=1, columnspan=2, sticky='w')
         ttk.Radiobutton(opt_radio_frame, text="Auto (LOVO if ≥2 sessions, else OOF)",
                         variable=self.train_opt_strategy, value='auto').pack(anchor='w')
         ttk.Radiobutton(opt_radio_frame, text="OOF only  (faster, no leave-one-video-out)",
@@ -1191,6 +1372,9 @@ class PixelPawsGUI:
         self._train_all_btn = ttk.Button(start_frame, text="▶▶ Train All Behaviors",
                   command=self.start_training_all_behaviors)
         self._train_all_btn.pack(side='left', padx=5)
+        self._train_ladder_btn = ttk.Button(start_frame, text="📊 Run SHAP Ladder",
+                  command=self._start_shap_ladder)
+        self._train_ladder_btn.pack(side='left', padx=5)
         self._train_cancel_btn = ttk.Button(start_frame, text="■ Cancel Training",
                   command=self._cancel_training, state='disabled')
         self._train_cancel_btn.pack(side='left', padx=5)
@@ -1230,7 +1414,7 @@ class PixelPawsGUI:
             ttk.Label(eval_frame,
                       text="⚠️  evaluation_tab.py not found.\n\n"
                            "Place evaluation_tab.py in the same folder as PixelPaws_GUI.py.",
-                      font=('Arial', 11), foreground='red',
+                      font=(FONT_FAMILY, 11), foreground='red',
                       justify='center').pack(expand=True)
     
     def create_prediction_tab(self):
@@ -1284,7 +1468,7 @@ class PixelPawsGUI:
                   text="  — Bout filters: min_bout/gap rules  ·  "
                        "HMM Viterbi: probabilistic sequence decoding  ·  "
                        "None: raw threshold only",
-                  foreground='gray', font=('Arial', 8)).pack(side='left', padx=(6, 0))
+                  foreground='gray', font=(FONT_FAMILY, 8)).pack(side='left', padx=(6, 0))
 
         # === VIDEO SELECTION ===
         video_frame = ttk.LabelFrame(scrollable_frame, text="Video Files", padding=10)
@@ -1321,7 +1505,7 @@ class PixelPawsGUI:
                   command=self.browse_pred_features).grid(row=3, column=2, pady=2)
         
         ttk.Label(video_frame, text="Skip feature extraction if file provided", 
-                 font=('Arial', 8), foreground='gray').grid(row=3, column=1, sticky='w', padx=5)
+                 font=(FONT_FAMILY, 8), foreground='gray').grid(row=3, column=1, sticky='w', padx=5)
         
         # DLC Config for crop parameters
         ttk.Label(video_frame, text="DLC Config (for crop):").grid(row=4, column=0, sticky='w', pady=2)
@@ -1373,6 +1557,13 @@ class PixelPawsGUI:
         ttk.Checkbutton(output_frame, text="Generate ethogram plots",
                        variable=self.pred_generate_ethogram).grid(row=4, column=0, sticky='w', pady=2)
 
+        self.pred_export_diagnostic = tk.BooleanVar(value=False)
+        ttk.Checkbutton(output_frame,
+                        text="Export diagnostic plot — raster · F1 · time-bin R · probability "
+                             "(needs Human Labels)",
+                        variable=self.pred_export_diagnostic).grid(row=7, column=0, columnspan=2,
+                                                                   sticky='w', pady=2)
+
         ttk.Label(output_frame, text="Output Folder:").grid(row=5, column=0, sticky='w', pady=5)
         self.pred_output_folder = tk.StringVar()
         ttk.Entry(output_frame, textvariable=self.pred_output_folder, width=50).grid(
@@ -1403,6 +1594,10 @@ class PixelPawsGUI:
             action_frame, text="🎬 Export Labeled Video",
             command=self.export_labeled_video, state='disabled')
         self.pred_export_video_btn.pack(side='left', padx=5)
+        self.pred_diagnostic_btn = ttk.Button(
+            action_frame, text="📊 Diagnostic Plot",
+            command=self.export_diagnostic_plot, state='disabled')
+        self.pred_diagnostic_btn.pack(side='left', padx=5)
 
         # === EXPORT VIDEO OVERLAYS ===
         overlay_opts = ttk.LabelFrame(scrollable_frame, text="Export Video Overlays", padding=4)
@@ -1544,7 +1739,7 @@ class PixelPawsGUI:
                   command=self.browse_batch_dlc_config).grid(row=3, column=2, pady=2)
         
         ttk.Label(input_frame, text="For DLC crop offset in brightness extraction", 
-                 font=('Arial', 8), foreground='gray').grid(row=4, column=1, sticky='w', padx=5)
+                 font=(FONT_FAMILY, 8), foreground='gray').grid(row=4, column=1, sticky='w', padx=5)
         
         # === CLASSIFIERS ===
         clf_frame = ttk.LabelFrame(scrollable_frame, text="Classifiers", padding=10)
@@ -1639,7 +1834,7 @@ class PixelPawsGUI:
 
         # Title
         ttk.Label(tools_sf, text="Tools",
-                 font=('Arial', 14, 'bold')).pack(pady=10)
+                 font=(FONT_FAMILY, 14, 'bold')).pack(pady=10)
 
         def _add_section(parent, title, tools_list):
             lf = ttk.LabelFrame(parent, text=title, padding=10)
@@ -1655,6 +1850,7 @@ class PixelPawsGUI:
 
         _add_section(tools_sf, "Video Tools", [
             ("🎥 Video Preview with Predictions", self.open_video_preview),
+            ("🎬 Review Labels on Video", self.review_labels_on_video),
             ("🦴 Skeleton Video Renderer", self.open_skeleton_renderer),
             ("✂️ Crop Video for DLC", self.crop_video_for_dlc),
             ("🌟 Brightness Preview", self.show_brightness_preview),
@@ -1667,7 +1863,8 @@ class PixelPawsGUI:
             ("📋 Feature File Inspector", self.inspect_features_file),
             ("🎯 Optimize Parameters", self.optimize_parameters),
             ("📈 Training Visualization", self.show_training_viz),
-            ("🔄 BORIS to PixelPaws", self.convert_boris_to_pixelpaws),
+            ("📥 Import BORIS Project (.boris)", self.import_boris_project_native),
+            ("🔄 BORIS to PixelPaws (CSV/TSV)", self.convert_boris_to_pixelpaws),
         ])
 
         _add_section(tools_sf, "Configuration", [
@@ -1687,7 +1884,7 @@ class PixelPawsGUI:
 
         ttk.Label(clf_lib_frame,
                   text="Share trained classifiers across projects via a global folder.",
-                  font=('Arial', 9)).pack(anchor='w', pady=(0, 8))
+                  font=(FONT_FAMILY, 9)).pack(anchor='w', pady=(0, 8))
 
         clf_btn_frame = ttk.Frame(clf_lib_frame)
         clf_btn_frame.pack(fill='x')
@@ -2225,7 +2422,7 @@ class PixelPawsGUI:
         for _bp in _PAW_ORDER:
             _col_frame = ttk.Frame(_swatch_frame)
             _col_frame.pack(side='left', padx=4)
-            ttk.Label(_col_frame, text=_PAW_LABEL[_bp], font=('Arial', 7)).pack()
+            ttk.Label(_col_frame, text=_PAW_LABEL[_bp], font=(FONT_FAMILY, 7)).pack()
             _c = tk.Canvas(_col_frame, width=34, height=36,
                            bg='black', highlightthickness=1, highlightbackground='#888',
                            cursor='hand2')
@@ -2375,7 +2572,7 @@ class PixelPawsGUI:
                 proc.wait()
                 win.after(0, lambda: _on_done(proc.returncode))
             except Exception as exc:
-                win.after(0, lambda: _log(f"✗ Exception: {exc}"))
+                win.after(0, lambda exc=exc: _log(f"✗ Exception: {exc}"))
                 win.after(0, lambda: _on_done(-1))
 
         def _do_render():
@@ -2503,9 +2700,9 @@ class PixelPawsGUI:
             err = ttk.Frame(al_frame)
             err.pack(expand=True, fill='both', padx=20, pady=20)
             ttk.Label(err, text="⚠️ Active Learning Module Not Available",
-                      font=('Arial', 16, 'bold'), foreground='red').pack(pady=20)
+                      font=(FONT_FAMILY, 16, 'bold'), foreground='red').pack(pady=20)
             ttk.Label(err, text="Please ensure active_learning_v2.py is in the same directory as PixelPaws_GUI.py",
-                      font=('Arial', 12)).pack(pady=10)
+                      font=(FONT_FAMILY, 12)).pack(pady=10)
 
 
 
@@ -2517,6 +2714,38 @@ class PixelPawsGUI:
         else:
             self._xgb_frame.pack_forget()
             self._params_frame.pack_forget()
+
+    def _on_multiscale_toggle(self):
+        """Auto-force the correlation filter on while multi-timescale is on.
+
+        Multi-timescale rolling stats add columns highly correlated with
+        their base feature; the |r|>0.95 corr filter is the cheapest way
+        to keep redundant copies out of the trained model.
+        """
+        if self.train_use_multiscale is None:
+            return
+        if self.train_use_multiscale.get():
+            # Save the user's previous corr-filter choice so toggle-off restores it.
+            try:
+                self._prev_corr_filter_state = bool(self.train_correlation_filter.get())
+            except Exception:
+                self._prev_corr_filter_state = True
+            self.train_correlation_filter.set(True)
+            if self._corr_filter_cb is not None:
+                try:
+                    self._corr_filter_cb.config(state='disabled')
+                except Exception:
+                    pass
+        else:
+            try:
+                self.train_correlation_filter.set(bool(self._prev_corr_filter_state))
+            except Exception:
+                self.train_correlation_filter.set(True)
+            if self._corr_filter_cb is not None:
+                try:
+                    self._corr_filter_cb.config(state='normal')
+                except Exception:
+                    pass
 
     def _describe_training_profile(self):
         """Compose a short label describing which options were enabled for the run.
@@ -2913,12 +3142,10 @@ class PixelPawsGUI:
             if hasattr(self, 'train_dlc_config') and self.train_dlc_config is not None and config.get('dlc_config'):
                 self.train_dlc_config.set(config['dlc_config'])
 
-            # Load behaviors list -> pre-fill first entry into training tab
-            behaviors = config.get('behaviors') or []
-            if not behaviors and config.get('behavior_name'):
-                behaviors = [config['behavior_name']]
-            if behaviors and self.train_behavior_name is not None:
-                self.train_behavior_name.set(behaviors[0])
+            # Behavior name is intentionally NOT pre-filled from the project config:
+            # the saved 'behaviors'/'behavior_name' can be stale and may not match the
+            # project's actual label CSVs. Leave the field blank so the user uses
+            # "Auto-detect", which reads the real behavior columns from the labels.
 
             # Load brightness body parts -> pre-fill training tab field
             bp = config.get('bp_pixbrt_list', [])
@@ -3090,7 +3317,7 @@ class PixelPawsGUI:
 
         cap = _cv2.VideoCapture(v_path)
         n_frames = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT))
-        fps = cap.get(_cv2.CAP_PROP_FPS) or 30.0
+        fps = cap.get(_cv2.CAP_PROP_FPS) or 60.0
         if n_frames <= 0:
             cap.release()
             messagebox.showerror("Video error", "Could not read frame count.")
@@ -3440,6 +3667,152 @@ class PixelPawsGUI:
             text=f"{selected} of {total} selected · {labeled} have labels"
         )
 
+    def _auto_convert_boris_in_behavior_labels(self, project_folder):
+        """Scan ``<project>/behavior_labels/`` for BORIS event exports and
+        convert any that are still in raw BORIS format into per-frame
+        PixelPaws label CSVs.
+
+        BORIS format is detected by the presence of ``Behavior`` +
+        ``Behavior type`` + ``Time`` columns. Already-converted files
+        (column names are behavior names + 0/1 per-frame values) are
+        skipped silently.
+
+        After successful conversion the original BORIS file is moved to
+        ``<project>/behavior_labels/boris_originals/`` so it doesn't get
+        re-converted on subsequent runs. Output file name follows the
+        existing converter convention: ``<stem>_labels.csv``.
+
+        Returns ``(n_converted, n_skipped, n_failed)``.
+        """
+        import shutil
+        labels_dir = os.path.join(project_folder, 'behavior_labels')
+        if not os.path.isdir(labels_dir):
+            return (0, 0, 0)
+
+        archive_dir = os.path.join(labels_dir, 'boris_originals')
+
+        candidates = sorted(
+            glob.glob(os.path.join(labels_dir, '*.csv')) +
+            glob.glob(os.path.join(labels_dir, '*.tsv'))
+        )
+
+        n_converted = n_skipped = n_failed = 0
+
+        for path in candidates:
+            # Skip anything already in the archive
+            if os.path.normpath(archive_dir) in os.path.normpath(path):
+                continue
+            try:
+                try:
+                    df = pd.read_csv(path)
+                    if len(df.columns) < 3:
+                        df = pd.read_csv(path, sep='\t')
+                except Exception:
+                    df = pd.read_csv(path, sep='\t')
+            except Exception:
+                n_skipped += 1
+                continue
+
+            if df is None or df.empty:
+                n_skipped += 1
+                continue
+
+            # BORIS column detection (case/punctuation-insensitive)
+            cols_norm = {
+                "".join(c.lower() for c in col if c.isalnum()): col
+                for col in df.columns
+            }
+
+            def _find_col(cands):
+                for c in cands:
+                    key = "".join(ch.lower() for ch in c if ch.isalnum())
+                    if key in cols_norm:
+                        return cols_norm[key]
+                return None
+
+            behavior_col  = _find_col(['Behavior', 'behaviour'])
+            type_col      = _find_col(['Behavior type', 'Type'])
+            time_col      = _find_col(['Time', 'Time (s)', 'time'])
+            image_idx_col = _find_col(['Image index'])
+            fps_col       = _find_col(['FPS', 'FrameRate', 'Frame rate'])
+
+            # Not a BORIS file — probably already in PixelPaws per-frame format
+            if not (behavior_col and type_col and time_col):
+                n_skipped += 1
+                continue
+
+            # Already-converted output sibling? Skip to avoid clobbering edits.
+            stem = os.path.splitext(os.path.basename(path))[0]
+            out_path = os.path.join(labels_dir, f'{stem}_labels.csv')
+            if os.path.isfile(out_path) and os.path.normpath(out_path) != os.path.normpath(path):
+                self.log_train(
+                    f"  ↷ Skipped BORIS {os.path.basename(path)} — "
+                    f"{os.path.basename(out_path)} already exists")
+                n_skipped += 1
+                continue
+
+            try:
+                # FPS: prefer explicit column, fall back to 60 fps
+                fps_val = 60.0
+                if fps_col and not df[fps_col].isna().all():
+                    try:
+                        fps_val = float(df[fps_col].dropna().iloc[0])
+                    except Exception:
+                        pass
+
+                # Total frame count — prefer Image index, else time × fps
+                if image_idx_col and not df[image_idx_col].isna().all():
+                    n_frames = int(df[image_idx_col].dropna().max()) + 1
+                else:
+                    n_frames = int(np.ceil(float(df[time_col].max()) * fps_val))
+
+                behaviors = sorted(
+                    df[behavior_col].dropna().astype(str).unique().tolist())
+                label_arrays = {b: np.zeros(n_frames, dtype=int) for b in behaviors}
+                active_starts = {b: None for b in behaviors}
+
+                df_sorted = df.sort_values(time_col).reset_index(drop=True)
+                for _, row in df_sorted.iterrows():
+                    beh = str(row[behavior_col])
+                    beh_type = str(row[type_col]).strip().upper()
+                    if beh not in label_arrays:
+                        continue
+
+                    if image_idx_col is not None and pd.notna(row.get(image_idx_col)):
+                        frame_num = int(row[image_idx_col])
+                    else:
+                        frame_num = int(round(float(row[time_col]) * fps_val))
+
+                    if beh_type == 'START':
+                        active_starts[beh] = frame_num
+                    elif beh_type == 'STOP':
+                        if active_starts[beh] is not None:
+                            for f in range(active_starts[beh], min(frame_num, n_frames)):
+                                label_arrays[beh][f] = 1
+                            active_starts[beh] = None
+                    elif beh_type == 'POINT':
+                        if 0 <= frame_num < n_frames:
+                            label_arrays[beh][frame_num] = 1
+
+                pd.DataFrame(label_arrays).to_csv(out_path, index=False)
+
+                os.makedirs(archive_dir, exist_ok=True)
+                shutil.move(path, os.path.join(archive_dir, os.path.basename(path)))
+
+                total_pos = sum(int(a.sum()) for a in label_arrays.values())
+                self.log_train(
+                    f"  ✓ BORIS → {os.path.basename(out_path)} "
+                    f"({n_frames} frames, {len(behaviors)} behaviour(s), "
+                    f"{total_pos} positive, fps={fps_val:.1f})")
+                n_converted += 1
+            except Exception as _err:
+                self.log_train(
+                    f"  ⚠️  BORIS conversion failed for "
+                    f"{os.path.basename(path)}: {_err}")
+                n_failed += 1
+
+        return (n_converted, n_skipped, n_failed)
+
     def find_training_sessions(self) -> List[Dict]:
         """Find all training sessions in project folder using shared session discovery."""
         project_folder = self.train_project_folder.get()
@@ -3468,11 +3841,17 @@ class PixelPawsGUI:
             else:
                 unlabeled_candidates.append(s)
 
-        # ── Pass 2: if any missing, show one checkbox dialog ─────────────────
-        skipped_basenames = set()
+        # ── Pass 2: auto-skip videos without labels (prompt removed) ─────────
+        # No blocking "Labels Not Found" dialog — intentional for projects that
+        # hold unlabeled videos (e.g. an active-learning pool). Skipped videos are
+        # still listed in the scan summary below; convert BORIS exports manually
+        # via Tools → BORIS to PixelPaws when you do want to label them.
+        skipped_basenames = set(
+            os.path.splitext(os.path.basename(s['video']))[0]
+            for s in unlabeled_candidates)
         stopped_by_user   = False
 
-        if unlabeled_candidates:
+        if False and unlabeled_candidates:   # dialog disabled — auto-skip above
             # Build dialog
             dlg = tk.Toplevel(self.root)
             dlg.title("Labels Not Found")
@@ -3486,13 +3865,13 @@ class PixelPawsGUI:
             ttk.Label(
                 header_frm,
                 text=f"{len(unlabeled_candidates)} video(s) are missing a labels file.",
-                font=('Arial', 10, 'bold'),
+                font=(FONT_FAMILY, 10, 'bold'),
             ).pack(anchor='w')
             ttk.Label(
                 header_frm,
                 text="Check the videos you want to skip and continue.\n"
                      "Uncheck any video to stop and label it first.",
-                font=('Arial', 9),
+                font=(FONT_FAMILY, 9),
                 foreground='gray40',
             ).pack(anchor='w', pady=(4, 0))
 
@@ -3532,7 +3911,7 @@ class PixelPawsGUI:
                 ]
                 for loc in searched:
                     ttk.Label(row, text=f"    • {loc}",
-                              font=('Arial', 8), foreground='gray50').pack(anchor='w')
+                              font=(FONT_FAMILY, 8), foreground='gray50').pack(anchor='w')
 
                 ttk.Separator(inner, orient='horizontal').pack(fill='x', pady=2)
 
@@ -3543,6 +3922,32 @@ class PixelPawsGUI:
             canvas.configure(height=min(inner.winfo_reqheight(), needed_h - 160))
 
             ttk.Separator(dlg, orient='horizontal').pack(fill='x', padx=18, pady=6)
+
+            # Peek for BORIS files in behavior_labels/ so the button label
+            # can show the count; detection reuses Behavior + Behavior type
+            # + Time column presence (same heuristic as the converter).
+            boris_paths = []
+            _labels_dir = os.path.join(project_folder, 'behavior_labels')
+            _archive_dir = os.path.join(_labels_dir, 'boris_originals')
+            if os.path.isdir(_labels_dir):
+                for _p in sorted(glob.glob(os.path.join(_labels_dir, '*.csv'))
+                                 + glob.glob(os.path.join(_labels_dir, '*.tsv'))):
+                    if os.path.normpath(_archive_dir) in os.path.normpath(_p):
+                        continue
+                    try:
+                        _df = pd.read_csv(_p, nrows=5)
+                        if len(_df.columns) < 3:
+                            _df = pd.read_csv(_p, sep='\t', nrows=5)
+                    except Exception:
+                        continue
+                    if _df is None or _df.empty:
+                        continue
+                    _cols = {"".join(c.lower() for c in col if c.isalnum()): col
+                             for col in _df.columns}
+                    if (any(k in _cols for k in ('behavior', 'behaviour'))
+                            and any(k in _cols for k in ('behaviortype', 'type'))
+                            and any(k in _cols for k in ('time', 'times'))):
+                        boris_paths.append(_p)
 
             # Buttons
             btn_frm = ttk.Frame(dlg, padding=(18, 0, 18, 14))
@@ -3558,10 +3963,40 @@ class PixelPawsGUI:
                 _result['action'] = 'stop'
                 dlg.destroy()
 
-            ttk.Button(btn_frm, text="Skip Selected & Continue",
-                       command=_on_continue, style='Accent.TButton').pack(side='left', padx=(0, 8))
+            def _on_convert_boris():
+                try:
+                    _nc, _ns, _nf = self._auto_convert_boris_in_behavior_labels(
+                        project_folder)
+                    self.log_train(
+                        f"BORIS conversion: {_nc} converted, "
+                        f"{_ns} skipped, {_nf} failed "
+                        f"(originals → behavior_labels/boris_originals/)")
+                except Exception as _be:
+                    self.log_train(f"  ⚠️  BORIS conversion failed: {_be}")
+                _result['action'] = 'retry'
+                dlg.destroy()
+
+            if boris_paths:
+                ttk.Button(btn_frm,
+                           text=f"Convert {len(boris_paths)} BORIS file(s) → PixelPaws",
+                           command=_on_convert_boris,
+                           style='Accent.TButton').pack(side='left', padx=(0, 8))
+                ttk.Button(btn_frm, text="Skip Selected & Continue",
+                           command=_on_continue).pack(side='left', padx=(0, 8))
+            else:
+                ttk.Button(btn_frm, text="Skip Selected & Continue",
+                           command=_on_continue,
+                           style='Accent.TButton').pack(side='left', padx=(0, 8))
             ttk.Button(btn_frm, text="Cancel (Stop)",
                        command=_on_stop).pack(side='left')
+
+            if boris_paths:
+                ttk.Label(
+                    dlg,
+                    text="Originals will be archived to "
+                         "behavior_labels/boris_originals/",
+                    font=(FONT_FAMILY, 8), foreground='gray50',
+                ).pack(anchor='w', padx=18, pady=(0, 6))
 
             # Size and centre
             dlg.update_idletasks()
@@ -3569,6 +4004,11 @@ class PixelPawsGUI:
             h = dlg.winfo_reqheight()
             dlg.geometry(f"{w}x{h}+{(_sw - w) // 2}+{(_sh - h) // 2}")
             self.root.wait_window(dlg)
+
+            # If the user chose BORIS conversion, restart discovery so the
+            # freshly-created per-frame CSVs get picked up.
+            if _result['action'] == 'retry':
+                return self.find_training_sessions()
 
             if _result['action'] == 'stop':
                 self.log_train("⚠️  Stopped by user — please add labels and retry.")
@@ -3659,7 +4099,7 @@ class PixelPawsGUI:
             
             # Info label
             ttk.Label(dialog, text=f"Found {len(behaviors_list)} behavior(s) in target files:",
-                     font=('Arial', 10, 'bold')).pack(padx=10, pady=10)
+                     font=(FONT_FAMILY, 10, 'bold')).pack(padx=10, pady=10)
             
             # Listbox with scrollbar
             list_frame = ttk.Frame(dialog)
@@ -3669,7 +4109,7 @@ class PixelPawsGUI:
             scrollbar.pack(side='right', fill='y')
             
             listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, 
-                                font=('Arial', 10), height=15)
+                                font=(FONT_FAMILY, 10), height=15)
             listbox.pack(side='left', fill='both', expand=True)
             scrollbar.config(command=listbox.yview)
             
@@ -3735,7 +4175,7 @@ class PixelPawsGUI:
             cap.release()
             
             if fps <= 0:
-                fps = 30  # Default fallback
+                fps = 60  # Default fallback (project rig is 60 fps)
             
             # Analyze behavior labels to get statistics
             behavior_name = self.train_behavior_name.get()
@@ -3886,7 +4326,7 @@ class PixelPawsGUI:
         
         # Title
         title = ttk.Label(dialog, text="Suggested Bout Parameters", 
-                         font=('Arial', 12, 'bold'))
+                         font=(FONT_FAMILY, 12, 'bold'))
         title.pack(pady=10)
         
         # Info frame
@@ -3910,7 +4350,7 @@ class PixelPawsGUI:
         
         # Min Bout
         row = 0
-        ttk.Label(suggest_frame, text="Min Bout:", font=('Arial', 10, 'bold')).grid(
+        ttk.Label(suggest_frame, text="Min Bout:", font=(FONT_FAMILY, 10, 'bold')).grid(
             row=row, column=0, sticky='w', pady=5)
         ttk.Label(suggest_frame, text=f"{params['min_bout']} frames").grid(
             row=row, column=1, sticky='w', padx=10)
@@ -3927,7 +4367,7 @@ class PixelPawsGUI:
         
         # Min After Bout
         row += 1
-        ttk.Label(suggest_frame, text="Min After Bout:", font=('Arial', 10, 'bold')).grid(
+        ttk.Label(suggest_frame, text="Min After Bout:", font=(FONT_FAMILY, 10, 'bold')).grid(
             row=row, column=0, sticky='w', pady=5)
         ttk.Label(suggest_frame, text=f"{params['min_after_bout']} frames").grid(
             row=row, column=1, sticky='w', padx=10)
@@ -3944,7 +4384,7 @@ class PixelPawsGUI:
         
         # Max Gap
         row += 1
-        ttk.Label(suggest_frame, text="Max Gap:", font=('Arial', 10, 'bold')).grid(
+        ttk.Label(suggest_frame, text="Max Gap:", font=(FONT_FAMILY, 10, 'bold')).grid(
             row=row, column=0, sticky='w', pady=5)
         ttk.Label(suggest_frame, text=f"{params['max_gap']} frames").grid(
             row=row, column=1, sticky='w', padx=10)
@@ -3984,6 +4424,13 @@ class PixelPawsGUI:
             # Fallback: remove extension
             return os.path.splitext(filename)[0]
     
+    def _start_shap_ladder(self):
+        """Run training in SHAP-ladder mode: CV at decreasing feature counts (start → 50,
+        step 50), plot F1-vs-N, and auto-save the most-parsimonious best. Sets a one-shot
+        flag consumed by `_real_training`, then routes through the normal training entry."""
+        self._ladder_mode = True
+        self.start_training()
+
     def start_training(self):
         """Start the classifier training process"""
         if not self.train_project_folder.get():
@@ -4010,12 +4457,16 @@ class PixelPawsGUI:
         self._feature_cancel_flag.clear()
         self._train_start_btn.config(state='disabled')
         self._train_all_btn.config(state='disabled')
+        if getattr(self, '_train_ladder_btn', None) is not None:
+            self._train_ladder_btn.config(state='disabled')
         self._train_cancel_btn.config(state='normal')
 
         # Launch training in a background thread
         def _training_done():
             self._safe_after(lambda: self._train_start_btn.config(state='normal'))
             self._safe_after(lambda: self._train_all_btn.config(state='normal'))
+            self._safe_after(lambda: getattr(self, '_train_ladder_btn', None)
+                             and self._train_ladder_btn.config(state='normal'))
             self._safe_after(lambda: self._train_cancel_btn.config(state='disabled'))
 
         def _run():
@@ -4115,6 +4566,8 @@ class PixelPawsGUI:
         self._feature_cancel_flag.clear()
         self._train_start_btn.config(state='disabled')
         self._train_all_btn.config(state='disabled')
+        if getattr(self, '_train_ladder_btn', None) is not None:
+            self._train_ladder_btn.config(state='disabled')
         self._train_cancel_btn.config(state='normal')
 
         original_behavior = self.train_behavior_name.get()
@@ -4122,6 +4575,8 @@ class PixelPawsGUI:
         def _all_done():
             self._safe_after(lambda: self._train_start_btn.config(state='normal'))
             self._safe_after(lambda: self._train_all_btn.config(state='normal'))
+            self._safe_after(lambda: getattr(self, '_train_ladder_btn', None)
+                             and self._train_ladder_btn.config(state='normal'))
             self._safe_after(lambda: self._train_cancel_btn.config(state='disabled'))
             self._safe_after(lambda: self.train_behavior_name.set(original_behavior))
 
@@ -4182,7 +4637,8 @@ class PixelPawsGUI:
 
     def _run_cv_loop(self, X, y, session_ids, sessions, unique_sessions, kf,
                      actual_folds, use_spw, use_early_stop, early_stop_rounds,
-                     tree_method, log=True, train_fraction=1.0):
+                     tree_method, log=True, train_fraction=1.0, win_mask=None,
+                     eligible_sessions=None):
         """Run session-level K-fold CV and return OOF probabilities + fold metrics.
 
         Parameters
@@ -4190,6 +4646,12 @@ class PixelPawsGUI:
         train_fraction : float
             Fraction of training frames to use per fold (1.0 = all).
             Used by the learning curve diagnostic to test subsets.
+        win_mask : np.ndarray | None
+            Optional boolean mask (length == len(y)) marking frames inside
+            a bout window. When provided, training within each fold is
+            restricted to ``train_mask & win_mask`` while OOF prediction
+            on the held-out session still covers **all** val frames —
+            keeps fast windowed training with honest full-session eval.
 
         Returns
         -------
@@ -4202,11 +4664,42 @@ class PixelPawsGUI:
         fold_recalls     = []
         fold_best_iters  = []
         fold_models      = []
+        fold_val_masks   = []  # boolean masks over X for LOFO calibration
 
         oof_proba = np.full(len(y), np.nan)
+        # Which CV fold produced each frame's OOF prediction (-1 = none). Enables the
+        # nested-LOFO honest-F1 computation (operating point chosen on the other folds).
+        fold_of = np.full(len(y), -1, dtype=np.int32)
 
-        for fold, (train_sess_idx, val_sess_idx) in enumerate(
-                kf.split(unique_sessions), 1):
+        # Build the fold list. Default: GroupKFold over FRAMES (frame-balanced
+        # leave-animals-out, congruent with active_learning_v2._cv_oof). When some
+        # sessions are CV-ineligible (sparse → train-only), fold ONLY over the eligible
+        # sessions; each fold still TRAINS on everything except its held-out sessions
+        # (so train-only sessions are in every fold's training set, never validated).
+        if eligible_sessions is not None and not set(unique_sessions).issubset(
+                set(eligible_sessions)):
+            _elig_mask = np.isin(session_ids, list(eligible_sessions))
+            _elig_idx = np.where(_elig_mask)[0]
+            _n_elig_sess = len(np.unique(session_ids[_elig_idx]))
+            _folds_n = max(2, min(actual_folds, _n_elig_sess))
+            from sklearn.model_selection import GroupKFold as _GKF
+            _gkf = _GKF(n_splits=_folds_n)
+            _folds = []
+            for (_tr, _va) in _gkf.split(_elig_idx, y[_elig_idx],
+                                         groups=session_ids[_elig_idx]):
+                _vidx = _elig_idx[_va]
+                _held = set(np.unique(session_ids[_vidx]).tolist())
+                _tidx = np.where(~np.isin(session_ids, list(_held)))[0]
+                _folds.append((_tidx, _vidx))
+            actual_folds = len(_folds)
+            if log:
+                _to = len(unique_sessions) - _n_elig_sess
+                self.log_train(f"  CV: {actual_folds} folds over {_n_elig_sess} eligible "
+                               f"session(s); {_to} sparse session(s) train-only (not evaluated)")
+        else:
+            _folds = list(kf.split(session_ids, y, groups=session_ids))
+
+        for fold, (train_idx, val_idx) in enumerate(_folds, 1):
 
             if self._training_cancel_flag.is_set():
                 if log:
@@ -4217,8 +4710,11 @@ class PixelPawsGUI:
             if log:
                 self.log_train(f"\n=== Fold {fold}/{actual_folds} ===")
 
-            train_sess = unique_sessions[train_sess_idx]
-            val_sess   = unique_sessions[val_sess_idx]
+            train_mask = np.zeros(len(y), dtype=bool); train_mask[train_idx] = True
+            val_mask   = np.zeros(len(y), dtype=bool); val_mask[val_idx] = True
+            # held-out / training session indices (for the log lines below)
+            val_sess   = np.unique(session_ids[val_idx])
+            train_sess = np.unique(session_ids[train_idx])
 
             if log:
                 _val_names = [sessions[si].get('session_name', f'session_{si}') for si in val_sess]
@@ -4226,8 +4722,10 @@ class PixelPawsGUI:
                 self.log_train(f"  Hold out: {', '.join(_val_names)}")
                 self.log_train(f"  Train on: {', '.join(_train_names)}")
 
-            train_mask = np.isin(session_ids, train_sess)
-            val_mask   = np.isin(session_ids, val_sess)
+            # Honest-eval bout window: training restricted to windowed
+            # rows only; val stays full so OOF eval is honest.
+            if win_mask is not None:
+                train_mask = train_mask & win_mask
 
             X_train = X[train_mask] if isinstance(X, np.ndarray) else X.loc[train_mask]
             y_train = y[train_mask]
@@ -4302,6 +4800,7 @@ class PixelPawsGUI:
             # ── OOF probabilities for this fold ───────────────────
             val_proba = fold_model.predict_proba(X_val)[:, 1]
             oof_proba[val_mask] = val_proba
+            fold_of[val_mask] = fold - 1   # 0-based fold index for nested-LOFO honest F1
 
             val_pred = (val_proba >= 0.5).astype(int)
             f1   = f1_score(y_val, val_pred, zero_division=0)
@@ -4312,6 +4811,7 @@ class PixelPawsGUI:
             fold_precisions.append(prec)
             fold_recalls.append(rec)
             fold_models.append(fold_model)
+            fold_val_masks.append(val_mask)
 
             elapsed = time.time() - fold_start
             if log:
@@ -4326,12 +4826,100 @@ class PixelPawsGUI:
 
         return {
             'oof_proba': oof_proba,
+            'fold_of': fold_of,
             'fold_f1_scores': fold_f1_scores,
             'fold_precisions': fold_precisions,
             'fold_recalls': fold_recalls,
             'fold_best_iters': fold_best_iters,
             'fold_models': fold_models,
+            'fold_val_masks': fold_val_masks,
         }
+
+    # ====================================================================
+    # SHAP feature ladder (tree-SHAP ranking → CV at decreasing feature counts)
+    # ====================================================================
+    def _rank_features_shap(self, model, X, win_mask=None):
+        """Rank features by mean(|tree-SHAP|) using XGBoost native pred_contribs
+        (no `shap` library). More reliable for feature selection than gain importance.
+        Returns the feature columns in descending importance order."""
+        import xgboost as xgb
+        cols = list(model.feature_names_in_)
+        Xr = X[cols]
+        if win_mask is not None:
+            Xr = Xr.iloc[win_mask] if hasattr(Xr, 'iloc') else Xr[win_mask]
+        # subsample rows for the SHAP pass when huge (importance ranking is stable)
+        if hasattr(Xr, 'shape') and Xr.shape[0] > 50000:
+            Xr = Xr.sample(50000, random_state=42) if hasattr(Xr, 'sample') else Xr[:50000]
+        try:
+            booster = model.get_booster()
+            dm = xgb.DMatrix(Xr, feature_names=cols)
+            contribs = booster.predict(dm, pred_contribs=True)  # (n, n_feat+1), last=bias
+            mean_abs = np.abs(np.asarray(contribs)[:, :-1]).mean(axis=0)
+        except Exception:
+            # fall back to gain importance if SHAP contribs fail
+            mean_abs = np.asarray(model.feature_importances_)
+        order = np.argsort(mean_abs)[::-1]
+        return [cols[i] for i in order]
+
+    def _run_feature_ladder(self, ranked, X, y, session_ids, sessions, unique_sessions,
+                            kf, actual_folds, use_spw, use_early_stop, early_stop_rounds,
+                            tree_method, win_mask, out_folder, behavior_name):
+        """CV at feature counts N = start, start-50, …, floor (reusing _run_cv_loop).
+        Per-rung metric = OOF-best F1 (fast, consistent). Plots F1-vs-N, returns the
+        most-parsimonious N within 1% of the peak. Honors the Cancel flag."""
+        start = min(int(self.train_ladder_start.get()), len(ranked))
+        floor = 50
+        rungs = list(range(start, floor - 1, -50))
+        if floor < start and (not rungs or rungs[-1] != floor):
+            rungs.append(floor)
+        self.log_train(f"\nSHAP ladder: {start} → {floor} features (step 50, {len(rungs)} rungs)…")
+        table = []
+        for N in rungs:
+            if self._training_cancel_flag.is_set():
+                self.log_train("  Ladder cancelled.")
+                break
+            cols = ranked[:N]
+            cv = self._run_cv_loop(X[cols], y, session_ids, sessions, unique_sessions,
+                                   kf, actual_folds, use_spw, use_early_stop,
+                                   early_stop_rounds, tree_method, log=False, win_mask=win_mask)
+            if cv is None:
+                break
+            from active_learning_v2 import _sweep_postprocessing_fast as _al_sweep_fast
+            f1 = _al_sweep_fast(cv['oof_proba'], y, session_ids=session_ids)['f1']
+            table.append({'n': int(N), 'oof_f1': float(f1)})
+            self.log_train(f"  {N:4d} feats → OOF-best F1 = {f1:.4f}")
+        if not table:
+            return self.train_prune_top_n.get()
+        peak = max(r['oof_f1'] for r in table)
+        best = min((r['n'] for r in table if r['oof_f1'] >= peak - 0.01),
+                   default=table[0]['n'])
+        try:
+            self._plot_feature_ladder(table, best, out_folder, behavior_name)
+        except Exception as _pe:
+            self.log_train(f"  ⚠️  Ladder plot failed: {_pe}")
+        self._last_ladder_table = table
+        self.log_train(f"  → most-parsimonious within 1% of peak ({peak:.4f}): "
+                       f"{best} features")
+        return best
+
+    def _plot_feature_ladder(self, table, best_n, out_folder, behavior_name):
+        """F1-vs-feature-count curve for the SHAP ladder."""
+        if plt is None or not table:
+            return
+        import os as _os
+        ns = [r['n'] for r in table]; f1s = [r['oof_f1'] for r in table]
+        fig, ax = plt.subplots(figsize=(6, 4), dpi=90, constrained_layout=True)
+        ax.plot(ns, f1s, marker='o', color='#2c7fb8', lw=1.8)
+        ax.axvline(best_n, color='#d62728', ls=':', lw=1.4,
+                   label=f'selected = {best_n}')
+        ax.set_xlabel('# features (tree-SHAP top-N)'); ax.set_ylabel('OOF-best F1')
+        ax.set_title(f'SHAP feature ladder — {behavior_name}', fontsize=10)
+        ax.grid(alpha=0.3); ax.legend(fontsize=8)
+        _dir = _os.path.join(out_folder, 'shap_ladder')
+        _os.makedirs(_dir, exist_ok=True)
+        _path = _os.path.join(_dir, f'PixelPaws_{behavior_name}_feature_ladder.png')
+        fig.savefig(_path, dpi=120, bbox_inches='tight'); plt.close(fig)
+        self.log_train(f"  ✓ Ladder curve saved: {_path}")
 
     def _optuna_tune(self, X, y, session_ids, use_spw, tree_method, early_stop_rounds=30):
         """Run Optuna hyperparameter search using session-level CV."""
@@ -4340,7 +4928,7 @@ class PixelPawsGUI:
 
         unique_sessions = np.unique(session_ids)
         n_folds = min(self.train_n_folds.get(), len(unique_sessions))
-        kf = KFold(n_splits=n_folds, shuffle=True, random_state=42)
+        kf = GroupKFold(n_splits=n_folds)   # frame-balanced, congruent with the main CV + AL
         n_trials = self.train_optuna_trials.get()
 
         def objective(trial):
@@ -4354,11 +4942,9 @@ class PixelPawsGUI:
                 'n_estimators':     trial.suggest_int('n_estimators', 200, 2000, step=100),
             }
             fold_f1s = []
-            for train_si, val_si in kf.split(unique_sessions):
-                train_sess = unique_sessions[train_si]
-                val_sess = unique_sessions[val_si]
-                train_mask = np.isin(session_ids, train_sess)
-                val_mask = np.isin(session_ids, val_sess)
+            for train_idx, val_idx in kf.split(session_ids, y, groups=session_ids):
+                train_mask = np.zeros(len(y), dtype=bool); train_mask[train_idx] = True
+                val_mask = np.zeros(len(y), dtype=bool); val_mask[val_idx] = True
                 X_tr, y_tr = X[train_mask], y[train_mask]
                 X_va, y_va = X[val_mask], y[val_mask]
                 spw = ((len(y_tr) - np.sum(y_tr)) / max(np.sum(y_tr), 1)) if use_spw else 1.0
@@ -4388,6 +4974,12 @@ class PixelPawsGUI:
             self.log_train("PixelPaws Classifier Training")
             self.log_train("=" * 60)
             
+            # Consume the one-shot SHAP-ladder flag (set by the "Run SHAP Ladder" button)
+            # so it can't leak into a subsequent normal training run.
+            self._ladder_run = getattr(self, '_ladder_mode', False)
+            self._ladder_mode = False
+            self._last_ladder_table = None
+
             # Get configuration
             project_folder = self.train_project_folder.get()
             behavior_name = self.train_behavior_name.get()
@@ -4397,7 +4989,7 @@ class PixelPawsGUI:
             
             self.log_train(f"\nProject:  {project_folder}")
             self.log_train(f"Behavior: {behavior_name}\n")
-            
+
             # Find training sessions — honor selection if a scan was done;
             # never fall back to a full folder scan when the user has made
             # an explicit choice (that would silently include excluded sessions).
@@ -4411,8 +5003,21 @@ class PixelPawsGUI:
                 sessions = self.find_training_sessions()
                 if not sessions:
                     raise ValueError("No training sessions found")
-            
-            self.log_train(f"Found {len(sessions)} session(s):")
+
+            # Train ONLY on sessions that have a label file — extracting features for
+            # unlabeled sessions is wasted work and they can't contribute to training.
+            _labeled = [s for s in sessions if s.get('target_path')]
+            _n_unlabeled = len(sessions) - len(_labeled)
+            if _n_unlabeled:
+                self.log_train(f"Skipping {_n_unlabeled} session(s) WITHOUT labels "
+                               f"(training only uses labeled sessions).")
+            sessions = _labeled
+            if not sessions:
+                raise ValueError(
+                    "No LABELED sessions found — training needs label files "
+                    "(Targets/*.csv). Label some sessions first.")
+
+            self.log_train(f"Found {len(sessions)} labeled session(s):")
             for s in sessions:
                 self.log_train(f"  • {s['session_name']}")
             
@@ -4428,8 +5033,18 @@ class PixelPawsGUI:
                 'bp_optflow_list': [x.strip() for x in self.train_bp_optflow.get().split(',') if x.strip()]
                     if self.train_include_optical_flow.get() else [],
                 'trim_to_last_positive': self.train_trim_to_last_positive.get(),
+                'trim_to_first_positive': self.train_trim_to_first_positive.get(),
+                'min_label_bout': int(self.train_min_label_bout.get()),
+                'max_label_bout': int(self.train_max_label_bout.get()),
+                'cv_eligibility_mode': self.train_cv_eligibility_mode.get(),
+                'min_cv_pos_bouts': int(self.train_min_cv_pos_bouts.get()),
+                'min_cv_pos_frames': int(self.train_min_cv_pos_frames.get()),
+                'bout_window_only': self.train_bout_window_only.get(),
+                'bout_window_frames': int(self.train_bout_window_frames.get()),
+                'bout_window_honest_eval': self.train_bout_window_honest_eval.get(),
+                'use_multiscale_features': bool(self.train_use_multiscale.get()),
             }
-            
+
             # Setup feature caching
             feature_cache_root = os.path.join(project_folder, 'features')
             os.makedirs(feature_cache_root, exist_ok=True)
@@ -4598,6 +5213,79 @@ class PixelPawsGUI:
                     X = pd.concat([X, lag_df], axis=1)
                     self.log_train(f"  Added {len(lag_df.columns)} lag/lead features")
 
+            # ── Multi-timescale rolling stats (lean: std + max @ 100/700 ms)
+            # Runs AFTER lag so lag's top-N variance pick uses base features.
+            # Multiscale's filter excludes already-derived families (lag, Cat
+            # B, ego, contact, Vel10, etc.) so output columns are identical
+            # regardless of position. The correlation filter (next block,
+            # auto-forced on when this is enabled) drops redundant copies.
+            _multiscale_fps_median = None
+            if self.train_use_multiscale.get():
+                try:
+                    # Median fps across the included sessions (use 60 fps if
+                    # video metadata is missing — matches today's audit default).
+                    _ms_fps_list = []
+                    for _s in included_sessions:
+                        _v = _s.get('video_path', '')
+                        if _v and os.path.isfile(_v):
+                            try:
+                                _cap = cv2.VideoCapture(_v)
+                                _f = _cap.get(cv2.CAP_PROP_FPS)
+                                _cap.release()
+                                if _f and _f > 0:
+                                    _ms_fps_list.append(float(_f))
+                            except Exception:
+                                pass
+                    if _ms_fps_list:
+                        _multiscale_fps_median = float(np.median(_ms_fps_list))
+                        _spread = max(_ms_fps_list) - min(_ms_fps_list)
+                        if _spread > 5.0:
+                            self.log_train(
+                                f"  ⚠️  Mixed fps across sessions "
+                                f"({min(_ms_fps_list):.1f}–{max(_ms_fps_list):.1f}); "
+                                f"using median {_multiscale_fps_median:.1f} for "
+                                f"multi-timescale window sizing")
+                    else:
+                        _multiscale_fps_median = 60.0
+
+                    from pose_features import PoseFeatureExtractor as _MSExt
+                    _ms_n_before = X.shape[1]
+                    # Compute multiscale per-session. The rolling windows in
+                    # calculate_multiscale_features use center=True — running
+                    # them on the post-concat X would silently bleed ±21
+                    # frames of one session's data into the next session's
+                    # boundary frames. At predict time, augmentation runs
+                    # per-session, so a post-concat call here would also
+                    # produce features the predict path can never reproduce
+                    # exactly. The per-session loop matches predict-time
+                    # semantics and avoids cross-session contamination.
+                    _ms_chunks = []
+                    _ms_extr = _MSExt(bodyparts=[])
+                    for _sid in pd.unique(session_ids):
+                        _sess_mask = (session_ids == _sid)
+                        if not _sess_mask.any():
+                            continue
+                        _sub_idx = X.index[_sess_mask]
+                        _sub = X.loc[_sub_idx]
+                        _ms_part = _ms_extr.calculate_multiscale_features(
+                            _sub, fps=_multiscale_fps_median,
+                            windows_ms=(100, 700), stats=('std', 'max'))
+                        if not _ms_part.empty:
+                            _ms_part.index = _sub_idx
+                            _ms_chunks.append(_ms_part)
+                    _ms_df = (pd.concat(_ms_chunks, axis=0).sort_index()
+                              if _ms_chunks else pd.DataFrame(index=X.index))
+                    if not _ms_df.empty:
+                        X = pd.concat([X.reset_index(drop=True),
+                                       _ms_df.reset_index(drop=True)], axis=1)
+                        self.log_train(
+                            f"  Added {X.shape[1] - _ms_n_before} multi-timescale "
+                            f"features (fps={_multiscale_fps_median:.1f}, "
+                            f"std + max over 100 ms / 700 ms; per-session)")
+                except Exception as _ms_err:
+                    self.log_train(
+                        f"  ⚠️  Multi-timescale augmentation failed: {_ms_err}")
+
             # ── Redundant feature pre-filter ──────────────────────────
             # Drops near-duplicate features (|r| > 0.95) from the in-memory
             # DataFrame only — cached feature files on disk are never altered.
@@ -4693,7 +5381,42 @@ class PixelPawsGUI:
             n_folds = self.train_n_folds.get()
             unique_sessions = np.unique(session_ids)
             actual_folds = min(n_folds, len(unique_sessions))
-            kf = KFold(n_splits=actual_folds, shuffle=True, random_state=42)
+
+            # ── CV eligibility: sparse sessions (too few positive events) are used
+            # for TRAINING but not held out for evaluation (stabilizes rare-class F1
+            # without wasting labels). 'off' → every session eligible (legacy).
+            eligible_sessions = None
+            cv_train_only = []
+            cv_eligible_names = [sessions[int(si)].get('session_name', f'session_{si}')
+                                 for si in unique_sessions]
+            _elig_mode = (self.train_cv_eligibility_mode.get()
+                          if self.train_cv_eligibility_mode else 'auto')
+            if _elig_mode != 'off':
+                from active_learning_v2 import (session_positive_counts as _spc,
+                                                select_cv_eligible as _sce)
+                _floor = max(int(self.train_min_label_bout.get() or 0), 3)
+                _counts = {int(si): _spc(y[session_ids == si], min_bout_len=_floor)
+                           for si in unique_sessions}
+                _elig, _tonly, _info = _sce(
+                    _counts, mode=_elig_mode,
+                    min_frames=int(self.train_min_cv_pos_frames.get() or 0),
+                    min_bouts=int(self.train_min_cv_pos_bouts.get() or 0))
+                if _tonly:
+                    eligible_sessions = _elig
+                    cv_train_only = [sessions[int(i)].get('session_name', f'session_{i}')
+                                     for i in sorted(_tonly)]
+                    cv_eligible_names = [sessions[int(i)].get('session_name', f'session_{i}')
+                                         for i in sorted(_elig)]
+                    self.log_train(
+                        f"  CV eligibility ({_elig_mode}, {_info}): "
+                        f"{len(_elig)} eligible, {len(_tonly)} train-only")
+                    self.log_train(
+                        f"    train-only (still train the model, not evaluated): "
+                        f"{', '.join(cv_train_only)}")
+            # GroupKFold over FRAMES (groups=session_ids) — identical splitter to the AL
+            # tab's _cv_oof, so the two tabs' CV folds + honest F1 are congruent. Folds are
+            # frame-balanced (uniform train-set sizes), the field-standard for grouped data.
+            kf = GroupKFold(n_splits=actual_folds)
 
             self.log_train(
                 f"  {actual_folds}-fold session-level CV"
@@ -4706,10 +5429,29 @@ class PixelPawsGUI:
             self.log_train(f"    subsample:       {self.train_subsample.get()}")
             self.log_train(f"    colsample:       {self.train_colsample.get()}")
 
+            # Honest-eval bout window: compute the positive-dilated mask once
+            # (shared across the main CV + any later pruned/LOVO re-runs).
+            # Training will be restricted to these frames; evaluation uses
+            # the full (X, y).
+            win_mask = None
+            if (cfg.get('bout_window_only', False)
+                    and cfg.get('bout_window_honest_eval', False)
+                    and (y == 1).any()):
+                from scipy.ndimage import binary_dilation
+                _w = int(cfg.get('bout_window_frames', 60))
+                win_mask = binary_dilation(
+                    y == 1, iterations=_w).astype(bool)
+                _pos_rate_train = float(y[win_mask].mean()) if win_mask.any() else 0.0
+                self.log_train(
+                    f"  Honest-eval bout-window: training restricted to "
+                    f"{int(win_mask.sum())} / {len(y)} frames "
+                    f"(pos rate train: {_pos_rate_train:.3%}); "
+                    f"evaluation uses all {len(y)} frames.")
+
             cv_result = self._run_cv_loop(
                 X, y, session_ids, sessions, unique_sessions, kf,
                 actual_folds, use_spw, use_early_stop, early_stop_rounds,
-                tree_method)
+                tree_method, win_mask=win_mask, eligible_sessions=eligible_sessions)
             if cv_result is None:
                 return  # cancelled
 
@@ -4718,7 +5460,9 @@ class PixelPawsGUI:
             fold_recalls    = cv_result['fold_recalls']
             fold_best_iters = cv_result['fold_best_iters']
             oof_proba       = cv_result['oof_proba']
+            fold_of         = cv_result.get('fold_of', None)
             fold_models     = cv_result.get('fold_models', [])
+            fold_val_masks  = cv_result.get('fold_val_masks', [])
 
             mean_f1 = np.mean(fold_f1_scores)
             std_f1  = np.std(fold_f1_scores)
@@ -4759,7 +5503,8 @@ class PixelPawsGUI:
                         X, y, session_ids, sessions, unique_sessions,
                         kf, actual_folds, use_spw, use_early_stop,
                         early_stop_rounds, tree_method, log=False,
-                        train_fraction=frac)
+                        train_fraction=frac, win_mask=win_mask,
+                        eligible_sessions=eligible_sessions)
                     if lc_cv is None:
                         return  # cancelled
                     lc_f1 = np.mean(lc_cv['fold_f1_scores'])
@@ -4824,6 +5569,11 @@ class PixelPawsGUI:
                     f"(fewer sessions than folds) — filled with mean {fill_val:.3f}")
 
             # ── Optional: fit isotonic calibrator on OOF ───────────────
+            # Sweep + diagnostic use LEAVE-ONE-FOLD-OUT isotonic (each fold's
+            # OOFs are calibrated by a regressor fit on the OTHER folds) so the
+            # calibration curve and threshold search see honest probabilities.
+            # The saved production calibrator is still fit on ALL OOFs, since
+            # at predict time we legitimately have all training data available.
             prob_calibrator = None
             oof_proba_raw = oof_proba.copy()
             if self.train_use_calibration.get() and len(np.unique(y)) < 2:
@@ -4831,42 +5581,115 @@ class PixelPawsGUI:
                     "\n  ⚠️  Calibration skipped — only one class present in labels.")
             elif self.train_use_calibration.get():
                 try:
-                    from sklearn.isotonic import IsotonicRegression
-                    from sklearn.metrics import brier_score_loss
-                    brier_raw = brier_score_loss(y, oof_proba_raw)
-                    prob_calibrator = IsotonicRegression(
-                        y_min=0.0, y_max=1.0, out_of_bounds='clip')
-                    prob_calibrator.fit(oof_proba_raw, y)
-                    oof_proba = np.clip(
-                        prob_calibrator.predict(oof_proba_raw), 0.0, 1.0)
-                    brier_cal = brier_score_loss(y, oof_proba)
+                    self.log_train("")
+                    oof_proba, prob_calibrator = self._calibrate_oof_lofo(
+                        oof_proba_raw, y, fold_val_masks)
                     self.log_train(
-                        f"\n  Probability calibration (isotonic): "
-                        f"Brier {brier_raw:.4f} → {brier_cal:.4f}")
+                        "  Sweep + Calibration.png use LOFO-calibrated probs "
+                        "(honest diagnostic).")
                     self.log_train(
-                        "  Threshold sweep will run on calibrated probabilities.")
+                        "  Production calibrator (saved to pkl) fit on all OOFs.")
                 except Exception as _cal_err:
                     self.log_train(
                         f"\n  ⚠️  Calibration failed ({_cal_err}); "
                         f"continuing with raw probabilities.")
                     prob_calibrator = None
 
-            best_params = self._sweep_postprocessing(oof_proba, y)
-            
+            # Session-aware sweep (per-session bout filtering, no cross-boundary bridging)
+            # — chooses the deployed threshold/bout params. Reuses the AL tab's parallel,
+            # session-aware sweep; identical grid to the serial _sweep_postprocessing.
+            from active_learning_v2 import (_sweep_postprocessing_fast as _al_sweep_fast,
+                                            _honest_pipeline_oof_f1 as _al_honest_pipeline)
+            best_params = _al_sweep_fast(oof_proba, y, session_ids=session_ids)
+
             self.log_train(
-                f"\n  Best OOF F1:  {best_params['f1']:.4f}")
-            self.log_train(
-                f"  Threshold:    {best_params['thresh']:.2f}  "
-                f"(UI min_bout had {self.train_min_bout.get()})")
-            self.log_train(
-                f"  Min Bout:     {best_params['min_bout']} frames  "
-                f"(UI: {self.train_min_bout.get()})")
-            self.log_train(
-                f"  Min After:    {best_params['min_after_bout']} frames  "
-                f"(UI: {self.train_min_after_bout.get()})")
-            self.log_train(
-                f"  Max Gap:      {best_params['max_gap']} frames  "
-                f"(UI: {self.train_max_gap.get()})")
+                f"\n  Best OOF F1:  {best_params['f1']:.4f}  "
+                f"(optimistic — threshold+bouts tuned on the same OOF)")
+            self.log_train(f"  Threshold:    {best_params['thresh']:.2f}")
+            self.log_train(f"  Min Bout:     {best_params['min_bout']} frames")
+            self.log_train(f"  Min After:    {best_params['min_after_bout']} frames")
+            self.log_train(f"  Max Gap:      {best_params['max_gap']} frames")
+
+            # ── HONEST leak-free headline F1 (nested LOFO) ─────────────────────
+            # For each fold the operating point (threshold + bout params) is chosen on
+            # the OTHER folds and applied (session-aware) to the held-out fold, so it
+            # carries no params-on-the-test-set leakage. This is the number to compare
+            # across classifiers; the "Best OOF F1" above is optimistic.
+            honest_f1 = honest_mean = honest_std = None
+            honest_bout = None
+            honest_detail = []
+            if fold_of is not None:
+                try:
+                    honest_f1, honest_detail, honest_mean, honest_std, honest_bout = \
+                        _al_honest_pipeline(oof_proba, y, fold_of, session_ids=session_ids)
+                    _elig_note = (f" — on {len(cv_eligible_names)} eligible session(s); "
+                                  f"{len(cv_train_only)} sparse session(s) train-only, NOT evaluated"
+                                  if cv_train_only else "")
+                    self.log_train(
+                        f"\n  HONEST CV F1 (nested LOFO): {honest_f1:.4f}  "
+                        f"(per-fold {honest_mean:.3f} ± {honest_std:.3f})  "
+                        f"← leak-free headline{_elig_note}")
+                    if honest_bout is not None:
+                        self.log_train(
+                            f"  HONEST bout/event F1 (±{honest_bout['tol']} fr tol): "
+                            f"{honest_bout['f1']:.4f}  "
+                            f"(P {honest_bout['precision']:.3f} / R {honest_bout['recall']:.3f}; "
+                            f"{honest_bout['tp']} hit / {honest_bout['fp']} FP / {honest_bout['fn']} miss)")
+                except Exception as _he:
+                    self.log_train(f"\n  ⚠️  Honest nested-LOFO F1 failed ({_he}); "
+                                   f"reporting optimistic OOF only.")
+
+            # ── Average Precision (AUPRC) — THRESHOLD-FREE (A-SOiD-style MAP) ──────
+            # Computed directly on the OOF probabilities, so it needs no operating point
+            # and is immune to threshold-selection bias. A robust complement to F1.
+            oof_ap = None
+            try:
+                from sklearn.metrics import average_precision_score as _aps
+                if 0 < int(np.sum(y)) < len(y):
+                    oof_ap = float(_aps(y, oof_proba))
+                    self.log_train(
+                        f"  OOF Avg Precision (AUPRC): {oof_ap:.4f}  "
+                        f"(threshold-free; prevalence {np.mean(y)*100:.2f}%)")
+            except Exception:
+                oof_ap = None
+
+            # ── Smoothing-method comparison (DIAGNOSTIC) ──────────────────────
+            # HMM/Viterbi honest F1 vs the deployed morphological honest F1. Reported
+            # so we can see whether HMM would help; deployment stays morphological.
+            honest_hmm_f1 = None
+            if fold_of is not None and honest_f1 is not None:
+                try:
+                    from active_learning_v2 import _honest_hmm_oof_f1 as _al_hmm
+                    honest_hmm_f1 = _al_hmm(oof_proba, y, fold_of, session_ids=session_ids)
+                    if honest_hmm_f1 is not None:
+                        _win = "HMM" if honest_hmm_f1 > honest_f1 + 0.005 else "morphological"
+                        self.log_train(
+                            f"  Smoothing: morphological {honest_f1:.3f} vs "
+                            f"HMM/Viterbi {honest_hmm_f1:.3f} → {_win} wins "
+                            f"(deployed: morphological)")
+                    else:
+                        self.log_train("  Smoothing: HMM comparison skipped (set too large)")
+                except Exception:
+                    honest_hmm_f1 = None
+
+            # Push the honest headline to the training viz window (AL-style).
+            if getattr(self, 'train_viz_window', None) is not None:
+                try:
+                    _hl = (f"HONEST CV F1 {honest_f1:.3f}" if honest_f1 is not None
+                           else f"CV F1 {mean_f1:.3f}")
+                    if honest_bout is not None:
+                        _hl += f"   |   bout-F1 {honest_bout['f1']:.3f} (±{honest_bout['tol']}fr)"
+                    if oof_ap is not None:
+                        _hl += f"   |   AUPRC {oof_ap:.3f}"
+                    if honest_hmm_f1 is not None and honest_f1 is not None:
+                        _sw = "HMM" if honest_hmm_f1 > honest_f1 + 0.005 else "morphological"
+                        _hl += f"   |   smoothing: {_sw}"
+                    if cv_train_only:
+                        _hl += (f"   |   eval on {len(cv_eligible_names)} sess "
+                                f"({len(cv_train_only)} train-only)")
+                    self._safe_after(lambda t=_hl: self.train_viz_window.set_headline(t))
+                except Exception:
+                    pass
 
             # Bout-level diagnostics at best frame-F1 params
             try:
@@ -4954,8 +5777,19 @@ class PixelPawsGUI:
                 random_state=42,
             )
             
-            final_model.fit(X, y)
-            self.log_train("  ✓ Final model trained on all data")
+            # Honest-eval bout window: fit the final model on the same
+            # windowed subset the fold models saw, not the full (X, y),
+            # so the deployed model matches the CV estimate.
+            if win_mask is not None:
+                _Xf = X.iloc[win_mask] if hasattr(X, 'iloc') else X[win_mask]
+                _yf = y[win_mask]
+                final_model.fit(_Xf, _yf)
+                self.log_train(
+                    f"  ✓ Final model trained on {len(_yf)} windowed frames "
+                    f"(honest-eval mode)")
+            else:
+                final_model.fit(X, y)
+                self.log_train("  ✓ Final model trained on all data")
 
             # ── Final-model per-session F1 (in-sample sanity check) ────
             self.log_train("\nFinal model (in-sample) per-session F1:")
@@ -4981,19 +5815,31 @@ class PixelPawsGUI:
             selected_feature_cols = None  # None → use all (model.feature_names_in_)
             pre_prune_model_ref = None   # holds the full-feature model when gain pruning runs
 
-            if self.train_prune_by_gain.get():
-                top_n = self.train_prune_top_n.get()
-                self.log_train(f"\nFeature pruning: keeping top {top_n} features (gain importance)...")
+            # Feature pruning now happens ONLY via the SHAP Ladder (the standalone
+            # "prune by gain" checkbox was removed); normal training uses all features.
+            _ladder_mode = getattr(self, '_ladder_run', False)
+            if _ladder_mode:
                 try:
+                    # Rank by tree-SHAP (mean|SHAP|) — more reliable for selection than gain.
+                    ranked = self._rank_features_shap(final_model, X, win_mask)
+                    if _ladder_mode:
+                        top_n = self._run_feature_ladder(
+                            ranked, X, y, session_ids, sessions, unique_sessions,
+                            kf, actual_folds, use_spw, use_early_stop, early_stop_rounds,
+                            tree_method, win_mask, project_folder, behavior_name)
+                    else:
+                        top_n = self.train_prune_top_n.get()
+                    # gain importance kept only for the cumulative-importance log below
                     importance = pd.Series(
                         final_model.feature_importances_,
                         index=final_model.feature_names_in_
                     )
-                    top_n_actual = min(top_n, len(importance))
-                    top_cols = importance.nlargest(top_n_actual).index.tolist()
+                    top_n_actual = min(top_n, len(ranked))
+                    top_cols = ranked[:top_n_actual]
 
                     self.log_train(
-                        f"  Pruned: {len(importance)} → {len(top_cols)} features")
+                        f"\nFeature selection (tree-SHAP{', ladder' if _ladder_mode else ''}): "
+                        f"{len(ranked)} → {len(top_cols)} features")
 
                     # Log cumulative importance guidance
                     sorted_imp = importance.sort_values(ascending=False)
@@ -5021,7 +5867,12 @@ class PixelPawsGUI:
                     # Retrain on pruned feature set (same hyperparams)
                     X_pruned = X[top_cols]
                     pruned_model = xgb.XGBClassifier(**final_model.get_params())
-                    pruned_model.fit(X_pruned, y)
+                    if win_mask is not None:
+                        _Xp = (X_pruned.iloc[win_mask]
+                               if hasattr(X_pruned, 'iloc') else X_pruned[win_mask])
+                        pruned_model.fit(_Xp, y[win_mask])
+                    else:
+                        pruned_model.fit(X_pruned, y)
 
                     pre_prune_model_ref  = final_model   # save for comparison plots
                     final_model          = pruned_model
@@ -5046,7 +5897,8 @@ class PixelPawsGUI:
                     pruned_cv = self._run_cv_loop(
                         X_pruned, y, session_ids, sessions, unique_sessions,
                         kf, actual_folds, use_spw, use_early_stop,
-                        early_stop_rounds, tree_method, log=False)
+                        early_stop_rounds, tree_method, log=False,
+                        win_mask=win_mask, eligible_sessions=eligible_sessions)
 
                     if pruned_cv is None:
                         return  # cancelled
@@ -5066,30 +5918,34 @@ class PixelPawsGUI:
                     if not np.all(_poof_valid):
                         oof_proba[~_poof_valid] = np.nanmean(oof_proba)
 
-                    # Re-fit calibrator on pruned-model OOF when enabled
+                    # Re-fit calibrator on pruned-model OOF when enabled.
+                    # Uses LOFO (matches main path) so the All-features-vs-Pruned
+                    # F1 comparison the user reads in the training log isn't
+                    # biased by overfit-calibrated probabilities.
                     oof_proba_raw = oof_proba.copy()
+                    pruned_fold_val_masks = pruned_cv.get('fold_val_masks', [])
                     if self.train_use_calibration.get():
                         try:
-                            from sklearn.isotonic import IsotonicRegression
-                            prob_calibrator = IsotonicRegression(
-                                y_min=0.0, y_max=1.0, out_of_bounds='clip')
-                            prob_calibrator.fit(oof_proba_raw, y)
-                            oof_proba = np.clip(
-                                prob_calibrator.predict(oof_proba_raw), 0.0, 1.0)
-                            self.log_train(
-                                "  Re-fit calibrator on pruned-model OOF.")
+                            oof_proba, prob_calibrator = self._calibrate_oof_lofo(
+                                oof_proba_raw, y, pruned_fold_val_masks,
+                                log_label="pruned-model")
                         except Exception as _cal_err:
                             self.log_train(
                                 f"  ⚠️  Pruned-model calibration failed ({_cal_err})")
                             prob_calibrator = None
 
-                    best_params = self._sweep_postprocessing(oof_proba, y)
+                    best_params = _al_sweep_fast(oof_proba, y, session_ids=session_ids)
 
                     # Recompute final_n_est from pruned fold iterations
                     if use_early_stop and fold_best_iters:
                         final_n_est = max(100, int(np.mean(fold_best_iters) * 1.05))
                         final_model.set_params(n_estimators=final_n_est)
-                        final_model.fit(X_pruned, y)
+                        if win_mask is not None:
+                            _Xp = (X_pruned.iloc[win_mask]
+                                   if hasattr(X_pruned, 'iloc') else X_pruned[win_mask])
+                            final_model.fit(_Xp, y[win_mask])
+                        else:
+                            final_model.fit(X_pruned, y)
 
                     # Log before/after comparison
                     pruned_oof_f1 = best_params['f1']
@@ -5138,95 +5994,99 @@ class PixelPawsGUI:
                 _boundaries = np.cumsum([0] + [len(_ys) for _ys in all_y])
                 _X_for_pred = X[selected_feature_cols] if selected_feature_cols else X
 
-                # Build session_id → fold_model mapping using the CV splits that were
-                # used for the main CV (or pruned CV, whichever is current).
-                # unique_sessions is sorted; kf.split(unique_sessions) gives the index
-                # slices used during training — same seed = same splits here.
+                # Build session_id → fold_model mapping from fold_of (the actual CV
+                # fold each frame landed in). GroupKFold keeps every session's frames
+                # in a single fold, so a session's fold = the unique fold_of value over
+                # its frames. This is exact and avoids re-splitting (kf is a GroupKFold
+                # and kf.split(unique_sessions) without groups raises).
                 _sess_to_fold_model = {}
-                if fold_models:
-                    for _fi, (_tsi, _vsi) in enumerate(kf.split(unique_sessions)):
-                        for _sid in unique_sessions[_vsi]:
-                            _sess_to_fold_model[_sid] = fold_models[_fi]
+                if fold_models and fold_of is not None:
+                    for _sid in unique_sessions:
+                        _f = np.unique(fold_of[session_ids == _sid])
+                        _f = _f[_f >= 0]
+                        if len(_f) == 1 and _f[0] < len(fold_models):
+                            _sess_to_fold_model[_sid] = fold_models[int(_f[0])]
 
-                # LOVO sweep: for each held-out session use its fold model
-                lovo_fold_results = []
+                # LOVO sweep — pooled-probabilities variant.
+                # For each session, predict on that session itself using the
+                # fold model that never trained on it. Concatenate every
+                # session's held-out probabilities + labels into one pooled
+                # vector, then sweep threshold/min_bout/max_gap *once* on
+                # the pool. Pooling avoids the small-sample, class-imbalance
+                # skew that the previous per-fold-sweep-then-average pipeline
+                # suffered on rare-class behaviours (e.g. Scratching at 1.3%
+                # positive prevalence — per-fold thresholds skewed high,
+                # mean(0.85..0.95) = 0.90 collapsed recall to ~30%).
+                lovo_proba_chunks = []
+                lovo_y_chunks     = []
+                lovo_fold_summary = []
+                _fallback_used    = False
                 for k in range(len(included_sessions)):
                     lo, hi = _boundaries[k], _boundaries[k + 1]
-                    mask = np.ones(len(y), dtype=bool)
-                    mask[lo:hi] = False
-
-                    # Identify this session's ID and its held-out fold model
                     _sess_id_k = session_ids[lo] if lo < len(session_ids) else None
                     _fm = _sess_to_fold_model.get(_sess_id_k) if _sess_id_k is not None else None
-
                     if _fm is not None:
-                        # Truly held-out: fold model never trained on this session
-                        _X_mask = _X_for_pred.iloc[mask] if hasattr(_X_for_pred, 'iloc') else _X_for_pred[mask]
-                        train_proba = _fm.predict_proba(_X_mask)[:, 1]
+                        _X_holdout = (_X_for_pred.iloc[lo:hi]
+                                      if hasattr(_X_for_pred, 'iloc')
+                                      else _X_for_pred[lo:hi])
+                        sess_proba = _fm.predict_proba(_X_holdout)[:, 1]
                         _model_label = "fold model (held-out)"
                     else:
-                        # Fallback for sessions not covered by a fold (rare edge case)
-                        if not hasattr(self, '_lovo_fallback_warned'):
-                            self.log_train(
-                                "  ⚠️  No fold model found for one or more sessions — "
-                                "falling back to final model predictions for those folds.")
-                            self._lovo_fallback_warned = True
+                        _fallback_used = True
                         final_proba = final_model.predict_proba(_X_for_pred)[:, 1]
-                        train_proba = final_proba[mask]
+                        sess_proba = final_proba[lo:hi]
                         _model_label = "final model (fallback)"
 
-                    train_y = y[mask]
-                    fold_best = self._sweep_postprocessing(train_proba, train_y)
-                    lovo_fold_results.append(fold_best)
+                    sess_y = y[lo:hi]
+                    lovo_proba_chunks.append(sess_proba)
+                    lovo_y_chunks.append(sess_y)
                     sname = included_sessions[k].get('session_name', f'session_{k}')
+                    # Per-session F1 at the OOF-best params for visibility
+                    _sweep_yp = (sess_proba >= best_params['thresh']).astype(int)
+                    if not (best_params['min_bout'] == 1
+                            and best_params['min_after_bout'] == 0
+                            and best_params['max_gap'] == 0):
+                        _sweep_yp = _apply_bout_filtering(
+                            _sweep_yp.copy(), best_params['min_bout'],
+                            best_params['min_after_bout'],
+                            best_params['max_gap'])
+                    _sess_f1 = f1_score(sess_y, _sweep_yp, zero_division=0)
+                    lovo_fold_summary.append((sname, _model_label, _sess_f1,
+                                              int(sess_y.sum()), len(sess_y)))
                     self.log_train(
                         f"  Held-out {sname} [{_model_label}]: "
-                        f"thresh={fold_best['thresh']:.2f}, "
-                        f"min_bout={fold_best['min_bout']}, "
-                        f"min_after={fold_best['min_after_bout']}, "
-                        f"max_gap={fold_best['max_gap']}, "
-                        f"F1={fold_best['f1']:.3f}")
+                        f"n={len(sess_y):,}  pos={int(sess_y.sum()):,} "
+                        f"({sess_y.sum()/len(sess_y)*100:.2f}%)  "
+                        f"F1@OOF-thr={_sess_f1:.3f}")
 
-                # Average across folds
-                lovo_thresh = float(np.mean([r['thresh'] for r in lovo_fold_results]))
-                lovo_mb = int(np.median([r['min_bout'] for r in lovo_fold_results]))
-                lovo_ma = int(np.median([r['min_after_bout'] for r in lovo_fold_results]))
-                lovo_mg = int(np.median([r['max_gap'] for r in lovo_fold_results]))
+                if _fallback_used and not hasattr(self, '_lovo_fallback_warned'):
+                    self.log_train(
+                        "  ⚠️  No fold model found for one or more sessions — "
+                        "fell back to final-model predictions for those folds "
+                        "(see 'fallback' tag above).")
+                    self._lovo_fallback_warned = True
 
-                # Evaluate averaged params on all data using final model (in-sample
-                # sanity check only — not used for generalization estimate).
-                _final_proba_all = final_model.predict_proba(_X_for_pred)[:, 1]
-                y_raw_all = (_final_proba_all >= lovo_thresh).astype(int)
-                y_filt_all = _apply_bout_filtering(
-                    y_raw_all.copy(), lovo_mb, lovo_ma, lovo_mg)
-                lovo_f1 = f1_score(y, y_filt_all, zero_division=0)
+                lovo_proba_pool = np.concatenate(lovo_proba_chunks)
+                lovo_y_pool     = np.concatenate(lovo_y_chunks)
+                lovo_best = _al_sweep_fast(lovo_proba_pool, lovo_y_pool)
 
-                self.log_train(f"\n  LOVO averaged params:")
-                self.log_train(f"    Threshold:    {lovo_thresh:.2f}")
-                self.log_train(f"    Min Bout:     {lovo_mb}")
-                self.log_train(f"    Min After:    {lovo_ma}")
-                self.log_train(f"    Max Gap:      {lovo_mg}")
-                self.log_train(f"    F1 (all):     {lovo_f1:.3f}")
+                self.log_train(f"\n  Pooled-LOVO sweep (n={len(lovo_y_pool):,} "
+                               f"held-out frames, pos={int(lovo_y_pool.sum()):,}):")
+                self.log_train(f"    Threshold:    {lovo_best['thresh']:.2f}")
+                self.log_train(f"    Min Bout:     {lovo_best['min_bout']}")
+                self.log_train(f"    Min After:    {lovo_best['min_after_bout']}")
+                self.log_train(f"    Max Gap:      {lovo_best['max_gap']}")
+                self.log_train(f"    F1 (pool):    {lovo_best['f1']:.3f}")
 
-                # Compare with OOF params
-                self.log_train(f"\n  OOF params:  thresh={best_params['thresh']:.2f}, "
-                               f"F1={best_params['f1']:.3f}")
-                self.log_train(f"  LOVO params: thresh={lovo_thresh:.2f}, "
-                               f"F1={lovo_f1:.3f}")
-
-                # Use LOVO params (they reflect the actual deployed model's behavior)
-                best_params = {
-                    'thresh': float(round(lovo_thresh, 2)),
-                    'min_bout': lovo_mb,
-                    'min_after_bout': lovo_ma,
-                    'max_gap': lovo_mg,
-                    'f1': lovo_f1,
-                }
-                self.log_train("  → Using LOVO params for classifier save")
-                self.log_train(
-                    "    LOVO F1 reflects fold-model performance on held-out sessions.\n"
-                    "    OOF F1 is the session-level cross-validated generalization estimate.\n"
-                    "    In-sample F1 (final model on all data) will be higher than both.")
+                # Compare with the (session-aware) OOF params — DIAGNOSTIC ONLY.
+                self.log_train(f"\n  Deployed (session-aware OOF) params: "
+                               f"thresh={best_params['thresh']:.2f}, F1={best_params['f1']:.3f}")
+                self.log_train(f"  Pooled-LOVO params (diagnostic): "
+                               f"thresh={lovo_best['thresh']:.2f}, F1={lovo_best['f1']:.3f}")
+                # NOTE: the deployed params now come from the session-aware OOF sweep
+                # (step above); the honest headline is the nested-LOFO F1. The Pooled-LOVO
+                # sweep is kept as a cross-reference diagnostic and no longer overwrites
+                # the deployed best_params.
             else:
                 if opt_strategy == 'oof':
                     self.log_train("  → OOF-only strategy selected — skipping LOVO sweep")
@@ -5239,12 +6099,21 @@ class PixelPawsGUI:
             self.log_train("SAVING CLASSIFIER")
             self.log_train("=" * 60)
             
-            classifier_folder = os.path.join(project_folder, 'classifiers')
+            # Timestamp + per-run folder: every training run gets its own
+            # subfolder under classifiers/ so plots & training data from
+            # earlier runs aren't clobbered.
+            from datetime import datetime as _dt_now
+            _run_ts = _dt_now.now().strftime('%Y%m%d_%H%M%S')
+            _run_folder_name = f'PixelPaws_{behavior_name}_{_run_ts}'
+
+            classifiers_root  = os.path.join(project_folder, 'classifiers')
+            classifier_folder = os.path.join(classifiers_root, _run_folder_name)
             plots_folder      = os.path.join(classifier_folder, 'plots')
             train_data_folder = os.path.join(classifier_folder, 'training_data')
-            os.makedirs(classifier_folder,  exist_ok=True)
-            os.makedirs(plots_folder,       exist_ok=True)
-            os.makedirs(train_data_folder,  exist_ok=True)
+            os.makedirs(classifiers_root, exist_ok=True)
+            os.makedirs(classifier_folder, exist_ok=True)
+            os.makedirs(plots_folder,      exist_ok=True)
+            os.makedirs(train_data_folder, exist_ok=True)
 
             classifier_data = {
                 # Core model
@@ -5273,6 +6142,24 @@ class PixelPawsGUI:
                 'mean_cv_f1':         mean_f1,
                 'std_cv_f1':          std_f1,
                 'oof_best_f1':        best_params['f1'],
+                # Honest, leak-free headline (nested LOFO; None if it couldn't run):
+                'honest_cv_f1':       honest_f1,
+                'honest_cv_mean':     honest_mean,
+                'honest_cv_std':      honest_std,
+                'honest_cv_per_fold': [d['f1'] for d in honest_detail],
+                # CV eligibility audit: which sessions were evaluated vs training-only.
+                'cv_eligible_sessions':  cv_eligible_names,
+                'cv_train_only_sessions': cv_train_only,
+                # Honest event/bout-level F1 (temporal-tolerance matching):
+                'honest_bout_f1':     (honest_bout['f1'] if honest_bout else None),
+                'honest_bout_tol':    (honest_bout['tol'] if honest_bout else None),
+                # Threshold-free Average Precision (AUPRC, A-SOiD-style MAP):
+                'oof_ap':             oof_ap,
+                # HMM/Viterbi smoothing comparison (diagnostic) + deployed method:
+                'honest_hmm_f1':      honest_hmm_f1,
+                'smoothing_method':   'morphological',
+                # SHAP feature-ladder result (None unless the ladder ran):
+                'ladder_table':       getattr(self, '_last_ladder_table', None),
                 'final_n_estimators': final_n_est,
                 'scale_pos_weight':   final_spw,
                 'optuna_best_params': optuna_best_hp,
@@ -5297,23 +6184,70 @@ class PixelPawsGUI:
                 'use_lag_features':   self.train_use_lag_features.get(),
                 'use_contact_features': self.train_use_contact_features.get(),
                 'contact_threshold':  self.train_contact_threshold.get(),
+                # Multi-timescale rolling-stat config (lean variant)
+                'use_multiscale_features': bool(self.train_use_multiscale.get()),
+                'multiscale_fps': float(_multiscale_fps_median or 60.0),
+                'multiscale_windows_ms': [100, 700],
+                'multiscale_stats':      ['std', 'max'],
+                # Frame-rate + calibration provenance (added 2026-05-07).
+                # Surfaces cross-rig / cross-fps mismatches at predict time.
+                'training_process_fps':     self._collect_training_process_fps(),
+                'training_calibration_mode': self._collect_training_calibration_mode(),
+                'training_mm_per_pixel':     self._collect_training_mm_per_pixel(),
+                # Feature-schema version stamps — used by check_classifier_portability
+                # at load time to warn about version drift between training and predict.
+                'pose_feature_version':       int(POSE_FEATURE_VERSION),
+                'brightness_feature_version': int(BRIGHTNESS_FEATURE_VERSION),
+                # Reproducibility provenance — git SHA + key library versions stamped
+                # into the pkl itself so the sidecar JSON can drift without losing
+                # this information. `+dirty` suffix means uncommitted edits at train
+                # time. Self-contained — no companion file needed to recover provenance.
+                **self._collect_provenance_meta(),
             }
             
-            # Timestamp suffix — shared across pkl + sibling pkl + sidecar JSON
-            # so a single training run's outputs are grouped by timestamp.
-            from datetime import datetime as _dt_now
-            _run_ts = _dt_now.now().strftime('%Y%m%d_%H%M%S')
-
-            if selected_feature_cols:
+            # ── Per-model subfolder routing when pruning is active ────────
+            # The pruned classifier and the all-features sibling each get
+            # their own subtree (pkl + plots/ + training_data/) so the two
+            # models' artifacts stay cleanly separated. When pruning is off,
+            # everything falls back to the flat run-folder layout.
+            pruning_active = bool(selected_feature_cols)
+            if pruning_active:
                 n_feats = len(selected_feature_cols)
-                clf_filename = f'PixelPaws_{behavior_name}_pruned_{n_feats}_{_run_ts}.pkl'
+                pruned_folder       = os.path.join(classifier_folder, f'pruned_{n_feats}')
+                all_features_folder = os.path.join(classifier_folder, 'all_features')
+                main_plots_folder   = os.path.join(pruned_folder,       'plots')
+                main_train_folder   = os.path.join(pruned_folder,       'training_data')
+                af_plots_folder     = os.path.join(all_features_folder, 'plots')
+                af_train_folder     = os.path.join(all_features_folder, 'training_data')
+                for _p in (pruned_folder, all_features_folder,
+                           main_plots_folder, main_train_folder,
+                           af_plots_folder, af_train_folder):
+                    os.makedirs(_p, exist_ok=True)
+                pruned_pkl_dir = pruned_folder
+                clf_filename   = f'PixelPaws_{behavior_name}_pruned_{n_feats}_{_run_ts}.pkl'
             else:
-                clf_filename = f'PixelPaws_{behavior_name}_{_run_ts}.pkl'
-            classifier_path = os.path.join(classifier_folder, clf_filename)
+                main_plots_folder = plots_folder
+                main_train_folder = train_data_folder
+                af_plots_folder   = None
+                af_train_folder   = None
+                pruned_pkl_dir    = classifier_folder
+                clf_filename      = f'PixelPaws_{behavior_name}_{_run_ts}.pkl'
+            classifier_path = os.path.join(pruned_pkl_dir, clf_filename)
 
             _atomic_pickle_save(classifier_data, classifier_path)
 
             self.log_train(f"\n  ✓ Classifier saved: {classifier_path}")
+            if honest_f1 is not None:
+                self.log_train(
+                    f"  Headline HONEST CV F1 = {honest_f1:.3f} "
+                    f"(leak-free nested LOFO; optimistic OOF best was {best_params['f1']:.3f}).")
+
+            # ── Optional ONNX sibling for cross-platform sharing ──────
+            # `<classifier>.onnx` lets the model load in MATLAB / R /
+            # Napari / a Python without the matching xgboost version.
+            # Silently skipped when onnxmltools isn't installed.
+            self._maybe_export_onnx(final_model, classifier_path,
+                                     selected_feature_cols, X)
 
             # ── JSON reproducibility sidecar ───────────────────────────────
             try:
@@ -5345,22 +6279,57 @@ class PixelPawsGUI:
                 pre_prune_data['clf_model']             = pre_prune_model_ref
                 pre_prune_data['selected_feature_cols'] = None   # uses all features
                 pre_prune_path = os.path.join(
-                    classifier_folder,
+                    all_features_folder if pruning_active else classifier_folder,
                     f'PixelPaws_{behavior_name}_AllFeatures_{_run_ts}.pkl')
                 _atomic_pickle_save(pre_prune_data, pre_prune_path)
                 self.log_train(f"  ✓ Full-feature classifier saved: {pre_prune_path}")
 
-            # Training data backup
+                # ONNX sibling for the all-features model too
+                self._maybe_export_onnx(pre_prune_model_ref, pre_prune_path,
+                                         None, X)
+
+                # Matching sidecar for the all-features pkl so its subfolder
+                # is fully self-contained.
+                try:
+                    pp_sidecar_path = os.path.splitext(pre_prune_path)[0] + '.json'
+                    self._write_training_sidecar(
+                        pp_sidecar_path, pre_prune_data, pre_prune_path,
+                        run_ts=_run_ts, profile_label=_preset_name,
+                        optuna_best_hp=optuna_best_hp, optuna_best_ap=optuna_best_ap,
+                        oof_best_params=oof_best_params, lovo_best_params=best_params,
+                        final_spw=final_spw, behavior_name=behavior_name, y=y,
+                    )
+                    self.log_train(
+                        f"  ✓ All-features sidecar saved: "
+                        f"{os.path.basename(pp_sidecar_path)}")
+                except Exception as _pp_json_err:
+                    self.log_train(
+                        f"  ⚠️  Could not write all-features sidecar: {_pp_json_err}")
+
+            # Training data backup — pruned feature columns
             train_set_path = os.path.join(
-                train_data_folder, f'{behavior_name}_train_set.pkl')
+                main_train_folder, f'{behavior_name}_train_set.pkl')
             _X_save = X[selected_feature_cols] if selected_feature_cols else X
             _atomic_pickle_save({'X': _X_save, 'y': y}, train_set_path)
             self.log_train(f"  ✓ Training set saved: {train_set_path}")
-            
-            # SHAP plots — always generated
+
+            # When pruning, also back up the full-feature training set in
+            # the all_features subfolder so that subtree can reproduce the
+            # all-features model independently.
+            if pruning_active and af_train_folder is not None:
+                af_train_path = os.path.join(
+                    af_train_folder, f'{behavior_name}_train_set.pkl')
+                _atomic_pickle_save({'X': X, 'y': y}, af_train_path)
+                self.log_train(f"  ✓ All-features training set saved: {af_train_path}")
+
+            # SHAP plots — pruned model into main_plots_folder, all-features
+            # model into af_plots_folder (so each subfolder has its own).
             self.log_train("\nGenerating SHAP importance plots...")
-            _shap_ok = self._generate_shap_plots(final_model, X, plots_folder, behavior_name,
-                                                  pre_prune_model=pre_prune_model_ref)
+            _shap_ok = self._generate_shap_plots(
+                final_model, X, main_plots_folder, behavior_name,
+                pre_prune_model=pre_prune_model_ref,
+                pre_prune_output_folder=(
+                    af_plots_folder if pruning_active else main_plots_folder))
             if _shap_ok:
                 self.log_train(f"  Saved plot → {behavior_name}_shap_importance.png")
                 self.log_train("  ✓ SHAP plots saved")
@@ -5369,32 +6338,54 @@ class PixelPawsGUI:
             if self.train_generate_plots.get():
                 self.log_train("\nGenerating performance plots...")
                 self.generate_performance_plots(
-                    final_model, X, y, plots_folder, behavior_name,
+                    final_model, X, y, main_plots_folder, behavior_name,
                     oof_proba=oof_proba, oof_best_params=best_params,
                     pre_prune_model=pre_prune_model_ref)
                 self.log_train(f"  Saved plot → {behavior_name}_performance.png")
                 self._generate_raster_plots(
                     y, oof_proba, included_sessions,
                     [len(y_s) for y_s in all_y],
-                    best_params, behavior_name, plots_folder)
+                    best_params, behavior_name, main_plots_folder)
                 self.log_train(f"  Saved plot → {behavior_name}_raster.png")
                 self._generate_oof_per_video_bar(
                     y, oof_proba, included_sessions,
                     [len(y_s) for y_s in all_y],
-                    oof_best_params, behavior_name, plots_folder)
+                    oof_best_params, behavior_name, main_plots_folder)
                 self.log_train(f"  Saved plot → {behavior_name}_oof_per_video.png")
                 self._generate_oof_per_video_bout_bar(
                     y, oof_proba, included_sessions,
                     [len(y_s) for y_s in all_y],
-                    oof_best_params, behavior_name, plots_folder)
+                    oof_best_params, behavior_name, main_plots_folder)
                 self.log_train(f"  Saved plot → {behavior_name}_oof_bout_bar.png")
                 self._generate_training_summary(
                     y, oof_proba, fold_f1_scores, best_params,
                     included_sessions, [len(y_s) for y_s in all_y],
-                    behavior_name, plots_folder, final_model, X,
+                    behavior_name, main_plots_folder, final_model, X,
                     learning_curve_results=lc_results)
                 self.log_train(f"  Saved plot → {behavior_name}_training_summary.png")
-                self.log_train(f"  Plots saved to: {plots_folder}")
+
+                # Paper-style standalone learning curve (only when the
+                # learning-curve diagnostic was enabled — otherwise no
+                # fraction/F1 data exists).
+                if lc_results and self.train_learning_curve.get():
+                    self._generate_learning_curve_plot(
+                        lc_results, int(np.sum(y)),
+                        behavior_name, main_plots_folder)
+                    self.log_train(f"  Saved plot → {behavior_name}_LearningCurve.png")
+
+                # Duplicate the cross-model comparison plots into the
+                # all_features subfolder so it's fully self-contained.
+                if pruning_active and af_plots_folder is not None:
+                    import shutil
+                    for _fname in (
+                            f'PixelPaws_{behavior_name}_PerformanceThreshold.png',
+                            f'PixelPaws_{behavior_name}_ThresholdCurve.png'):
+                        _src = os.path.join(main_plots_folder, _fname)
+                        if os.path.isfile(_src):
+                            shutil.copyfile(
+                                _src, os.path.join(af_plots_folder, _fname))
+
+                self.log_train(f"  Plots saved to: {main_plots_folder}")
                 self.log_train("  ✓ Performance plots saved")
             else:
                 self.log_train("\n  (Performance plots skipped — 'Generate plots' is unchecked)")
@@ -5582,6 +6573,16 @@ class PixelPawsGUI:
                 'prune_by_gain': self.train_prune_by_gain.get(),
                 'prune_top_n':   self.train_prune_top_n.get(),
                 'trim_to_last_positive': self.train_trim_to_last_positive.get(),
+                'trim_to_first_positive': self.train_trim_to_first_positive.get(),
+                'min_label_bout': int(self.train_min_label_bout.get()),
+                'max_label_bout': int(self.train_max_label_bout.get()),
+                'cv_eligibility_mode': self.train_cv_eligibility_mode.get(),
+                'min_cv_pos_bouts': int(self.train_min_cv_pos_bouts.get()),
+                'min_cv_pos_frames': int(self.train_min_cv_pos_frames.get()),
+                'bout_window_only': self.train_bout_window_only.get(),
+                'bout_window_frames': int(self.train_bout_window_frames.get()),
+                'bout_window_honest_eval': self.train_bout_window_honest_eval.get(),
+                'use_multiscale_features': bool(self.train_use_multiscale.get()),
                 'use_optuna': self.train_use_optuna.get(),
                 'optuna_trials': self.train_optuna_trials.get(),
                 'use_lag_features': self.train_use_lag_features.get(),
@@ -5679,6 +6680,31 @@ class PixelPawsGUI:
                 self.train_prune_top_n.set(config['shap_top_n'])
             if 'trim_to_last_positive' in config:
                 self.train_trim_to_last_positive.set(config['trim_to_last_positive'])
+            if 'trim_to_first_positive' in config:
+                self.train_trim_to_first_positive.set(config['trim_to_first_positive'])
+            if 'min_label_bout' in config:
+                self.train_min_label_bout.set(int(config.get('min_label_bout') or 0))
+            if 'max_label_bout' in config:
+                self.train_max_label_bout.set(int(config.get('max_label_bout') or 0))
+            if 'cv_eligibility_mode' in config:
+                self.train_cv_eligibility_mode.set(config.get('cv_eligibility_mode') or 'auto')
+            if 'min_cv_pos_bouts' in config:
+                self.train_min_cv_pos_bouts.set(int(config.get('min_cv_pos_bouts') or 0))
+            if 'min_cv_pos_frames' in config:
+                self.train_min_cv_pos_frames.set(int(config.get('min_cv_pos_frames') or 0))
+            if 'bout_window_only' in config:
+                self.train_bout_window_only.set(config['bout_window_only'])
+            if 'bout_window_frames' in config:
+                self.train_bout_window_frames.set(config['bout_window_frames'])
+            if 'bout_window_honest_eval' in config:
+                self.train_bout_window_honest_eval.set(config['bout_window_honest_eval'])
+            if 'use_multiscale_features' in config:
+                self.train_use_multiscale.set(bool(config['use_multiscale_features']))
+                # Sync the corr-filter widget state with the just-loaded value
+                try:
+                    self._on_multiscale_toggle()
+                except Exception:
+                    pass
             if 'use_optuna' in config:
                 self.train_use_optuna.set(config['use_optuna'])
             if 'optuna_trials' in config:
@@ -5731,6 +6757,128 @@ class PixelPawsGUI:
         }
         return hashlib.md5(repr(key_dict).encode('utf-8')).hexdigest()[:8]
 
+    def _apply_feature_cfg_to_ui(self, cfg):
+        """Push a feature-config dict into the Feature Configuration UI vars."""
+        try:
+            self.train_bp_pixbrt.set(', '.join(cfg.get('bp_pixbrt_list') or []))
+            self.train_square_sizes.set(', '.join(str(int(s)) for s in (cfg.get('square_size') or [])))
+            self.train_pix_threshold.set(float(cfg.get('pix_threshold', 0.3)))
+            self.train_include_optical_flow.set(bool(cfg.get('include_optical_flow', False)))
+            self.train_bp_optflow.set(', '.join(cfg.get('bp_optflow_list') or []))
+        except Exception:
+            pass
+
+    def _match_config_to_cache(self):
+        """Find the feature config that PRODUCED the project's existing feature cache(s)
+        and apply it to the Feature Configuration UI, so training reuses the cache instead
+        of re-extracting. The cache hash is one-way, so we recompute the hash for a set of
+        candidate configs (canonical default + current UI + configs stored in this project's
+        classifier pkls) and apply whichever reproduces the dominant cache hash."""
+        try:
+            self._match_config_to_cache_impl()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror(
+                "Match failed",
+                f"Couldn't match the feature config to the cache:\n\n{e}\n\n"
+                f"Tip: tick 'Use any available feature cache as-is' in Feature Configuration "
+                f"to skip hash-matching entirely and just use the existing caches.")
+
+    def _match_config_to_cache_impl(self):
+        import glob, collections
+        folder = (self.train_project_folder.get() or self.current_project_folder.get() or '').strip()
+        if not folder or not os.path.isdir(folder):
+            messagebox.showwarning("No project", "Select a project folder first.")
+            return
+        # Only consider caches for LABELED sessions (the data we'll actually train on).
+        labeled_names = set()
+        try:
+            from evaluation_tab import find_session_triplets
+            for s in find_session_triplets(folder, require_labels=True, recursive=True):
+                nm = s.get('session_name') or os.path.splitext(
+                    os.path.basename(s.get('video', '') or s.get('video_path', '')))[0]
+                if nm:
+                    labeled_names.add(nm)
+        except Exception:
+            labeled_names = set()
+
+        # 1. dominant cache hash among the project's feature caches (labeled sessions only)
+        cnt = collections.Counter()
+        for p in glob.glob(os.path.join(folder, '**', '*_features_*.pkl'), recursive=True):
+            try:
+                base = os.path.basename(p)
+                sess, h = base.rsplit('_features_', 1)
+                h = h[:-4]
+                if len(h) < 6:
+                    continue
+                # If we know the labeled sessions, restrict to their caches.
+                if labeled_names and sess not in labeled_names:
+                    continue
+                cnt[h] += 1
+            except Exception:
+                pass
+        if not cnt:
+            messagebox.showinfo(
+                "No caches",
+                "No feature caches (*_features_<hash>.pkl) found for LABELED sessions in this project."
+                + ("" if labeled_names else "\n(Could not determine labeled sessions; no caches found at all.)"))
+            return
+        target, target_count = cnt.most_common(1)[0]
+
+        # 2. candidate configs to try
+        candidates = []
+        candidates.append(('canonical default', {
+            'bp_include_list': None, 'bp_pixbrt_list': ['hrpaw', 'hlpaw', 'snout'],
+            'square_size': [40, 40, 40], 'pix_threshold': 0.3,
+            'include_optical_flow': True, 'bp_optflow_list': ['hrpaw', 'hlpaw', 'snout'],
+        }))
+        candidates.append(('current UI', {
+            'bp_include_list': None,
+            'bp_pixbrt_list': [x.strip() for x in self.train_bp_pixbrt.get().split(',') if x.strip()],
+            'square_size': [int(x) for x in self.train_square_sizes.get().split(',') if x.strip()],
+            'pix_threshold': self.train_pix_threshold.get(),
+            'include_optical_flow': self.train_include_optical_flow.get(),
+            'bp_optflow_list': [x.strip() for x in self.train_bp_optflow.get().split(',') if x.strip()],
+        }))
+        # configs stored inside this project's classifier pkls
+        try:
+            from active_learning_v2 import _robust_unpickle
+            for clf in glob.glob(os.path.join(folder, '**', 'classifiers', '**', '*.pkl'), recursive=True)[:60]:
+                try:
+                    d = _robust_unpickle(clf)
+                    if isinstance(d, dict) and d.get('bp_pixbrt_list') is not None:
+                        candidates.append((os.path.basename(clf), {
+                            'bp_include_list': d.get('bp_include_list'),
+                            'bp_pixbrt_list': list(d.get('bp_pixbrt_list') or []),
+                            'square_size': list(d.get('square_size') or []),
+                            'pix_threshold': float(d.get('pix_threshold', 0.3)),
+                            'include_optical_flow': bool(d.get('include_optical_flow', False)),
+                            'bp_optflow_list': list(d.get('bp_optflow_list') or []),
+                        }))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 3. apply the first candidate whose hash reproduces the cache hash
+        for name, cfg in candidates:
+            if PixelPawsGUI._feature_hash_key(cfg) == target:
+                self._apply_feature_cfg_to_ui(cfg)
+                messagebox.showinfo(
+                    "Matched cache",
+                    f"Feature Configuration set to match the existing cache.\n\n"
+                    f"Cache hash: {target}  ({target_count} file(s))\n"
+                    f"Source: {name}\n\n"
+                    f"Training will now REUSE the cached features instead of re-extracting.")
+                return
+        messagebox.showwarning(
+            "No match found",
+            f"Found {target_count} cache file(s) with hash {target}, but none of the candidate "
+            f"configs (canonical default, current UI, this project's classifiers) reproduce it.\n\n"
+            f"The cache may have been built with feature settings not recorded here, or with a "
+            f"different pose-feature version / mm-per-pixel scaling.")
+
     def extract_features_for_session(self, session, cfg, cache_root, behavior_name):
         """
         Extract features for a single session with smart caching.
@@ -5738,17 +6886,46 @@ class PixelPawsGUI:
         Features are cached independently of behavior labels, so the same
         feature extraction can be reused for training multiple behaviors.
         """
-        cfg_hash = PixelPawsGUI._feature_hash_key(cfg)
+        # Per-session calibration: when project mode is 'auto' the
+        # effective mm_per_pixel varies per video. Bake the value into
+        # the hash input (without mutating shared cfg) so px-scaled
+        # caches and mm-scaled caches don't collide.
+        try:
+            from project_config import ProjectConfig as _PC
+            _proj_cfg = _PC.load(self.current_project_folder.get())
+            _mm_for_hash = _proj_cfg.resolve_mm_per_pixel(session)
+        except Exception:
+            _mm_for_hash = None
+        cfg_for_hash = dict(cfg)
+        if _mm_for_hash is not None:
+            cfg_for_hash['mm_per_pixel'] = float(_mm_for_hash)
+        cfg_hash = PixelPawsGUI._feature_hash_key(cfg_for_hash)
 
         # Feature cache file (behavior-independent)
         cache_filename = f"{session['session_name']}_features_{cfg_hash}.pkl"
         feature_cache_file = os.path.join(cache_root, cache_filename)
         self.log_train(f"  [Cache] Hash: {cfg_hash}  File: {cache_filename}")
+        used_any_cache = False   # True → loaded an existing cache regardless of config hash
 
         # Search alternative directories for cache files.
         if not os.path.isfile(feature_cache_file):
             video_dir = os.path.dirname(session.get('video_path', ''))
-            if FEATURE_CACHE_AVAILABLE:
+            # Escape hatch: "Use any available feature cache as-is" — load whatever cache
+            # exists for this session (newest, any hash) instead of re-extracting. Skips
+            # the post-cache augmentation below so the cache's stored columns are used
+            # verbatim (matches how the AL warm-start consumes the 8aed1c22 caches).
+            if (getattr(self, 'train_use_any_cache', None) is not None
+                    and self.train_use_any_cache.get() and FEATURE_CACHE_AVAILABLE):
+                _any = FeatureCacheManager.find_any_cache(
+                    session['session_name'], cache_root, video_dir, project_root=cache_root)
+                if _any:
+                    self.log_train(f"  [Cache] Using available cache AS-IS (hash differs): "
+                                   f"{os.path.basename(_any)}")
+                    feature_cache_file = _any
+                    used_any_cache = True
+            if used_any_cache:
+                pass   # already resolved to an existing cache; skip hash-matching
+            elif FEATURE_CACHE_AVAILABLE:
                 found = FeatureCacheManager.find_cache(
                     session['session_name'], cfg_hash, cache_root, video_dir,
                     project_root=cache_root)
@@ -5822,8 +6999,15 @@ class PixelPawsGUI:
         # Extract or load features (behavior-independent)
         if os.path.isfile(feature_cache_file):
             self.log_train(f"  [Cache] Loading features for {session['session_name']}")
-            with open(feature_cache_file, 'rb') as f:
-                X_full = pickle.load(f)
+            # Robust load: canonical 8aed1c22 caches are joblib+LZ4, not plain pickle —
+            # plain pickle.load raises "invalid load key, '\\x04'". _robust_unpickle
+            # (shared with the AL tab) handles both joblib+LZ4 and plain pickle.
+            try:
+                from active_learning_v2 import _robust_unpickle
+                X_full = _robust_unpickle(feature_cache_file)
+            except Exception:
+                with open(feature_cache_file, 'rb') as f:
+                    X_full = pickle.load(f)
         else:
             # Extract features (only done once per video+config, reused for all behaviors)
             self.log_train(f"  [Extract] Extracting features for {session['session_name']}")
@@ -5831,6 +7015,18 @@ class PixelPawsGUI:
             # Get config path if user specified one
             config_yaml = self.train_dlc_config.get() if self.train_dlc_config.get() else None
             
+            # Resolve mm_per_pixel for this session given project's
+            # calibration_mode. None disables calibration scaling
+            # (legacy pixel behaviour); a value scales coords to mm at
+            # the entry point of pose_features so every distance-like
+            # feature comes out in physical units.
+            try:
+                from project_config import ProjectConfig as _PC
+                _proj_cfg = _PC.load(self.current_project_folder.get())
+                _mm_px = _proj_cfg.resolve_mm_per_pixel(session)
+            except Exception:
+                _mm_px = None
+
             X_full = PixelPaws_ExtractFeatures(
                 pose_data_file=session['pose_path'],
                 video_file_path=session['video_path'],
@@ -5842,6 +7038,7 @@ class PixelPawsGUI:
                 include_optical_flow=cfg.get('include_optical_flow', False),
                 bp_optflow_list=cfg.get('bp_optflow_list', []) or None,
                 cancel_flag=self._feature_cancel_flag,
+                mm_per_pixel=_mm_px,
             )
             X_full = X_full.reset_index(drop=True)
             
@@ -5855,11 +7052,21 @@ class PixelPawsGUI:
             _atomic_pickle_save(X_full, feature_cache_file)
             self.log_train(f"    ✓ Cached features to {feature_cache_file}")
         
+        # Resolve calibration once for the post-cache extractors below.
+        try:
+            from project_config import ProjectConfig as _PC
+            _proj_cfg = _PC.load(self.current_project_folder.get())
+            _mm_px_post = _proj_cfg.resolve_mm_per_pixel(session)
+        except Exception:
+            _mm_px_post = None
+
         # Egocentric features (computed post-cache from DLC coordinates)
-        if self.train_use_egocentric.get():
+        if self.train_use_egocentric.get() and not used_any_cache and \
+                not any(str(c).startswith('Ego_') for c in X_full.columns):
             from pose_features import PoseFeatureExtractor
             _ego_ext = PoseFeatureExtractor(
-                bodyparts=cfg.get('bp_include_list') or [])
+                bodyparts=cfg.get('bp_include_list') or [],
+                mm_per_pixel=_mm_px_post)
             _ego_dlc = _ego_ext.load_dlc_data(session['pose_path'])
             _ego_xc, _ego_yc, _ = _ego_ext.get_bodypart_coords(_ego_dlc)
             _ego_x, _ego_y = _ego_ext.normalize_egocentric(_ego_xc, _ego_yc)
@@ -5874,12 +7081,13 @@ class PixelPawsGUI:
             self.log_train(f"    + {len(_ego_df.columns)} egocentric features")
 
         # Contact state features (derived post-cache from existing _Height columns)
-        if self.train_use_contact_features.get():
+        if self.train_use_contact_features.get() and not used_any_cache:
             _height_cols = [c for c in X_full.columns if c.endswith('_Height')]
             if _height_cols and not any(c.endswith('_ContactState') for c in X_full.columns):
                 from pose_features import PoseFeatureExtractor
                 _ct_ext = PoseFeatureExtractor(bodyparts=[],
-                    contact_threshold=self.train_contact_threshold.get())
+                    contact_threshold=self.train_contact_threshold.get(),
+                    mm_per_pixel=_mm_px_post)
                 _ct_df = _ct_ext.calculate_contact_features(X_full)
                 if not _ct_df.empty:
                     _ct_df = _ct_df.iloc[:len(X_full)].reset_index(drop=True)
@@ -5953,6 +7161,19 @@ class PixelPawsGUI:
         X = X_full.iloc[:n].copy()
         y = y_full[:n]
 
+        # Trim leading frames before the first positive event
+        if cfg.get('trim_to_first_positive', False):
+            positive_indices = np.where(y == 1)[0]
+            if len(positive_indices) > 0:
+                trim_from = int(positive_indices[0])
+                if trim_from > 0:
+                    self.log_train(
+                        f"    Trimmed {trim_from} leading frame(s) before first positive "
+                        f"\u2192 {len(y) - trim_from} frames used")
+                    X = X.iloc[trim_from:].reset_index(drop=True)
+                    y = y[trim_from:]
+            # (if no positives found, no trim — training fails later with a clear error)
+
         # Trim trailing frames after the last positive event
         if cfg.get('trim_to_last_positive', False):
             positive_indices = np.where(y == 1)[0]
@@ -5967,6 +7188,23 @@ class PixelPawsGUI:
                     y = y[:trim_at]
             # (if no positives found, no trim — training fails later with a clear error)
 
+        # Label-bout-length filter: drop accidentally short / implausibly long labeled
+        # positive bouts (→ -1, in-memory only — the CSV is never modified).
+        _min_lb = int(cfg.get('min_label_bout', 0) or 0)
+        _max_lb = int(cfg.get('max_label_bout', 0) or 0)
+        if _min_lb > 0 or _max_lb > 0:
+            from active_learning_v2 import exclude_bouts_by_length
+            y, _nb, _nf = exclude_bouts_by_length(y, _min_lb, _max_lb)
+            if _nb > 0:
+                _bounds = []
+                if _min_lb > 0:
+                    _bounds.append(f"<{_min_lb}")
+                if _max_lb > 0:
+                    _bounds.append(f">{_max_lb}")
+                self.log_train(
+                    f"    Excluded {_nb} labeled bout(s) ({' or '.join(_bounds)} fr) "
+                    f"→ {_nf} frame(s) set unobserved")
+
         # Filter unlabeled frames (value = -1 means the user never reviewed this frame)
         labeled_mask = (y != -1)
         n_unlabeled = int((~labeled_mask).sum())
@@ -5977,8 +7215,202 @@ class PixelPawsGUI:
             X = X.iloc[labeled_mask].reset_index(drop=True)
             y = y[labeled_mask]
 
+        # Bout-window subsampling: keep only frames within ±N of a positive
+        # frame.  Designed for sparse-event classes (flinching) where the
+        # vast majority of quiet frames are redundant easy negatives. Uses
+        # a 1-D binary dilation of the positive mask to build the keep-set.
+        # Skipped when honest eval is enabled — in that mode the windowing
+        # is applied inside the CV loop for training only, and full-session
+        # (X, y) flows through for evaluation.
+        if (cfg.get('bout_window_only', False)
+                and not cfg.get('bout_window_honest_eval', False)):
+            window = int(cfg.get('bout_window_frames', 60))
+            if window > 0 and len(y) > 0 and (y == 1).any():
+                from scipy.ndimage import binary_dilation
+                keep_mask = binary_dilation(
+                    y == 1, iterations=window).astype(bool)
+                n_kept = int(keep_mask.sum())
+                n_dropped = int(len(y) - n_kept)
+                if n_dropped > 0:
+                    pos_rate = float(y[keep_mask].mean()) if n_kept else 0.0
+                    self.log_train(
+                        f"    Bout-window subsampling (±{window} frames): "
+                        f"kept {n_kept} / dropped {n_dropped} → "
+                        f"positive rate {pos_rate:.3%}")
+                    X = X.iloc[keep_mask].reset_index(drop=True)
+                    y = y[keep_mask]
+
         return X, y, feature_cache_file
     
+    def _collect_provenance_meta(self) -> dict:
+        """Return a dict of git SHA + library versions for stamping into the pkl.
+
+        Best-effort — every field falls back to 'unknown' on import or
+        subprocess errors so a partial-environment training run still
+        saves a usable pkl. The pkl is the source of truth, so values
+        live in `classifier_data` itself rather than only in the
+        sidecar JSON (which can be deleted independently).
+        """
+        import sys
+        try:
+            from io_utils import get_git_sha
+            sha = get_git_sha()
+        except Exception:
+            sha = 'unknown'
+        meta = {
+            'code_version':    sha,
+            'python_version':  sys.version.split()[0],
+        }
+        for lib_name, attr in (('xgboost', 'xgboost_version'),
+                                ('sklearn', 'sklearn_version'),
+                                ('numpy', 'numpy_version'),
+                                ('pandas', 'pandas_version')):
+            try:
+                _mod = __import__(lib_name)
+                meta[attr] = getattr(_mod, '__version__', 'unknown')
+            except Exception:
+                meta[attr] = 'unknown'
+        return meta
+
+    def _collect_training_process_fps(self):
+        """Project-level process_fps at training time, or None when unset."""
+        try:
+            from project_config import ProjectConfig
+            cfg = ProjectConfig.load(self.current_project_folder.get())
+            return float(cfg.process_fps) if cfg.process_fps is not None else None
+        except Exception:
+            return None
+
+    def _collect_training_calibration_mode(self):
+        """Project-level calibration_mode at training time."""
+        try:
+            from project_config import ProjectConfig
+            cfg = ProjectConfig.load(self.current_project_folder.get())
+            return getattr(cfg, 'calibration_mode', 'off') or 'off'
+        except Exception:
+            return 'off'
+
+    def _collect_training_mm_per_pixel(self):
+        """Effective mm_per_pixel under fixed mode; None for auto/off.
+
+        For 'auto' mode, mm_per_pixel varies per video (read from each
+        MP4's udta atom or session manifest), so there isn't a single
+        scalar to stamp here. Per-video values are already in the
+        session dicts returned by find_session_triplets.
+        """
+        try:
+            from project_config import ProjectConfig
+            cfg = ProjectConfig.load(self.current_project_folder.get())
+            if getattr(cfg, 'calibration_mode', 'off') == 'fixed':
+                v = getattr(cfg, 'fixed_mm_per_pixel', None)
+                return float(v) if v is not None else None
+        except Exception:
+            pass
+        return None
+
+    def _maybe_export_onnx(self, model, pkl_path, selected_feature_cols, X):
+        """Best-effort ONNX export of an XGBoost classifier next to its pkl.
+
+        Writes `<pkl_path-stem>.onnx`. Silently skipped when onnxmltools
+        is not installed (it is an optional dependency). Logs but does
+        not raise on conversion errors so a partial-environment run
+        still produces the canonical pkl.
+
+        Why ONNX: lets the trained classifier load in MATLAB, R, a
+        Napari plugin, or a Python interpreter without the exact
+        xgboost / sklearn version pinning. The pkl remains the
+        authoritative artifact — ONNX is for hand-off.
+        """
+        try:
+            from onnxmltools import convert_xgboost
+            from onnxmltools.convert.common.data_types import FloatTensorType
+        except ImportError:
+            return
+
+        try:
+            if selected_feature_cols:
+                n_feat = len(selected_feature_cols)
+            elif hasattr(model, 'feature_names_in_'):
+                n_feat = len(model.feature_names_in_)
+            elif hasattr(X, 'shape'):
+                n_feat = int(X.shape[1])
+            else:
+                return
+
+            initial_type = [('input', FloatTensorType([None, int(n_feat)]))]
+            onnx_model = convert_xgboost(
+                model, initial_types=initial_type, target_opset=12)
+            onnx_path = os.path.splitext(pkl_path)[0] + '.onnx'
+            with open(onnx_path, 'wb') as f:
+                f.write(onnx_model.SerializeToString())
+            self.log_train(f"  ✓ ONNX export: {os.path.basename(onnx_path)}")
+        except Exception as _onnx_err:
+            self.log_train(
+                f"  ⚠️  ONNX export skipped ({_onnx_err.__class__.__name__}): "
+                f"{_onnx_err}")
+
+    def _calibrate_oof_lofo(self, oof_proba_raw, y, fold_val_masks,
+                              log_label: str = ""):
+        """Return (oof_proba_calibrated, production_calibrator) via LOFO.
+
+        For the diagnostic curves and threshold sweep, runs
+        leave-one-fold-out isotonic calibration: each fold's OOFs are
+        transformed by an isotonic fit on the *other* folds' OOFs, so
+        the resulting array reflects honest held-out probabilities.
+
+        The returned `production_calibrator` is fit on all OOFs and is
+        the calibrator saved into the classifier pkl — at inference we
+        legitimately have all training data available, so a single fit
+        on every OOF is appropriate.
+
+        Falls back to single-fit when < 2 folds are usable.
+        """
+        from sklearn.isotonic import IsotonicRegression
+        from sklearn.metrics import brier_score_loss
+
+        label = f"{log_label} " if log_label else ""
+        brier_raw = brier_score_loss(y, oof_proba_raw)
+
+        if len(fold_val_masks) >= 2:
+            oof_proba_cal = np.empty_like(oof_proba_raw)
+            oof_proba_cal.fill(np.nan)
+            for _vm in fold_val_masks:
+                _train_idx = ~_vm
+                if (_train_idx.sum() < 10
+                        or len(np.unique(y[_train_idx])) < 2
+                        or _vm.sum() == 0):
+                    oof_proba_cal[_vm] = oof_proba_raw[_vm]
+                    continue
+                _iso_fold = IsotonicRegression(
+                    y_min=0.0, y_max=1.0, out_of_bounds='clip')
+                _iso_fold.fit(oof_proba_raw[_train_idx], y[_train_idx])
+                oof_proba_cal[_vm] = np.clip(
+                    _iso_fold.predict(oof_proba_raw[_vm]), 0.0, 1.0)
+            _nan_mask = np.isnan(oof_proba_cal)
+            if _nan_mask.any():
+                oof_proba_cal[_nan_mask] = oof_proba_raw[_nan_mask]
+            oof_proba = oof_proba_cal
+            brier_cal = brier_score_loss(y, oof_proba)
+            self.log_train(
+                f"  Probability calibration {label}(isotonic, "
+                f"leave-one-fold-out): Brier {brier_raw:.4f} → "
+                f"{brier_cal:.4f}")
+        else:
+            _iso_full = IsotonicRegression(
+                y_min=0.0, y_max=1.0, out_of_bounds='clip')
+            _iso_full.fit(oof_proba_raw, y)
+            oof_proba = np.clip(_iso_full.predict(oof_proba_raw), 0.0, 1.0)
+            brier_cal = brier_score_loss(y, oof_proba)
+            self.log_train(
+                f"  Probability calibration {label}(isotonic, "
+                f"single-fit — <2 folds): Brier {brier_raw:.4f} "
+                f"→ {brier_cal:.4f}")
+
+        prob_calibrator = IsotonicRegression(
+            y_min=0.0, y_max=1.0, out_of_bounds='clip')
+        prob_calibrator.fit(oof_proba_raw, y)
+        return oof_proba, prob_calibrator
+
     def _sweep_postprocessing(self, oof_proba, y):
         """
         Joint 4-D grid search over (threshold, min_bout, min_after_bout,
@@ -5992,16 +7424,18 @@ class PixelPawsGUI:
         """
         from evaluation_tab import _apply_bout_filtering
 
-        # Search grids — aligned with eval tab's _grid_search_params()
-        thresholds      = np.arange(0.10, 0.91, 0.05)   # 17 values
+        # Search grids — aligned with eval / predict tabs' threshold ranges
+        # (`np.arange(0.05, 0.96, 0.025)` covers 0.05 … 0.95 inclusive in
+        # 0.025 steps so every classifier-saved threshold is reachable).
+        thresholds      = np.arange(0.05, 0.96, 0.025)  # 37 values
         min_bouts       = [1, 2, 3, 5, 8, 12, 15, 20]   # 8 values
         min_after_bouts = [0, 1, 3, 5]                   # 4 values
-        # max_gap capped at 15 frames (~500 ms @ 30 fps).  A 20-frame cap (670 ms)
+        # max_gap capped at 15 frames (~250 ms @ 60 fps).  A 20-frame cap (~333 ms)
         # was observed to merge separate flinches into a single bout during OOF
         # sweep, inflating apparent F1 and producing a brittle deployment
         # threshold.  ARBEL uses max_gap=2; 15 is the upper-bound safe default.
         max_gaps        = [0, 2, 4, 5, 6, 10, 15]       # 7 values
-        # Total: 17 × 8 × 4 × 7 = 3,808 combinations — runs in ~1-2 s
+        # Total: 37 × 8 × 4 × 7 = 8,288 combinations — runs in ~3-4 s
 
         best_f1    = -1.0
         best_thresh = 0.5
@@ -6093,7 +7527,7 @@ class PixelPawsGUI:
             y_pred = _apply_bout_filtering(y_raw, min_bout, 0, max_gap)
 
             # FPS from video
-            fps = 30.0
+            fps = 60.0
             video_path = session.get('video_path', '')
             if video_path and os.path.isfile(video_path):
                 try:
@@ -6323,6 +7757,42 @@ class PixelPawsGUI:
                     dpi=300, bbox_inches='tight')
         plt.close(fig)
 
+    def _generate_learning_curve_plot(self, lc_results, n_pos_frames,
+                                       behavior_name, output_folder):
+        """Standalone paper-style learning curve: F1 vs bout-positive frames.
+
+        Mirrors the ARBEL / BAREfoot figure panel style (single red line +
+        markers). `lc_results` is the list of ``(fraction, F1)`` pairs
+        already computed by the ``train_learning_curve`` diagnostic.
+        """
+        if plt is None or not lc_results:
+            return
+        try:
+            fracs = np.array([float(r[0]) for r in lc_results])
+            f1s   = np.array([float(r[1]) for r in lc_results])
+            xs    = (fracs * max(int(n_pos_frames), 1)).astype(int)
+
+            fig, ax = plt.subplots(figsize=(6, 4), constrained_layout=True)
+            ax.plot(xs, f1s, 'o-', color='crimson', markersize=6,
+                    linewidth=1.5, label=behavior_name)
+            ax.set_xlabel('Bout-positive frames')
+            ax.set_ylabel('F1-score (K-fold CV)')
+            ax.set_ylim([0, 1.0])
+            ax.legend(loc='lower right', frameon=False)
+            ax.grid(alpha=0.3)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            plt.savefig(
+                os.path.join(output_folder,
+                             f'PixelPaws_{behavior_name}_LearningCurve.png'),
+                dpi=300, bbox_inches='tight')
+            plt.close()
+        except Exception as _lc_err:
+            try:
+                self.log_train(f"  ⚠️  Learning curve plot failed: {_lc_err}")
+            except Exception:
+                pass
+
     def _generate_training_summary(self, y, oof_proba, fold_f1_scores, best_params,
                                     sessions, all_y_lengths, behavior_name,
                                     output_folder, final_model, X,
@@ -6518,23 +7988,46 @@ class PixelPawsGUI:
             self.log_train(f"  Warning: Training summary plot failed: {e}")
 
     def _generate_shap_plots(self, model, X, output_folder, behavior_name,
-                              pre_prune_model=None):
-        """Generate feature importance plots using XGBoost native gain importance."""
+                              pre_prune_model=None,
+                              pre_prune_output_folder=None):
+        """Generate feature importance plots using XGBoost native gain importance.
+
+        ``pre_prune_output_folder`` — when pruning is active and the caller
+        wants the pre-prune model's plots saved to a different folder (the
+        ``all_features/`` subfolder). Defaults to ``output_folder`` so old
+        call sites that don't split still work.
+
+        Bars are coloured along the ``plasma`` colormap (dark → bright
+        with importance) so the gradient carries the ranking signal.
+        """
         try:
             import matplotlib.pyplot as _plt
+            import matplotlib.cm as _cm
             import pandas as _pd
             import numpy as _np
 
-            def _plot_importance(m, title, out_path, label):
+            if pre_prune_output_folder is None:
+                pre_prune_output_folder = output_folder
+
+            def _plot_importance(m, title, out_path):
                 imp = _pd.Series(
                     m.feature_importances_,
                     index=m.feature_names_in_ if hasattr(m, 'feature_names_in_')
                           else [f'f{i}' for i in range(len(m.feature_importances_))]
                 ).nlargest(20).iloc[::-1]
                 fig, ax = _plt.subplots(figsize=(10, max(6, len(imp) * 0.35)))
-                ax.barh(imp.index.tolist(), imp.values)
+                vals = imp.values
+                vmax = float(vals.max()) if len(vals) else 1.0
+                # Clip lower bound so least-important bars still show a
+                # visible colour rather than near-black.
+                norm = _np.clip(vals / vmax, 0.15, 1.0) if vmax > 0 else \
+                       _np.full(len(vals), 0.5)
+                colors = _cm.plasma(norm)
+                bars = ax.barh(imp.index.tolist(), vals, color=colors)
                 ax.set_xlabel('Gain Importance')
                 ax.set_title(title, fontsize=14)
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
                 _plt.tight_layout()
                 fig.savefig(out_path, dpi=300, bbox_inches='tight')
                 _plt.close(fig)
@@ -6544,12 +8037,20 @@ class PixelPawsGUI:
                 n_full = (len(pre_prune_model.feature_names_in_)
                           if hasattr(pre_prune_model, 'feature_names_in_')
                           else '?')
+                # Landscape view of all-features importance
                 _plot_importance(
                     pre_prune_model,
                     f'Feature Importance (all {n_full} features) — {behavior_name}',
-                    os.path.join(output_folder,
+                    os.path.join(pre_prune_output_folder,
                                  f'PixelPaws_{behavior_name}_SHAP_AllFeatures.png'),
-                    'all'
+                )
+                # All-features SHAP bar — lands in the all_features subfolder so
+                # that subtree is self-contained.
+                _plot_importance(
+                    pre_prune_model,
+                    f'Feature Importance Bar (all features) — {behavior_name}',
+                    os.path.join(pre_prune_output_folder,
+                                 f'PixelPaws_{behavior_name}_SHAP_Bar.png'),
                 )
 
             # Final (pruned or only) model
@@ -6561,7 +8062,6 @@ class PixelPawsGUI:
                 bar_title,
                 os.path.join(output_folder,
                              f'PixelPaws_{behavior_name}_SHAP_Bar.png'),
-                'pruned'
             )
 
             # Importance summary (same data, alternate filename for compatibility)
@@ -6573,7 +8073,6 @@ class PixelPawsGUI:
                 imp_title,
                 os.path.join(output_folder,
                              f'PixelPaws_{behavior_name}_SHAP_Importance.png'),
-                'summary'
             )
 
             return True
@@ -6622,13 +8121,42 @@ class PixelPawsGUI:
                 pre_precs.append(precision_score(y, yp, zero_division=0))
                 pre_recs.append(recall_score(y, yp, zero_division=0))
 
-        # ── OOF curve (honest) ────────────────────────────────────────
-        oof_f1s = None
+        # ── OOF curves (honest) ───────────────────────────────────────
+        # `oof_*_filt` apply the chosen (min_bout, min_after_bout, max_gap)
+        # at every threshold, so the red-dot annotation at the
+        # sweep-chosen threshold lands on the curve rather than off-curve
+        # at an unfiltered F1 the deployed pipeline never produces.
+        oof_f1s = oof_precs = oof_recs = None
+        oof_f1s_filt = oof_precs_filt = oof_recs_filt = None
+        _filt_mb = _filt_ma = _filt_mg = None
         if oof_proba is not None:
-            oof_f1s = []
+            oof_f1s, oof_precs, oof_recs = [], [], []
             for t in thresholds:
                 yp = (oof_proba >= t).astype(int)
                 oof_f1s.append(f1_score(y, yp, zero_division=0))
+                oof_precs.append(precision_score(y, yp, zero_division=0))
+                oof_recs.append(recall_score(y, yp, zero_division=0))
+
+            if oof_best_params is not None:
+                from evaluation_tab import _apply_bout_filtering
+                _filt_mb = int(oof_best_params.get('min_bout', 1))
+                _filt_ma = int(oof_best_params.get('min_after_bout', 0))
+                _filt_mg = int(oof_best_params.get('max_gap', 0))
+                # Skip the loop when all params are no-ops — the filtered
+                # curves would equal the unfiltered ones and the red dot
+                # already lands on the F1 line.
+                if _filt_mb > 1 or _filt_ma > 0 or _filt_mg > 0:
+                    oof_f1s_filt, oof_precs_filt, oof_recs_filt = [], [], []
+                    for t in thresholds:
+                        yp = (oof_proba >= t).astype(int)
+                        yp_filt = _apply_bout_filtering(
+                            yp.copy(), _filt_mb, _filt_ma, _filt_mg)
+                        oof_f1s_filt.append(
+                            f1_score(y, yp_filt, zero_division=0))
+                        oof_precs_filt.append(
+                            precision_score(y, yp_filt, zero_division=0))
+                        oof_recs_filt.append(
+                            recall_score(y, yp_filt, zero_division=0))
 
         # ── Plot ──────────────────────────────────────────────────────
         n_pruned = len(model.feature_names_in_) if hasattr(model, 'feature_names_in_') else ''
@@ -6656,10 +8184,24 @@ class PixelPawsGUI:
         ax.plot(thresholds, train_recs,  '--', color='seagreen',
                 label=f'Recall in-sample{post_lbl}',    linewidth=1.5, alpha=0.6)
 
-        # OOF curves (solid — honest)
+        # OOF curves (solid — honest). All three shown so the user can read
+        # precision/recall tradeoff directly off the honest curves.
         if oof_f1s is not None:
-            ax.plot(thresholds, oof_f1s, '-', color='steelblue',
-                    label='F1 (out-of-fold, honest)', linewidth=2.5)
+            ax.plot(thresholds, oof_f1s,   '-', color='steelblue',
+                    label='F1 (out-of-fold, honest)',        linewidth=2.5)
+            ax.plot(thresholds, oof_precs, '-', color='darkorange',
+                    label='Precision (out-of-fold, honest)', linewidth=2.0)
+            ax.plot(thresholds, oof_recs,  '-', color='seagreen',
+                    label='Recall (out-of-fold, honest)',    linewidth=2.0)
+
+        # Bout-filtered OOF F1 — what the deployed pipeline actually
+        # produces at each threshold. The red-dot marker below sits on
+        # this curve (or on `oof_f1s` when bout-filtering is a no-op).
+        if oof_f1s_filt is not None:
+            _filt_lbl = (f'F1 (OOF, bout-filtered: '
+                         f'mb={_filt_mb}, ma={_filt_ma}, mg={_filt_mg})')
+            ax.plot(thresholds, oof_f1s_filt, '-', color='crimson',
+                    label=_filt_lbl, linewidth=2.5)
 
         # Mark OOF-chosen threshold
         if oof_best_params is not None:
@@ -6689,6 +8231,52 @@ class PixelPawsGUI:
             dpi=300, bbox_inches='tight')
         plt.close()
 
+        # ── Clean paper-style ThresholdCurve.png ──────────────────────
+        # Three solid honest-OOF curves + dashed vertical at chosen
+        # threshold. Matches the ARBEL / BAREfoot figure panel style;
+        # complements PerformanceThreshold.png which keeps the in-sample
+        # comparison for debugging.
+        #
+        # When bout-filtering is in effect, the curves shown here apply
+        # the chosen (mb, ma, mg) at every threshold so the dashed
+        # vertical at `oof_best_params['thresh']` lands on the F1 peak
+        # of a curve the deployed pipeline can actually produce.
+        if oof_f1s is not None:
+            _plot_recs   = oof_recs_filt  if oof_recs_filt  is not None else oof_recs
+            _plot_precs  = oof_precs_filt if oof_precs_filt is not None else oof_precs
+            _plot_f1s    = oof_f1s_filt   if oof_f1s_filt   is not None else oof_f1s
+            _filt_suffix = (f"\n(after bout filter: "
+                            f"min_bout={_filt_mb}, min_after={_filt_ma}, "
+                            f"max_gap={_filt_mg})"
+                            if oof_f1s_filt is not None else "")
+            fig2, ax2 = plt.subplots(figsize=(6, 4), constrained_layout=True)
+            ax2.plot(thresholds, _plot_recs,  '-', color='#999999',
+                     label='Recall',    linewidth=1.8)
+            ax2.plot(thresholds, _plot_precs, '-', color='#555555',
+                     label='Precision', linewidth=1.8)
+            ax2.plot(thresholds, _plot_f1s,   '-', color='crimson',
+                     label='F1 Score',  linewidth=2.2)
+            if oof_best_params is not None:
+                ax2.axvline(oof_best_params['thresh'], color='0.3',
+                            linestyle='--', linewidth=1.0)
+                ax2.scatter([oof_best_params['thresh']],
+                            [oof_best_params['f1']],
+                            color='crimson', zorder=5, s=40)
+            ax2.set_xlabel('Threshold')
+            ax2.set_ylabel('Score')
+            ax2.set_title(f'Threshold Curve — {behavior_name}{_filt_suffix}')
+            ax2.set_xlim([0, 1])
+            ax2.set_ylim([0, 1.02])
+            ax2.legend(loc='lower center', frameon=False)
+            ax2.grid(alpha=0.3)
+            ax2.spines['top'].set_visible(False)
+            ax2.spines['right'].set_visible(False)
+            plt.savefig(
+                os.path.join(output_folder,
+                             f'PixelPaws_{behavior_name}_ThresholdCurve.png'),
+                dpi=300, bbox_inches='tight')
+            plt.close()
+
         # ── Calibration (reliability) diagram ─────────────────────────
         if oof_proba is not None:
             try:
@@ -6702,7 +8290,9 @@ class PixelPawsGUI:
                 ax_cal.plot(prob_pred, prob_true, 's-', color='steelblue', label='OOF predictions')
                 ax_cal.set_xlabel('Mean predicted probability')
                 ax_cal.set_ylabel('Fraction of positives')
-                ax_cal.set_title(f'Calibration Curve — {behavior_name}\n(out-of-fold predictions)')
+                ax_cal.set_title(
+                    f'Calibration Curve — {behavior_name}\n'
+                    f'(leave-one-fold-out calibrated OOF predictions)')
                 ax_cal.legend()
                 ax_cal.grid(alpha=0.3)
                 ax_cal.set_xlim([0, 1])
@@ -6753,17 +8343,443 @@ class PixelPawsGUI:
 
     # === ENHANCED TOOL METHODS ===
     
-    def open_video_preview(self):
-        """Open video preview window"""
-        video_path = filedialog.askopenfilename(
-            title="Select Video",
-            filetypes=[("Video files", "*.mp4 *.avi"), ("All files", "*.*")]
-        )
-        
-        if video_path:
-            # For demo, use None for predictions
+    def _choose_from_list(self, title, prompt, options):
+        """Small modal combobox chooser → returns the chosen string or None."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title(title)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        ttk.Label(dlg, text=prompt).pack(padx=12, pady=(12, 4), anchor='w')
+        var = tk.StringVar(value=options[0])
+        cb = ttk.Combobox(dlg, textvariable=var, values=options,
+                          state='readonly', width=34)
+        cb.pack(padx=12, pady=4)
+        result = {'val': None}
+        def _ok():
+            result['val'] = var.get(); dlg.destroy()
+        bf = ttk.Frame(dlg); bf.pack(pady=10)
+        ttk.Button(bf, text="OK", command=_ok).pack(side='left', padx=6)
+        ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side='left', padx=6)
+        dlg.bind('<Return>', lambda e: _ok())
+        cb.focus_set()
+        self.root.wait_window(dlg)
+        return result['val']
+
+    def _pick_labeled_session(self, title="Select Session"):
+        """Dropdown of current-project sessions that HAVE label CSVs. Returns the
+        chosen find_session_triplets dict (session_name/video/dlc/labels), or None
+        (no project / none labeled) so the caller can fall back to a file browse."""
+        proj = self.current_project_folder.get()
+        if not proj or not os.path.isdir(proj):
+            return None
+        try:
+            from evaluation_tab import find_session_triplets
+            sessions = find_session_triplets(proj, require_labels=True, recursive=True)
+        except Exception:
+            sessions = []
+        if not sessions:
+            return None
+        names = [s.get('session_name') or os.path.splitext(
+                 os.path.basename(s.get('video', '')))[0] for s in sessions]
+        choice = self._choose_from_list(title, "Session (has labels):", names)
+        if not choice:
+            return None
+        for s, nm in zip(sessions, names):
+            if nm == choice:
+                return s
+        return None
+
+    @staticmethod
+    def _behaviors_with_labels(labels_csv):
+        """List behaviors in a labels CSV that the session actually has, as
+        (behavior, n_pos, n_observed) for columns with ≥1 positive frame."""
+        try:
+            df = pd.read_csv(labels_csv)
+        except Exception:
+            return []
+        out = []
+        for c in df.columns:
+            if str(c).lower() == 'frame':
+                continue
+            raw = df[c].values
+            v = np.where(np.isnan(raw.astype(float)), -1, raw.astype(int))
+            npos = int((v == 1).sum())
+            if npos > 0:
+                out.append((c, npos, int((v >= 0).sum())))
+        return out
+
+    def _launch_label_viewer(self, video_path, labels_csv, behavior, dlc_path=None):
+        """Read one behavior column and open SideBySidePreview with the GT overlay."""
+        try:
+            df = pd.read_csv(labels_csv)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not read labels CSV:\n{e}")
+            return
+        if behavior not in df.columns:
+            messagebox.showwarning("Missing behavior",
+                                   f"'{behavior}' is not a column in:\n{labels_csv}")
+            return
+        raw = df[behavior].values
+        labels = np.where(np.isnan(raw.astype(float)), -1, raw.astype(int))
+        predictions = (labels == 1).astype(int)
+        probabilities = predictions.astype(float)   # 0/1 track for the timeline
+        n_pos = int((labels == 1).sum())
+        n_unobs = int((labels == -1).sum())
+        title = f"{behavior}  [GT: {n_pos:,} pos | {n_unobs:,} unobserved(-1)]"
+        try:
+            SideBySidePreview(self.root, video_path, predictions, probabilities,
+                              title, 0.5, dlc_path=dlc_path)
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            messagebox.showerror("Error", f"Could not open label viewer:\n{e}")
+
+    def review_labels_on_video(self):
+        """QC tool: pick a subject (session with labels) AND a behavior it actually has,
+        then overlay that behavior's ground-truth labels on the video with a bout list
+        and timeline."""
+        proj = self.current_project_folder.get()
+        sessions = []
+        if proj and os.path.isdir(proj):
             try:
-                preview = VideoPreviewWindow(self.root, video_path, None, None)
+                from evaluation_tab import find_session_triplets
+                sessions = find_session_triplets(proj, require_labels=True, recursive=True)
+            except Exception:
+                sessions = []
+        if not sessions:
+            return self._review_labels_manual()   # fallback: file pickers
+
+        # Keep only sessions whose label CSV has at least one positively-labeled behavior.
+        usable = []
+        for s in sessions:
+            lc = s.get('labels')
+            if lc and os.path.isfile(lc) and self._behaviors_with_labels(lc):
+                usable.append(s)
+        if not usable:
+            messagebox.showinfo("No labeled behaviors",
+                                "No session in this project has any positively-labeled behavior.")
+            return
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Review Labels on Video")
+        sw, sh = dlg.winfo_screenwidth(), dlg.winfo_screenheight()
+        w, h = max(560, int(sw * 0.34)), max(420, int(sh * 0.42))
+        dlg.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
+        dlg.transient(self.root)
+
+        ttk.Label(dlg, text="Review ground-truth labels on the video",
+                  font=(FONT_FAMILY, 13, 'bold')).pack(pady=(12, 2))
+        ttk.Label(dlg, text="Pick a subject, then a behavior it was scored for. "
+                            "Only behaviors the subject actually has are listed.",
+                  justify='center').pack(pady=(0, 8))
+
+        names = [s.get('session_name') or os.path.splitext(
+                 os.path.basename(s.get('video', '')))[0] for s in usable]
+
+        sf = ttk.LabelFrame(dlg, text="Subject (session with labels)", padding=10)
+        sf.pack(fill='x', padx=16, pady=4)
+        subj_var = tk.StringVar()
+        subj_cb = ttk.Combobox(sf, textvariable=subj_var, values=names,
+                               state='readonly', width=44)
+        subj_cb.pack(fill='x')
+
+        bf = ttk.LabelFrame(dlg, text="Behavior (only those this subject has)", padding=10)
+        bf.pack(fill='x', padx=16, pady=4)
+        beh_var = tk.StringVar()
+        beh_cb = ttk.Combobox(bf, textvariable=beh_var, values=[],
+                              state='readonly', width=44)
+        beh_cb.pack(fill='x')
+
+        info = ttk.Label(dlg, text="", justify='left', foreground='#444',
+                         font=(FONT_FAMILY, 9))
+        info.pack(fill='x', padx=18, pady=8)
+
+        state = {'beh_map': {}}   # display string -> behavior name
+
+        def _on_subject(*_):
+            s = usable[names.index(subj_var.get())] if subj_var.get() in names else None
+            if not s:
+                return
+            lc = s.get('labels')
+            behs = self._behaviors_with_labels(lc)
+            disp = [f"{b}   ({npos:,} pos)" for (b, npos, nobs) in behs]
+            state['beh_map'] = {f"{b}   ({npos:,} pos)": b for (b, npos, nobs) in behs}
+            beh_cb.configure(values=disp)
+            beh_var.set(disp[0] if disp else '')
+            vid = s.get('video', '')
+            info.configure(text=f"Video:  {os.path.basename(vid)}\n"
+                                f"Labels: {os.path.basename(lc)}\n"
+                                f"{len(disp)} behavior(s) with labels in this subject.")
+
+        subj_cb.bind('<<ComboboxSelected>>', _on_subject)
+
+        def _open():
+            if subj_var.get() not in names:
+                messagebox.showwarning("Pick a subject", "Select a subject first."); return
+            s = usable[names.index(subj_var.get())]
+            behavior = state['beh_map'].get(beh_var.get())
+            if not behavior:
+                messagebox.showwarning("Pick a behavior",
+                                       "Select a behavior this subject has."); return
+            dlc = s.get('dlc') if s.get('dlc') and os.path.isfile(s.get('dlc')) else None
+            dlg.destroy()
+            self._launch_label_viewer(s.get('video'), s.get('labels'), behavior, dlc)
+
+        bfr = ttk.Frame(dlg); bfr.pack(pady=12)
+        ttk.Button(bfr, text="🎬 Open viewer", command=_open).pack(side='left', padx=6)
+        ttk.Button(bfr, text="Cancel", command=dlg.destroy).pack(side='left', padx=6)
+
+        # Preselect the first subject.
+        if names:
+            subj_var.set(names[0]); _on_subject()
+
+    def _review_labels_manual(self):
+        """Fallback when no project/labeled sessions: browse for video + labels CSV."""
+        import glob as _glob
+        video_path = filedialog.askopenfilename(
+            title="Select Video to Review",
+            filetypes=[("Video files", "*.mp4 *.avi *.mov"), ("All files", "*.*")])
+        if not video_path:
+            return
+        base = os.path.splitext(os.path.basename(video_path))[0]
+        labels_csv = filedialog.askopenfilename(
+            title=f"Select labels CSV for {base}",
+            filetypes=[("Label CSV", "*.csv"), ("All files", "*.*")])
+        if not labels_csv or not os.path.isfile(labels_csv):
+            return
+        behs = self._behaviors_with_labels(labels_csv)
+        if not behs:
+            messagebox.showwarning("No behaviors",
+                                   "No positively-labeled behaviors in that CSV.")
+            return
+        disp = [f"{b}   ({npos:,} pos)" for (b, npos, nobs) in behs]
+        choice = (disp[0] if len(disp) == 1
+                  else self._choose_from_list("Review Labels", "Behavior:", disp))
+        if not choice:
+            return
+        behavior = {f"{b}   ({npos:,} pos)": b for (b, npos, nobs) in behs}[choice]
+        dlc_path = None
+        for d in (os.path.dirname(video_path),):
+            h5 = sorted(_glob.glob(os.path.join(d, f'{base}*.h5')))
+            filt = [hh for hh in h5 if 'filtered' in os.path.basename(hh).lower()]
+            if filt or h5:
+                dlc_path = (filt or h5)[0]
+                break
+        self._launch_label_viewer(video_path, labels_csv, behavior, dlc_path)
+
+    def import_boris_project_native(self):
+        """Tool: import a native .boris project → per-frame <session>_labels.csv.
+        User picks which behaviors and which subjects (sessions) to export; output
+        is aligned 1:1 to each session's feature cache with per-behavior unobserved
+        tails, and merged into existing CSVs (other behaviors preserved)."""
+        import glob as _glob
+        win = tk.Toplevel(self.root)
+        win.title("Import BORIS Project (.boris)")
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        w, h = int(sw * 0.62), int(sh * 0.85)
+        win.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
+
+        ttk.Label(win, text="Import BORIS Project (.boris)",
+                  font=(FONT_FAMILY, 14, 'bold')).pack(pady=8)
+
+        boris_var = tk.StringVar()
+        proj_var = tk.StringVar(value=self.current_project_folder.get())
+        tails_var = tk.BooleanVar(value=True)
+
+        ff = ttk.LabelFrame(win, text="BORIS project (.boris)", padding=8)
+        ff.pack(fill='x', padx=12, pady=(6, 2))
+        ttk.Entry(ff, textvariable=boris_var, width=58).grid(row=0, column=0, padx=4)
+        ttk.Button(ff, text="📁 Browse", command=lambda: boris_var.set(
+            filedialog.askopenfilename(title="Select .boris project",
+                filetypes=[("BORIS project", "*.boris"), ("All files", "*.*")])
+            or boris_var.get())).grid(row=0, column=1)
+
+        pf = ttk.LabelFrame(win, text="PixelPaws project folder", padding=8)
+        pf.pack(fill='x', padx=12, pady=2)
+        ttk.Entry(pf, textvariable=proj_var, width=58).grid(row=0, column=0, padx=4)
+        ttk.Button(pf, text="📁 Browse", command=lambda: proj_var.set(
+            filedialog.askdirectory(title="Select PixelPaws project folder")
+            or proj_var.get())).grid(row=0, column=1)
+
+        ttk.Button(win, text="🔍 Scan project + .boris",
+                   command=lambda: _scan()).pack(pady=4)
+
+        # ── Selection: behaviors (left) + subjects/sessions (right) ──
+        sel = ttk.Frame(win)
+        sel.pack(fill='both', expand=True, padx=12, pady=4)
+        sel.columnconfigure(0, weight=1)
+        sel.columnconfigure(1, weight=2)
+
+        def _scroll_checklist(parent, title):
+            lf = ttk.LabelFrame(parent, text=title, padding=4)
+            cv = tk.Canvas(lf, height=180, highlightthickness=0)
+            sb = ttk.Scrollbar(lf, orient='vertical', command=cv.yview)
+            inner = ttk.Frame(cv)
+            inner.bind('<Configure>',
+                       lambda e: cv.configure(scrollregion=cv.bbox('all')))
+            cv.create_window((0, 0), window=inner, anchor='nw')
+            cv.configure(yscrollcommand=sb.set)
+            cv.pack(side='left', fill='both', expand=True)
+            sb.pack(side='right', fill='y')
+            return lf, inner
+
+        beh_lf, beh_inner = _scroll_checklist(sel, "Behaviors to export")
+        beh_lf.grid(row=0, column=0, sticky='nsew', padx=(0, 6))
+        sess_lf, sess_inner = _scroll_checklist(sel, "Subjects / sessions to export")
+        sess_lf.grid(row=0, column=1, sticky='nsew')
+
+        beh_vars = {}   # behavior -> BooleanVar
+        sess_vars = {}  # session_name -> BooleanVar
+
+        # ── "What gets written" disclosure ──
+        info_lf = ttk.LabelFrame(win, text="What gets written", padding=6)
+        info_lf.pack(fill='x', padx=12, pady=4)
+        info_txt = ("Output → <project>/behavior_labels/<session>_labels.csv  (one file per session)\n"
+                    "Columns: one per selected behavior.   Values: 1 = present, 0 = reviewed-absent, "
+                    "-1 = unobserved.\n"
+                    "Rows aligned 1:1 to features/<session>_features_8aed1c22.pkl  (else length × fps).\n"
+                    "Per-behavior tails: each behavior is -1 after its own last event.\n"
+                    "Merged into any existing CSV (other behaviors preserved). PixelPaws matches "
+                    "labels to the video/feature cache by the session basename.")
+        ttk.Label(info_lf, text=info_txt, justify='left',
+                  font=(FONT_FAMILY, 8)).pack(anchor='w')
+
+        ttk.Checkbutton(
+            win,
+            text="Behaviors scored in separate passes → -1 after each behavior's own last event "
+                 "(recommended)",
+            variable=tails_var).pack(anchor='w', padx=14, pady=2)
+
+        log_frame = ttk.LabelFrame(win, text="Log", padding=4)
+        log_frame.pack(fill='both', expand=True, padx=12, pady=4)
+        log_box = tk.Text(log_frame, height=9, wrap='word', state='disabled',
+                          font=('Courier', 9))
+        lsb = ttk.Scrollbar(log_frame, command=log_box.yview)
+        log_box.configure(yscrollcommand=lsb.set)
+        lsb.pack(side='right', fill='y')
+        log_box.pack(fill='both', expand=True)
+
+        def log(msg):
+            def _do():
+                log_box.config(state='normal')
+                log_box.insert('end', str(msg) + '\n')
+                log_box.config(state='disabled')
+                log_box.see('end')
+            self._safe_after(_do)
+
+        run_btn = ttk.Button(win, text="📥 Import selected")
+        run_btn.pack(pady=8)
+
+        def _scan():
+            boris = boris_var.get().strip()
+            if not boris or not os.path.isfile(boris):
+                messagebox.showwarning("No file", "Select a valid .boris file first.")
+                return
+            proj = proj_var.get().strip()
+            feat_dir = os.path.join(proj, 'features') if proj else ''
+            try:
+                from boris_import import parse_boris
+                behs, obs = parse_boris(boris)
+            except Exception as e:
+                messagebox.showerror("Parse error", f"Could not read .boris:\n{e}")
+                return
+            for w_ in list(beh_inner.winfo_children()):
+                w_.destroy()
+            for w_ in list(sess_inner.winfo_children()):
+                w_.destroy()
+            beh_vars.clear(); sess_vars.clear()
+            for b in behs:
+                v = tk.BooleanVar(value=True)
+                beh_vars[b] = v
+                ttk.Checkbutton(beh_inner, text=b, variable=v).pack(anchor='w')
+            n_match = 0
+            for k, o in obs.items():
+                media = next(iter(o.get('media_info', {}).get('length', {}).keys()), None)
+                if not media:
+                    continue
+                sname = os.path.splitext(os.path.basename(media))[0]
+                nev = len(o.get('events', []))
+                has_cache = bool(feat_dir and _glob.glob(
+                    os.path.join(feat_dir, f"{sname}*_features_8aed1c22.pkl")))
+                if has_cache:
+                    n_match += 1
+                tag = ("✓ cache" if has_cache else "✗ no cache")
+                v = tk.BooleanVar(value=(nev > 0))
+                sess_vars[sname] = v
+                cb = ttk.Checkbutton(sess_inner, variable=v,
+                                     text=f"{sname}   ·  {nev} events  ·  {tag}")
+                if nev == 0:
+                    v.set(False); cb.configure(state='disabled')
+                cb.pack(anchor='w')
+            log(f"Scanned: {len(beh_vars)} behaviors, {len(sess_vars)} sessions "
+                f"({n_match} with a feature cache). Adjust selections, then Import.")
+
+        def _worker(boris, out_dir, feat_dir, tails, behaviors, sessions):
+            try:
+                from boris_import import export_boris_labels
+                res = export_boris_labels(boris, out_dir, feat_dir,
+                                          per_behavior_tails=tails, log=log,
+                                          behaviors=behaviors, sessions=sessions)
+                log(f"\n✓ Imported {len(res)} session(s) → {out_dir}")
+            except Exception:
+                import traceback
+                log("ERROR:\n" + traceback.format_exc())
+            finally:
+                self._safe_after(lambda: run_btn.config(state='normal'))
+
+        def _run():
+            boris = boris_var.get().strip()
+            proj = proj_var.get().strip()
+            if not boris or not os.path.isfile(boris):
+                messagebox.showwarning("No file", "Select a valid .boris file.")
+                return
+            if not proj or not os.path.isdir(proj):
+                messagebox.showwarning("No project",
+                                       "Select a valid PixelPaws project folder.")
+                return
+            if not beh_vars or not sess_vars:
+                messagebox.showinfo("Scan first",
+                                    "Click 'Scan project + .boris' to load behaviors/sessions.")
+                return
+            behaviors = [b for b, v in beh_vars.items() if v.get()]
+            sessions = [s for s, v in sess_vars.items() if v.get()]
+            if not behaviors:
+                messagebox.showwarning("No behaviors", "Select at least one behavior.")
+                return
+            if not sessions:
+                messagebox.showwarning("No sessions", "Select at least one session.")
+                return
+            out_dir = os.path.join(proj, 'behavior_labels')
+            feat_dir = os.path.join(proj, 'features')
+            run_btn.config(state='disabled')
+            log_box.config(state='normal'); log_box.delete('1.0', 'end')
+            log_box.config(state='disabled')
+            import threading
+            threading.Thread(target=_worker,
+                             args=(boris, out_dir, feat_dir, tails_var.get(),
+                                   behaviors, sessions),
+                             daemon=True).start()
+
+        run_btn.config(command=_run)
+        # Auto-scan if both paths are already known.
+        if boris_var.get() and proj_var.get():
+            _scan()
+
+    def open_video_preview(self):
+        """Open video preview window. Prefers a dropdown of project sessions that
+        have labels; falls back to a file browse when no project is open."""
+        sess = self._pick_labeled_session("Video Preview")
+        if sess:
+            video_path = sess.get('video')
+            dlc_path = sess.get('dlc')
+        else:
+            video_path = filedialog.askopenfilename(
+                title="Select Video",
+                filetypes=[("Video files", "*.mp4 *.avi"), ("All files", "*.*")])
+            dlc_path = None
+
+        if video_path:
+            try:
+                preview = VideoPreviewWindow(self.root, video_path, dlc_path, None)
             except Exception as e:
                 messagebox.showerror("Error", f"Could not open video:\n{str(e)}")
     
@@ -6838,7 +8854,7 @@ class PixelPawsGUI:
         
         ttk.Label(progress_window, 
                  text="Analyzing Brightness Features...",
-                 font=('Arial', 12, 'bold')).pack(pady=20)
+                 font=(FONT_FAMILY, 12, 'bold')).pack(pady=20)
         
         progress_text = scrolledtext.ScrolledText(progress_window, height=6, width=60)
         progress_text.pack(padx=10, pady=10, fill='both', expand=True)
@@ -6990,7 +9006,7 @@ class PixelPawsGUI:
                     features_df,
                     brightness_cols,
                     bodyparts,
-                    fps=30,
+                    fps=60,
                     save_path=os.path.join(output_dir, '3_temporal_brightness.png')
                 )
                 
@@ -7014,7 +9030,7 @@ class PixelPawsGUI:
                 output_dir, stats_df, bodyparts))
             
         except Exception as e:
-            self.root.after(0, lambda: messagebox.showerror(
+            self.root.after(0, lambda e=e: messagebox.showerror(
                 "Analysis Error", f"Error during analysis:\n\n{str(e)}"))
             import traceback
             traceback.print_exc()
@@ -7233,6 +9249,26 @@ class PixelPawsGUI:
             messagebox.showerror("Launch Error",
                                  f"Failed to launch crop tool:\n{str(e)}")
 
+    def open_frame_rate_diagnose(self):
+        """Open the duplicate-frame diagnostic dialog."""
+        try:
+            from frame_rate_dialog import open_diagnose_dialog
+        except ImportError as e:
+            messagebox.showerror("Frame Rate Diagnostic",
+                                 f"frame_rate_dialog.py not importable:\n{e}")
+            return
+        open_diagnose_dialog(self.root, self.current_project_folder.get())
+
+    def open_frame_rate_normalize(self):
+        """Open the project frame-rate normalization dialog."""
+        try:
+            from frame_rate_dialog import open_normalize_dialog
+        except ImportError as e:
+            messagebox.showerror("Normalize Frame Rate",
+                                 f"frame_rate_dialog.py not importable:\n{e}")
+            return
+        open_normalize_dialog(self.root, self.current_project_folder.get())
+
     def _add_image_tab(self, notebook, image_path, tab_name):
         """Add an image as a tab in the notebook"""
         frame = ttk.Frame(notebook)
@@ -7326,7 +9362,7 @@ class PixelPawsGUI:
             self.root.after(0, lambda: self._show_features_inspector_window(analysis, file_path))
             
         except Exception as e:
-            self.root.after(0, lambda: messagebox.showerror(
+            self.root.after(0, lambda e=e: messagebox.showerror(
                 "Inspection Error",
                 f"Could not inspect file:\n\n{str(e)}\n\n"
                 f"Make sure this is a valid features pickle file."))
@@ -7515,7 +9551,7 @@ class PixelPawsGUI:
         
         ttk.Label(title_frame, 
                  text="📋 Feature File Inspector",
-                 font=('Arial', 14, 'bold')).pack(side='left')
+                 font=(FONT_FAMILY, 14, 'bold')).pack(side='left')
         
         # Create notebook
         notebook = ttk.Notebook(window)
@@ -7794,14 +9830,14 @@ class PixelPawsGUI:
                         summary_label = ttk.Label(
                             summary_frame,
                             text=f"Showing {n_total_issues} features with quality issues ({n_severe} severe) out of {len(quality_df)} total features",
-                            font=('Arial', 10, 'bold'),
+                            font=(FONT_FAMILY, 10, 'bold'),
                             foreground='red'
                         )
                     else:
                         summary_label = ttk.Label(
                             summary_frame,
                             text=f"Showing {n_total_issues} features with some NaN values out of {len(quality_df)} total features",
-                            font=('Arial', 10, 'bold'),
+                            font=(FONT_FAMILY, 10, 'bold'),
                             foreground='orange'
                         )
                     summary_label.pack(pady=5)
@@ -7830,7 +9866,7 @@ class PixelPawsGUI:
                 else:
                     ttk.Label(quality_frame,
                              text="✓ No problematic features detected!",
-                             font=('Arial', 14, 'bold'),
+                             font=(FONT_FAMILY, 14, 'bold'),
                              foreground='green').pack(expand=True)
             
             # Tab 4: Feature Data Viewer (only if DataFrame)
@@ -7841,7 +9877,7 @@ class PixelPawsGUI:
                 # Instructions
                 ttk.Label(viewer_frame,
                          text="Select a feature to view its data values",
-                         font=('Arial', 12, 'bold')).pack(pady=10)
+                         font=(FONT_FAMILY, 12, 'bold')).pack(pady=10)
                 
                 # Feature selector
                 selector_frame = ttk.Frame(viewer_frame)
@@ -7955,7 +9991,7 @@ Median: {feature_data.median():.6f}
                 ttk.Label(data_display_frame,
                          text="Select a feature and click 'Show Data'",
                          foreground='gray',
-                         font=('Arial', 11)).pack(expand=True)
+                         font=(FONT_FAMILY, 11)).pack(expand=True)
         
         # Bottom buttons
         button_frame = ttk.Frame(window)
@@ -8073,7 +10109,7 @@ Median: {feature_data.median():.6f}
 
         # ── Header ────────────────────────────────────────────────────────
         ttk.Label(win, text="Feature Extraction",
-                  font=('Arial', 14, 'bold')).pack(pady=(12, 2))
+                  font=(FONT_FAMILY, 14, 'bold')).pack(pady=(12, 2))
         ttk.Label(win,
                   text="Extract pose + brightness (+ optional optical flow) features.",
                   foreground='gray').pack()
@@ -8366,7 +10402,14 @@ Median: {feature_data.median():.6f}
             # ── Build cache key & hash ─────────────────────────────────────
             os.makedirs(cache_root, exist_ok=True)
 
-            cfg_hash = PixelPawsGUI._feature_hash_key(cfg)
+            # Per-session hash + extraction since mm_per_pixel can vary
+            # under calibration_mode='auto'. Falls back to legacy single
+            # hash when no calibration is in play.
+            try:
+                from project_config import ProjectConfig as _PC
+                _proj_cfg = _PC.load(self.current_project_folder.get())
+            except Exception:
+                _proj_cfg = None
 
             # ── Extract ────────────────────────────────────────────────────
             total = len(sessions)
@@ -8380,6 +10423,12 @@ Median: {feature_data.median():.6f}
                 name = session['session_name']
                 log(f"[{idx}/{total}] {name}")
 
+                _mm_px_session = (_proj_cfg.resolve_mm_per_pixel(session)
+                                  if _proj_cfg is not None else None)
+                _cfg_for_hash = dict(cfg)
+                if _mm_px_session is not None:
+                    _cfg_for_hash['mm_per_pixel'] = float(_mm_px_session)
+                cfg_hash = PixelPawsGUI._feature_hash_key(_cfg_for_hash)
                 cache_file = os.path.join(cache_root, f"{name}_features_{cfg_hash}.pkl")
 
                 if os.path.isfile(cache_file):
@@ -8398,6 +10447,7 @@ Median: {feature_data.median():.6f}
                         config_yaml_path=cfg.get('dlc_config'),
                         include_optical_flow=cfg['include_optical_flow'],
                         bp_optflow_list=cfg['bp_optflow_list'] or None,
+                        mm_per_pixel=_mm_px_session,
                     )
                     if stop_event.is_set():
                         log("\nStopped by user.")
@@ -8451,7 +10501,7 @@ Median: {feature_data.median():.6f}
             progress.transient(self.root)
             
             ttk.Label(progress, text="Parameter Optimization in Progress", 
-                     font=('Arial', 12, 'bold')).pack(pady=10)
+                     font=(FONT_FAMILY, 12, 'bold')).pack(pady=10)
             
             status_label = ttk.Label(progress, text="Loading classifier...")
             status_label.pack(pady=5)
@@ -8583,6 +10633,7 @@ Median: {feature_data.median():.6f}
                             config_yaml_path=config_yaml,  # Auto-detect crop from config
                             include_optical_flow=clf_data.get('include_optical_flow', False),
                             bp_optflow_list=clf_data.get('bp_optflow_list', []) or None,
+                            clf_data=clf_data,
                         )
 
                         # Save to cache
@@ -8676,9 +10727,7 @@ Median: {feature_data.median():.6f}
                                     'min_bout': min_bout,
                                     'min_after_bout': min_after_bout,
                                     'max_gap': max_gap,
-                                'min_bout': min_bout,
-                                'max_gap': max_gap,
-                                'accuracy': accuracy,
+                                    'accuracy': accuracy,
                                 'f1': f1,
                                 'precision': precision_score(human_labels, y_pred, zero_division=0),
                                 'recall': recall_score(human_labels, y_pred, zero_division=0)
@@ -8773,7 +10822,7 @@ Median: {feature_data.median():.6f}
         
         # Title
         title = ttk.Label(optimizer_window, text="Classifier Parameter Optimizer", 
-                         font=('Arial', 14, 'bold'))
+                         font=(FONT_FAMILY, 14, 'bold'))
         title.pack(pady=10)
         
         # Instructions
@@ -9012,6 +11061,7 @@ Median: {feature_data.median():.6f}
                             config_yaml_path=config_yaml,
                             include_optical_flow=clf_data.get('include_optical_flow', False),
                             bp_optflow_list=clf_data.get('bp_optflow_list', []) or None,
+                            clf_data=clf_data,
                         ),
                         save_path=cache_file,
                         log_fn=lambda m: results_text.insert(tk.END, m + '\n'),
@@ -9167,7 +11217,7 @@ Median: {feature_data.median():.6f}
         
         # Title
         title = ttk.Label(optimizer_window, text="Classifier Parameter Optimizer", 
-                         font=('Arial', 14, 'bold'))
+                         font=(FONT_FAMILY, 14, 'bold'))
         title.pack(pady=10)
         
         # Instructions
@@ -9311,8 +11361,9 @@ Median: {feature_data.median():.6f}
                     square_size=clf_data.get('square_size', [40]),
                     pix_threshold=clf_data.get('pix_threshold', 0.3),
                     config_yaml_path=config_yaml,  # Pass config for crop detection
+                    clf_data=clf_data,
                 )
-                
+
                 # Add post-cache features the model may require (lag, egocentric, contact)
                 X = augment_features_post_cache(X, clf_data, model, dlc_path)
 
@@ -9446,7 +11497,7 @@ Median: {feature_data.median():.6f}
         
         # Title
         title = ttk.Label(converter_window, text="BORIS to PixelPaws Converter", 
-                         font=('Arial', 14, 'bold'))
+                         font=(FONT_FAMILY, 14, 'bold'))
         title.pack(pady=10)
         
         # Instructions
@@ -9512,8 +11563,8 @@ Median: {feature_data.median():.6f}
                                                             sticky='w', pady=(5, 2))
 
         ttk.Label(param_frame, text="Behavior Name:").grid(row=1, column=0, sticky='w', pady=5)
-        behavior_var = tk.StringVar(value="L_licking")
-        behavior_entry = ttk.Entry(param_frame, textvariable=behavior_var, width=30)
+        behavior_var = tk.StringVar(value="")   # blank → use Auto-Detect to populate
+        behavior_entry = ttk.Combobox(param_frame, textvariable=behavior_var, width=28)
         behavior_entry.grid(row=1, column=1, sticky='w', padx=5)
         
         # Auto-detect button
@@ -9557,48 +11608,15 @@ Median: {feature_data.median():.6f}
                 if not behaviors:
                     messagebox.showinfo("No Behaviors", "No behaviors found in Behavior column.")
                     return
-                
-                # Show selection dialog
-                dialog = tk.Toplevel(converter_window)
-                dialog.title("Select Behavior")
-                _sw, _sh = dialog.winfo_screenwidth(), dialog.winfo_screenheight()
-                dialog.geometry(f"450x500+{(_sw-450)//2}+{(_sh-500)//2}")
-                dialog.transient(converter_window)
-                dialog.grab_set()
-                
-                ttk.Label(dialog, text=f"Found {len(behaviors)} behavior(s):",
-                         font=('Arial', 10, 'bold')).pack(padx=10, pady=10)
-                
-                # Listbox
-                list_frame = ttk.Frame(dialog)
-                list_frame.pack(fill='both', expand=True, padx=10, pady=5)
-                
-                scrollbar = ttk.Scrollbar(list_frame)
-                scrollbar.pack(side='right', fill='y')
-                
-                listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, font=('Arial', 10))
-                listbox.pack(side='left', fill='both', expand=True)
-                scrollbar.config(command=listbox.yview)
-                
-                for b in behaviors:
-                    listbox.insert(tk.END, b)
-                
-                if behaviors:
-                    listbox.selection_set(0)
-                
-                def on_select():
-                    sel = listbox.curselection()
-                    if sel:
-                        behavior_var.set(listbox.get(sel[0]))
-                        dialog.destroy()
-                
-                btn_frame = ttk.Frame(dialog)
-                btn_frame.pack(pady=10)
-                ttk.Button(btn_frame, text="Select", command=on_select).pack(side='left', padx=5)
-                ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side='left', padx=5)
-                
-                listbox.bind('<Double-Button-1>', lambda e: on_select())
-                
+
+                # Populate the Behavior Name dropdown with the detected behaviors.
+                behavior_entry['values'] = behaviors
+                behavior_var.set(behaviors[0])
+                messagebox.showinfo(
+                    "Behaviors detected",
+                    f"Found {len(behaviors)} behavior(s). Pick one from the "
+                    f"'Behavior Name' dropdown, or check 'All behaviors' to export every column.")
+
             except Exception as e:
                 import traceback
                 print(traceback.format_exc())
@@ -9917,19 +11935,23 @@ Left/Right  - Previous/Next frame
         from user_config import get_global_classifiers_folder
         self.pred_classifier_options = {}
 
-        # Local project classifiers
+        import glob
+
+        # Local project classifiers — recursive so per-run subfolders are found
         clf_dir = os.path.join(self.current_project_folder.get(), 'classifiers')
         if os.path.isdir(clf_dir):
-            for f in sorted(os.listdir(clf_dir)):
-                if f.endswith('.pkl'):
-                    self.pred_classifier_options[f"[Project] {f}"] = os.path.join(clf_dir, f)
+            for full in sorted(glob.glob(
+                    os.path.join(clf_dir, '**', '*.pkl'), recursive=True)):
+                basename = os.path.basename(full)
+                self.pred_classifier_options[f"[Project] {basename}"] = full
 
-        # Global classifiers library
+        # Global classifiers library — recursive for the same reason
         gcf = get_global_classifiers_folder()
         if os.path.isdir(gcf):
-            for f in sorted(os.listdir(gcf)):
-                if f.endswith('.pkl'):
-                    self.pred_classifier_options[f"[Global] {f}"] = os.path.join(gcf, f)
+            for full in sorted(glob.glob(
+                    os.path.join(gcf, '**', '*.pkl'), recursive=True)):
+                basename = os.path.basename(full)
+                self.pred_classifier_options[f"[Global] {basename}"] = full
 
         if hasattr(self, 'pred_classifier_combo'):
             self.pred_classifier_combo['values'] = list(self.pred_classifier_options.keys())
@@ -10253,7 +12275,7 @@ Left/Right  - Previous/Next frame
         result = {}
         
         ttk.Label(dialog, text="Adjust Prediction Parameters", 
-                 font=('Arial', 12, 'bold')).pack(pady=10)
+                 font=(FONT_FAMILY, 12, 'bold')).pack(pady=10)
         
         # Check if we have optimized parameters
         if hasattr(self, 'optimized_params'):
@@ -10276,13 +12298,13 @@ Left/Right  - Previous/Next frame
         defaults_frame.pack(fill='x', padx=15, pady=5)
         
         ttk.Label(defaults_frame, text=f"Threshold: {default_thresh:.3f}", 
-                 font=('Arial', 9)).grid(row=0, column=0, sticky='w', pady=2)
+                 font=(FONT_FAMILY, 9)).grid(row=0, column=0, sticky='w', pady=2)
         ttk.Label(defaults_frame, text=f"Min Bout: {default_min_bout} frames", 
-                 font=('Arial', 9)).grid(row=0, column=1, sticky='w', pady=2, padx=20)
+                 font=(FONT_FAMILY, 9)).grid(row=0, column=1, sticky='w', pady=2, padx=20)
         ttk.Label(defaults_frame, text=f"Min After Bout: {default_min_after} frames", 
-                 font=('Arial', 9)).grid(row=1, column=0, sticky='w', pady=2)
+                 font=(FONT_FAMILY, 9)).grid(row=1, column=0, sticky='w', pady=2)
         ttk.Label(defaults_frame, text=f"Max Gap: {default_max_gap} frames", 
-                 font=('Arial', 9)).grid(row=1, column=1, sticky='w', pady=2, padx=20)
+                 font=(FONT_FAMILY, 9)).grid(row=1, column=1, sticky='w', pady=2, padx=20)
         
         # Custom parameters
         custom_frame = ttk.LabelFrame(dialog, text="Adjust Parameters", padding=10)
@@ -10400,7 +12422,7 @@ Left/Right  - Previous/Next frame
             progress.geometry(f"450x170+{(_sw-450)//2}+{(_sh-170)//2}")
             
             progress_label = ttk.Label(progress, text="Loading classifier...", 
-                     font=('Arial', 10))
+                     font=(FONT_FAMILY, 10))
             progress_label.pack(pady=20)
             
             progress_bar = ttk.Progressbar(progress, mode='indeterminate', length=300)
@@ -10525,6 +12547,7 @@ Left/Right  - Previous/Next frame
                                 config_yaml_path=config_yaml,
                                 include_optical_flow=clf_data.get('include_optical_flow', False),
                                 bp_optflow_list=clf_data.get('bp_optflow_list', []) or None,
+                                clf_data=clf_data,
                             ),
                             save_path=cache_file,
                             dlc_path=dlc_path,
@@ -10782,7 +12805,7 @@ Left/Right  - Previous/Next frame
         def _placeholder(msg):
             canvas.delete('all')
             canvas.create_text(CW // 2, CH // 2, text=msg,
-                               fill='gray', font=('Arial', 9))
+                               fill='gray', font=(FONT_FAMILY, 9))
 
         video_path = self.pred_video_path.get().strip()
         if not video_path or not os.path.isfile(video_path):
@@ -11063,6 +13086,82 @@ Left/Right  - Previous/Next frame
             self._pred_log(f"\n✗ Export failed: {traceback.format_exc()}\n")
             self._safe_after(lambda e=e: messagebox.showerror("Error", f"Export failed:\n{str(e)}"))
 
+    def export_diagnostic_plot(self, auto=False):
+        """Export the human-vs-model diagnostic figure for the last prediction.
+
+        4 panels: raster (Human/Model) · confusion-matrix + F1 · time-bin (10 s) seconds/bin
+        + Pearson R · probability trace (threshold line + shaded human bouts). Needs the
+        Human Labels CSV (the behavior column = ground truth). ``auto=True`` is the silent
+        post-run path (worker thread, no dialogs); the toolbar button calls it interactively.
+        """
+        def _log(m):
+            try: self._pred_log(m)
+            except Exception: pass
+
+        if self._last_pred_y_proba is None:
+            if not auto:
+                messagebox.showinfo("No prediction", "Run a prediction first, then export the plot.")
+            return
+
+        behavior_name = self._last_pred_behavior_name
+        labels_path = (self.pred_human_labels_path.get().strip()
+                       if self.pred_human_labels_path is not None else "")
+        if not labels_path:
+            if auto:
+                _log("Diagnostic plot: skipped (no Human Labels provided).\n")
+                return
+            from tkinter import filedialog as _fd
+            labels_path = _fd.askopenfilename(
+                title=f"Select human labels CSV (must contain a '{behavior_name}' column)",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+            if not labels_path:
+                return
+        if not os.path.isfile(labels_path):
+            msg = f"Human labels file not found:\n{labels_path}"
+            _log("✗ " + msg + "\n")
+            if not auto:
+                messagebox.showerror("Missing labels", msg)
+            return
+
+        try:
+            import pandas as _pd
+            from evaluation_tab import render_session_diagnostic
+            df = _pd.read_csv(labels_path)
+            if behavior_name not in df.columns:
+                msg = (f"Behavior column '{behavior_name}' not in labels file.\n"
+                       f"Columns: {list(df.columns)[:12]}")
+                _log("✗ " + msg + "\n")
+                if not auto:
+                    messagebox.showerror("Wrong labels file", msg)
+                return
+            y_true  = df[behavior_name].values
+            y_pred  = self._last_pred_y_pred
+            y_proba = self._last_pred_y_proba
+            n = int(min(len(y_true), len(y_pred), len(y_proba)))
+            if not (len(y_true) == len(y_pred) == len(y_proba)):
+                _log(f"  ⚠ length mismatch (labels={len(y_true)}, pred={len(y_pred)}) — "
+                     f"aligning to first {n:,} frames.\n")
+            out_path = os.path.join(
+                self._last_pred_output_folder,
+                f"PixelPaws_{behavior_name}_Diagnostic_{self._last_pred_base_name}.png")
+            res = render_session_diagnostic(
+                y_true[:n], y_pred[:n], behavior_name, self._last_pred_base_name, out_path,
+                fps=float(self._last_pred_fps or 60.0),
+                threshold=self._last_pred_threshold,
+                y_proba=y_proba[:n])
+            r_txt = f"{res['r']:.2f}" if res.get('r') is not None else "n/a"
+            _log(f"✓ Diagnostic plot: {out_path}  (F1={res['f1']:.2f}, R={r_txt})\n")
+            if not auto:
+                self._safe_after(lambda: messagebox.showinfo(
+                    "Diagnostic plot saved",
+                    f"Saved:\n{out_path}\n\nFrame F1={res['f1']:.2f}   time-bin R={r_txt}"))
+        except Exception as e:
+            import traceback
+            _log(f"\n✗ Diagnostic plot failed: {traceback.format_exc()}\n")
+            if not auto:
+                self._safe_after(lambda e=e: messagebox.showerror(
+                    "Error", f"Diagnostic plot failed:\n{e}"))
+
     def _predict_thread(self):
         """Prediction thread with feature caching and crop handling"""
         try:
@@ -11224,6 +13323,7 @@ Left/Right  - Previous/Next frame
                             include_optical_flow=clf_data.get('include_optical_flow', False),
                             bp_optflow_list=clf_data.get('bp_optflow_list', []) or None,
                             cancel_flag=self._predict_cancel_flag,
+                            clf_data=clf_data,
                         ),
                         save_path=cache_file,
                         log_fn=self._pred_log,
@@ -11264,8 +13364,8 @@ Left/Right  - Previous/Next frame
             fps = cap.get(cv2.CAP_PROP_FPS)
             cap.release()
             if not fps or fps <= 0:
-                fps = 30.0
-                self._pred_log("Warning: video reported FPS=0, defaulting to 30\n")
+                fps = 60.0
+                self._pred_log("Warning: video reported FPS=0, defaulting to 60\n")
 
             behavior_time = n_positive / fps
 
@@ -11338,6 +13438,7 @@ Left/Right  - Previous/Next frame
             # Stash results for the separate labeled-video export
             self._last_pred_y_pred        = y_pred
             self._last_pred_y_proba       = y_proba
+            self._last_pred_threshold     = float(clf_data.get('best_thresh', 0.5))
             self._last_pred_fps           = fps
             self._last_pred_n_frames      = n_frames
             self._last_pred_video_path    = video_path
@@ -11347,9 +13448,14 @@ Left/Right  - Previous/Next frame
             self._last_pred_dlc_path      = dlc_path   # for skeleton overlay in export
             self._last_pred_crop_offset   = (crop_x_offset, crop_y_offset)
             self.pred_export_video_btn.config(state='normal')
+            self.pred_diagnostic_btn.config(state='normal')
 
             if self.pred_generate_ethogram.get():
                 self._pred_log("Ethogram plots: coming soon\n")
+
+            # Auto-export the human-vs-model diagnostic figure if requested + labels available.
+            if self.pred_export_diagnostic is not None and self.pred_export_diagnostic.get():
+                self.export_diagnostic_plot(auto=True)
 
             self._pred_log("\n✓ Prediction complete!\n")
             
@@ -11677,7 +13783,7 @@ Left/Right  - Previous/Next frame
         dialog.geometry(f"{_dw}x{_dh}+{(_sw-_dw)//2}+{(_sh-_dh)//2}")
         dialog.resizable(True, True)
         
-        ttk.Label(dialog, text=f"Classifier: {item}", font=('Arial', 10, 'bold')).pack(pady=10)
+        ttk.Label(dialog, text=f"Classifier: {item}", font=(FONT_FAMILY, 10, 'bold')).pack(pady=10)
         
         frame = ttk.Frame(dialog, padding=10)
         frame.pack(fill='both', expand=True)
@@ -11690,7 +13796,7 @@ Left/Right  - Previous/Next frame
         ttk.Separator(frame, orient='horizontal').grid(row=1, column=0, columnspan=3, sticky='ew', pady=5)
         
         # Classifier defaults (read-only)
-        ttk.Label(frame, text="Classifier Defaults:", font=('Arial', 9, 'bold')).grid(
+        ttk.Label(frame, text="Classifier Defaults:", font=(FONT_FAMILY, 9, 'bold')).grid(
             row=2, column=0, columnspan=3, sticky='w', pady=5)
         
         default_frame = ttk.Frame(frame)
@@ -11708,7 +13814,7 @@ Left/Right  - Previous/Next frame
         ttk.Separator(frame, orient='horizontal').grid(row=4, column=0, columnspan=3, sticky='ew', pady=5)
         
         # Custom parameters
-        ttk.Label(frame, text="Custom Parameters:", font=('Arial', 9, 'bold')).grid(
+        ttk.Label(frame, text="Custom Parameters:", font=(FONT_FAMILY, 9, 'bold')).grid(
             row=5, column=0, columnspan=3, sticky='w', pady=5)
         
         # Threshold
@@ -12117,6 +14223,7 @@ Left/Right  - Previous/Next frame
                                         include_optical_flow=clf_data.get('include_optical_flow', False),
                                         bp_optflow_list=clf_data.get('bp_optflow_list', []) or None,
                                         cancel_flag=self._batch_cancel_flag,
+                                        clf_data=clf_data,
                                     ),
                                     save_path=cache_file,
                                     log_fn=self._batch_log,
@@ -12142,6 +14249,7 @@ Left/Right  - Previous/Next frame
                                     include_optical_flow=clf_data.get('include_optical_flow', False),
                                     bp_optflow_list=clf_data.get('bp_optflow_list', []) or None,
                                     cancel_flag=self._batch_cancel_flag,
+                                    clf_data=clf_data,
                                 )
                             except InterruptedError:
                                 self._batch_log("     Extraction cancelled.\n")
@@ -12171,6 +14279,7 @@ Left/Right  - Previous/Next frame
                                     pix_threshold=smart_pix_threshold,
                                     config_yaml_path=config_yaml,  # Pass config for crop detection
                                     cancel_flag=self._batch_cancel_flag,
+                                    clf_data=clf_data,
                                 )
                             except InterruptedError:
                                 self._batch_log("     Extraction cancelled.\n")
@@ -12213,8 +14322,8 @@ Left/Right  - Previous/Next frame
                         fps = _cap.get(_cv2.CAP_PROP_FPS)
                         _cap.release()
                         if not fps or fps <= 0:
-                            fps = 30.0
-                            self._batch_log(f"     Warning: FPS=0, defaulting to 30\n")
+                            fps = 60.0
+                            self._batch_log(f"     Warning: FPS=0, defaulting to 60\n")
 
                         # Count bouts using shared helper
                         bout_stats = count_bouts(y_pred_filtered, fps)
@@ -12836,7 +14945,7 @@ def main():
         style.theme_use('clam')
 
     # Accent button style — bold font for primary actions
-    style.configure('Accent.TButton', font=('Arial', 10, 'bold'))
+    style.configure('Accent.TButton', font=(FONT_FAMILY, 10, 'bold'))
 
     # Bind keyboard shortcuts
     root.bind('<F11>', lambda e: root.attributes('-fullscreen',

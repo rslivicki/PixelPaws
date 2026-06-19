@@ -20,9 +20,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
 
-from ui_utils import _bind_tight_layout_on_resize
-
-
+from ui_utils import _bind_tight_layout_on_resize, FONT_FAMILY
 class BrightnessPreview:
     def __init__(self, root, video_path=None, features_path=None):
         self.root = root
@@ -46,7 +44,7 @@ class BrightnessPreview:
         self.brightness_features = []
         self.current_frame = 0
         self.total_frames = 0
-        self.fps = 30
+        self.fps = 60
         
         self.graph_win = None
         self.video_win = None
@@ -63,7 +61,7 @@ class BrightnessPreview:
         """Create UI elements"""
         # Header
         ttk.Label(self.root, text="Brightness Preview", 
-                 font=('Arial', 12, 'bold')).pack(pady=5)
+                 font=(FONT_FAMILY, 12, 'bold')).pack(pady=5)
         
         # Files section
         files_frame = ttk.LabelFrame(self.root, text="Files", padding=5)

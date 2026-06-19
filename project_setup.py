@@ -24,6 +24,7 @@ import glob as _glob
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
+from ui_utils import FONT_FAMILY
 
 _BP_DEFAULTS = ['hrpaw', 'hlpaw', 'snout']
 
@@ -104,10 +105,10 @@ class ProjectSetupWizard(tk.Toplevel):
         hdr.pack(fill='x')
         tk.Label(hdr, text="🐾 PixelPaws — Project Setup",
                  bg=_hdr_bg, fg='white',
-                 font=('Arial', 14, 'bold')).pack()
+                 font=(FONT_FAMILY, 14, 'bold')).pack()
         self.step_label = tk.Label(hdr, text="",
                                    bg=_hdr_bg, fg='#c8e0f4',
-                                   font=('Arial', 9))
+                                   font=(FONT_FAMILY, 9))
         self.step_label.pack()
 
         # Content frame (swapped per step)
@@ -141,10 +142,10 @@ class ProjectSetupWizard(tk.Toplevel):
         if recent:
             ttk.Label(self.content,
                       text="Welcome to PixelPaws!",
-                      font=('Arial', 11, 'bold'), justify='center').pack(pady=(10, 6))
+                      font=(FONT_FAMILY, 11, 'bold'), justify='center').pack(pady=(10, 6))
 
             ttk.Label(self.content, text="Recent Projects:",
-                      font=('Arial', 10)).pack(anchor='w', pady=(4, 2))
+                      font=(FONT_FAMILY, 10)).pack(anchor='w', pady=(4, 2))
 
             list_frame = ttk.Frame(self.content)
             list_frame.pack(fill='both', expand=True)
@@ -152,7 +153,7 @@ class ProjectSetupWizard(tk.Toplevel):
             self._recent_listbox = tk.Listbox(
                 list_frame, height=min(len(recent), 6),
                 selectmode='single', exportselection=False,
-                activestyle='dotbox', font=('Arial', 9))
+                activestyle='dotbox', font=(FONT_FAMILY, 9))
             sb = ttk.Scrollbar(list_frame, command=self._recent_listbox.yview)
             self._recent_listbox.config(yscrollcommand=sb.set)
             self._recent_listbox.pack(side='left', fill='both', expand=True)
@@ -182,7 +183,7 @@ class ProjectSetupWizard(tk.Toplevel):
             # No recent projects — original two-button layout
             ttk.Label(self.content,
                       text="Welcome to PixelPaws!\n\nCreate a new project or open an existing one.",
-                      font=('Arial', 10), justify='center').pack(pady=(10, 20))
+                      font=(FONT_FAMILY, 10), justify='center').pack(pady=(10, 20))
 
             btn_frame = ttk.Frame(self.content)
             btn_frame.pack(expand=True)
@@ -353,7 +354,7 @@ class ProjectSetupWizard(tk.Toplevel):
                        "3–5 body parts is recommended — each additional part "
                        "adds significant processing time.",
                   foreground='gray', wraplength=340, justify='left',
-                  font=('Arial', 8)).pack(anchor='w', pady=(4, 0))
+                  font=(FONT_FAMILY, 8)).pack(anchor='w', pady=(4, 0))
 
         row += 1
 
@@ -583,7 +584,7 @@ class ProjectSetupWizard(tk.Toplevel):
                                            _atomic_pickle_save,
                                            PixelPawsGUI)
             except ImportError as imp_err:
-                self.after(0, lambda: self._log_extract(
+                self.after(0, lambda imp_err=imp_err: self._log_extract(
                     f"ERROR: Could not import extraction functions — {imp_err}"))
                 self.after(0, lambda: self.btn_next.config(state='normal'))
                 return
@@ -769,10 +770,10 @@ class KeyFileGeneratorDialog(tk.Toplevel):
         hdr = tk.Frame(self, bg=_hdr_bg, pady=10)
         hdr.pack(fill='x')
         tk.Label(hdr, text="📋 Key File — Group Assignment",
-                 bg=_hdr_bg, fg='white', font=('Arial', 12, 'bold')).pack()
+                 bg=_hdr_bg, fg='white', font=(FONT_FAMILY, 12, 'bold')).pack()
         tk.Label(hdr,
                  text="Assign each video to a group (e.g. Control, Treatment, Sham).",
-                 bg=_hdr_bg, fg='#c8e0f4', font=('Arial', 9)).pack()
+                 bg=_hdr_bg, fg='#c8e0f4', font=(FONT_FAMILY, 9)).pack()
 
         # Quick-fill bar
         qf = ttk.Frame(self, padding=(10, 6, 10, 2))
@@ -794,9 +795,9 @@ class KeyFileGeneratorDialog(tk.Toplevel):
         self._table = ttk.Frame(canvas)
         _cwin = canvas.create_window((0, 0), window=self._table, anchor='nw')
 
-        ttk.Label(self._table, text="Subject (video base name)", font=('Arial', 9, 'bold'),
+        ttk.Label(self._table, text="Subject (video base name)", font=(FONT_FAMILY, 9, 'bold'),
                   width=38).grid(row=0, column=0, sticky='w', padx=4, pady=2)
-        ttk.Label(self._table, text="Treatment / Group", font=('Arial', 9, 'bold'),
+        ttk.Label(self._table, text="Treatment / Group", font=(FONT_FAMILY, 9, 'bold'),
                   width=16).grid(row=0, column=1, sticky='w', padx=4, pady=2)
         ttk.Separator(self._table, orient='horizontal').grid(
             row=1, column=0, columnspan=2, sticky='ew', pady=2)

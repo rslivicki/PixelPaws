@@ -13,9 +13,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import seaborn as sns
 from datetime import datetime
 
-from ui_utils import _bind_tight_layout_on_resize, _draw_canvas_fit
-
-
+from ui_utils import _bind_tight_layout_on_resize, _draw_canvas_fit, FONT_FAMILY
 class AnalysisTab(ttk.Frame):
     """
     Analysis tab for batch processing results
@@ -71,7 +69,7 @@ class AnalysisTab(ttk.Frame):
         ttk.Label(
             title_frame,
             text="📊 Batch Analysis & Graphing",
-            font=('Arial', 16, 'bold')
+            font=(FONT_FAMILY, 16, 'bold')
         ).pack(side='left')
         
         ttk.Button(
@@ -112,7 +110,7 @@ class AnalysisTab(ttk.Frame):
         ttk.Label(
             frame,
             text="Scan All recursively finds every prediction folder and key file in the project.",
-            font=('Arial', 9), foreground='gray'
+            font=(FONT_FAMILY, 9), foreground='gray'
         ).pack(anchor='w', pady=(0, 6))
 
         ttk.Separator(frame, orient='horizontal').pack(fill='x', pady=(0, 8))
@@ -136,7 +134,7 @@ class AnalysisTab(ttk.Frame):
         ttk.Label(
             frame,
             text="Key file must have columns: Subject, Treatment (CSV or XLSX).",
-            font=('Arial', 9), foreground='gray'
+            font=(FONT_FAMILY, 9), foreground='gray'
         ).pack(anchor='w', pady=(0, 8))
 
         # ── Predictions folder ────────────────────────────────────────────
@@ -156,7 +154,7 @@ class AnalysisTab(ttk.Frame):
         ttk.Label(
             frame,
             text="Folder containing prediction CSV files from batch processing.",
-            font=('Arial', 9), foreground='gray'
+            font=(FONT_FAMILY, 9), foreground='gray'
         ).pack(anchor='w', pady=(0, 8))
 
         # ── Filename prefix ───────────────────────────────────────────────
@@ -172,7 +170,7 @@ class AnalysisTab(ttk.Frame):
             frame,
             text="Fallback only: strip this prefix then take the next token as subject ID. "
                  "Key-file token matching is tried first.",
-            font=('Arial', 9), foreground='gray'
+            font=(FONT_FAMILY, 9), foreground='gray'
         ).pack(anchor='w', pady=2)
 
         # ── Status ────────────────────────────────────────────────────────
@@ -224,7 +222,7 @@ class AnalysisTab(ttk.Frame):
         ttk.Label(
             frame,
             text="Video will be divided into bins of this duration",
-            font=('Arial', 9),
+            font=(FONT_FAMILY, 9),
             foreground='gray'
         ).pack(anchor='w', pady=2)
         
@@ -251,7 +249,7 @@ class AnalysisTab(ttk.Frame):
         ttk.Label(
             frame,
             text="Frame rate of videos (used for time calculations)",
-            font=('Arial', 9),
+            font=(FONT_FAMILY, 9),
             foreground='gray'
         ).pack(anchor='w', pady=2)
 
@@ -261,7 +259,7 @@ class AnalysisTab(ttk.Frame):
         ttk.Label(
             frame,
             text="Statistical Testing (Optional)",
-            font=('Arial', 11, 'bold')
+            font=(FONT_FAMILY, 11, 'bold')
         ).pack(anchor='w', pady=5)
         
         self.enable_stats_var = tk.BooleanVar(value=False)
@@ -310,7 +308,7 @@ class AnalysisTab(ttk.Frame):
 
         # Time course specific option
         ttk.Separator(self.stats_settings_frame, orient='horizontal').pack(fill='x', pady=5)
-        ttk.Label(self.stats_settings_frame, text="Time Course Options:", font=('Arial', 9, 'bold')).pack(anchor='w')
+        ttk.Label(self.stats_settings_frame, text="Time Course Options:", font=(FONT_FAMILY, 9, 'bold')).pack(anchor='w')
         
         self.timecourse_posthoc_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -322,19 +320,19 @@ class AnalysisTab(ttk.Frame):
         ttk.Label(
             self.stats_settings_frame,
             text="Note: Graph markers show overall ANOVA result. Post-hoc details in Statistics tab.",
-            font=('Arial', 8),
+            font=(FONT_FAMILY, 8),
             foreground='gray'
         ).pack(anchor='w', padx=20, pady=2)
         
         ttk.Label(
             self.stats_settings_frame,
             text="* p<0.05, ** p<0.01, *** p<0.001, ns = not significant",
-            font=('Arial', 9),
+            font=(FONT_FAMILY, 9),
             foreground='gray'
         ).pack(anchor='w', pady=2)
 
         # Metrics selection
-        ttk.Label(frame, text="Metrics to Calculate:", font=('Arial', 10, 'bold')).pack(anchor='w', pady=(10, 5))
+        ttk.Label(frame, text="Metrics to Calculate:", font=(FONT_FAMILY, 10, 'bold')).pack(anchor='w', pady=(10, 5))
         
         metrics_frame = ttk.Frame(frame)
         metrics_frame.pack(fill='x', pady=5)
@@ -355,7 +353,7 @@ class AnalysisTab(ttk.Frame):
         
         # Formalin Phase Analysis
         ttk.Separator(frame, orient='horizontal').pack(fill='x', pady=15)
-        ttk.Label(frame, text="🧪 Phase Analysis (Optional):", font=('Arial', 10, 'bold')).pack(anchor='w', pady=(5, 5))
+        ttk.Label(frame, text="🧪 Phase Analysis (Optional):", font=(FONT_FAMILY, 10, 'bold')).pack(anchor='w', pady=(5, 5))
         
         self.enable_phase_analysis = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -399,7 +397,7 @@ class AnalysisTab(ttk.Frame):
         ttk.Label(
             self.phase_settings_frame,
             text="Phase analysis calculates total time in each phase period",
-            font=('Arial', 9),
+            font=(FONT_FAMILY, 9),
             foreground='gray'
         ).grid(row=1, column=0, columnspan=2, sticky='w', pady=5)
         
@@ -834,6 +832,7 @@ class AnalysisTab(ttk.Frame):
             return
         
         try:
+            import cv2
             cap = cv2.VideoCapture(video_file)
             fps = cap.get(cv2.CAP_PROP_FPS)
             cap.release()
@@ -1016,7 +1015,7 @@ class AnalysisTab(ttk.Frame):
         ttk.Label(
             self.behavior_selection_frame,
             text=f"Found {len(self.available_behaviors)} behavior(s). Select which to analyze:",
-            font=('Arial', 10, 'bold')
+            font=(FONT_FAMILY, 10, 'bold')
         ).pack(anchor='w', pady=5)
         
         # Checkbox for each behavior
@@ -1039,7 +1038,7 @@ class AnalysisTab(ttk.Frame):
         ttk.Label(
             self.behavior_selection_frame,
             text="Analysis Mode:",
-            font=('Arial', 10, 'bold')
+            font=(FONT_FAMILY, 10, 'bold')
         ).pack(anchor='w', pady=5)
         
         ttk.Radiobutton(
@@ -1066,7 +1065,7 @@ class AnalysisTab(ttk.Frame):
         ttk.Label(
             self.behavior_selection_frame,
             text="Combined mode: All selected behaviors summed together (e.g., total nociceptive behaviors)",
-            font=('Arial', 9),
+            font=(FONT_FAMILY, 9),
             foreground='gray'
         ).pack(anchor='w', padx=20, pady=2)
     
@@ -1112,9 +1111,9 @@ class AnalysisTab(ttk.Frame):
                 return
             fps = self.fps_var.get()
             if not fps or fps <= 0:
-                fps = 30.0
-                self.fps_var.set(30.0)
-                print("Warning: FPS was 0 or negative, defaulting to 30")
+                fps = 60.0
+                self.fps_var.set(60.0)
+                print("Warning: FPS was 0 or negative, defaulting to 60")
             analysis_mode = self.analyze_mode.get()
             
             # Filter prediction files to only selected behaviors
@@ -1504,14 +1503,16 @@ class AnalysisTab(ttk.Frame):
                         metrics['Bin_End_Min'] = _bin_end
                     
                     results.append(metrics)
-            
-            # Calculate phase-specific metrics if enabled
-            if self.enable_phase_analysis.get():
-                phase_results = self.calculate_phase_metrics(
-                    predictions, fps, subject, treatment, behavior_name
-                )
-                results.extend(phase_results)
-            
+
+                # Phase-specific metrics (per subject), if enabled. Uses the
+                # combined per-frame predictions and a combined behavior label.
+                if self.enable_phase_analysis.get():
+                    combined_label = 'Combined_' + '+'.join(sorted(selected_behaviors))
+                    phase_results = self.calculate_phase_metrics(
+                        combined_predictions, fps, subject, treatment, combined_label
+                    )
+                    results.extend(phase_results)
+
             return results
             
         except Exception as e:
@@ -1611,23 +1612,101 @@ class AnalysisTab(ttk.Frame):
             self.results_tree.insert('', 'end', values=values)
     
     def export_results(self):
-        """Export results to CSV"""
+        """Export results to CSV.
+
+        Writes a companion `<csv>.meta.json` sidecar with the git SHA,
+        export timestamp, source files, and analysis settings so the
+        CSV's provenance is recoverable for publication audit trails.
+        Pure-CSV consumers (Excel/R/pandas) ignore the sidecar.
+        """
         if self.results_df is None:
             messagebox.showerror("Error", "No results to export")
             return
-        
+
         filepath = filedialog.asksaveasfilename(
             title="Save Results",
             defaultextension=".csv",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
         )
-        
+
         if filepath:
             try:
                 self.results_df.to_csv(filepath, index=False)
-                messagebox.showinfo("Success", f"Results exported to:\n{filepath}")
+                self._write_export_metadata_sidecar(filepath)
+                messagebox.showinfo(
+                    "Success",
+                    f"Results exported to:\n{filepath}\n\n"
+                    f"Reproducibility metadata: "
+                    f"{os.path.basename(filepath)}.meta.json")
             except Exception as e:
                 messagebox.showerror("Export Error", f"Failed to export:\n{e}")
+
+    def _write_export_metadata_sidecar(self, csv_path: str):
+        """Emit `<csv_path>.meta.json` with provenance for the export.
+
+        Captures git SHA + dirty flag, export timestamp, the CSV row
+        count, the source prediction files, the loaded key file, the
+        selected behaviors, and the analysis settings (fps, bin size,
+        mode). Best-effort — failure here does not block the CSV write.
+        """
+        import json
+        try:
+            from io_utils import get_git_sha
+        except Exception:
+            get_git_sha = lambda: 'unknown'  # noqa: E731
+
+        try:
+            n_rows = len(self.results_df) if self.results_df is not None else 0
+        except Exception:
+            n_rows = None
+
+        meta = {
+            'csv_path': os.path.abspath(csv_path),
+            'csv_row_count': n_rows,
+            'git_sha': get_git_sha(),
+            'export_timestamp_utc':
+                datetime.utcnow().isoformat(timespec='seconds') + 'Z',
+            'export_timestamp_local':
+                datetime.now().isoformat(timespec='seconds'),
+            'pixelpaws_module': 'analysis_tab.py',
+        }
+
+        for attr, key in (('selected_behaviors', 'analyzed_behaviors'),
+                          ('key_file', 'key_file'),
+                          ('prediction_files', 'prediction_files_count')):
+            try:
+                val = getattr(self, attr, None)
+                if val is None:
+                    continue
+                if attr == 'prediction_files':
+                    meta[key] = len(val)
+                    meta['prediction_files'] = [
+                        f.get('path', f.get('file', str(f)))
+                        if isinstance(f, dict) else str(f)
+                        for f in val]
+                else:
+                    meta[key] = val
+            except Exception:
+                pass
+
+        for var_attr, key in (('analyze_mode', 'analyze_mode'),
+                              ('bin_size_var', 'bin_size'),
+                              ('bin_unit_var', 'bin_unit'),
+                              ('fps_var', 'fps'),
+                              ('no_time_bins_var', 'whole_session')):
+            try:
+                v = getattr(self, var_attr, None)
+                if v is not None and hasattr(v, 'get'):
+                    meta[key] = v.get()
+            except Exception:
+                pass
+
+        sidecar_path = csv_path + '.meta.json'
+        try:
+            with open(sidecar_path, 'w', encoding='utf-8') as f:
+                json.dump(meta, f, indent=2, default=str)
+        except Exception:
+            pass
     
     def generate_graphs(self):
         """Generate publication-ready graphs"""
@@ -1653,13 +1732,13 @@ class AnalysisTab(ttk.Frame):
             ttk.Label(
                 behavior_dialog, 
                 text="Select behaviors to graph:", 
-                font=('Arial', 12, 'bold')
+                font=(FONT_FAMILY, 12, 'bold')
             ).pack(pady=10)
             
             ttk.Label(
                 behavior_dialog,
                 text="All selected behaviors will appear in the same window",
-                font=('Arial', 9),
+                font=(FONT_FAMILY, 9),
                 foreground='gray'
             ).pack(pady=5)
             
@@ -1759,7 +1838,7 @@ class AnalysisTab(ttk.Frame):
         ttk.Label(
             order_dialog,
             text=f"Graph Settings: {behavior_list}",
-            font=('Arial', 14, 'bold')
+            font=(FONT_FAMILY, 14, 'bold')
         ).pack(pady=10)
 
         # ── Button bar (pack at bottom FIRST so scroll area fills remainder) ──
@@ -1796,7 +1875,7 @@ class AnalysisTab(ttk.Frame):
         order_dialog.bind('<Destroy>', lambda e: _cleanup_mousewheel() if e.widget is order_dialog else None)
 
         # Time window section
-        ttk.Label(_scroll_body, text="1. Time Window", font=('Arial', 12, 'bold')).pack(anchor='w', padx=20, pady=(10,5))
+        ttk.Label(_scroll_body, text="1. Time Window", font=(FONT_FAMILY, 12, 'bold')).pack(anchor='w', padx=20, pady=(10,5))
         time_frame = ttk.Frame(_scroll_body)
         time_frame.pack(fill='x', padx=20, pady=5)
         ttk.Label(time_frame, text="Show data up to:").pack(side='left')
@@ -1807,7 +1886,7 @@ class AnalysisTab(ttk.Frame):
         ttk.Label(time_frame, text=f"minutes (max: {_max_t_display} min)").pack(side='left')
         
         # Error bar type section
-        ttk.Label(_scroll_body, text="2. Error Bar Type", font=('Arial', 12, 'bold')).pack(anchor='w', padx=20, pady=(10,5))
+        ttk.Label(_scroll_body, text="2. Error Bar Type", font=(FONT_FAMILY, 12, 'bold')).pack(anchor='w', padx=20, pady=(10,5))
         error_frame = ttk.Frame(_scroll_body)
         error_frame.pack(fill='x', padx=20, pady=5)
         ttk.Label(error_frame, text="Display:").pack(side='left')
@@ -1817,12 +1896,12 @@ class AnalysisTab(ttk.Frame):
         ttk.Label(
             _scroll_body,
             text="SEM = SD / √n  (shows precision of the mean)",
-            font=('Arial', 9),
+            font=(FONT_FAMILY, 9),
             foreground='gray'
         ).pack(anchor='w', padx=20, pady=2)
 
         # Heatmap color palette section
-        ttk.Label(_scroll_body, text="3. Heatmap Color Palette", font=('Arial', 12, 'bold')).pack(anchor='w', padx=20, pady=(10,5))
+        ttk.Label(_scroll_body, text="3. Heatmap Color Palette", font=(FONT_FAMILY, 12, 'bold')).pack(anchor='w', padx=20, pady=(10,5))
         palette_frame = ttk.Frame(_scroll_body)
         palette_frame.pack(fill='x', padx=20, pady=5)
         ttk.Label(palette_frame, text="Palette:").pack(side='left')
@@ -1830,11 +1909,11 @@ class AnalysisTab(ttk.Frame):
         palette_options = ['YlOrRd', 'viridis', 'plasma', 'Blues', 'Reds', 'Greens', 'RdYlBu_r', 'coolwarm']
         ttk.Combobox(palette_frame, textvariable=palette_var, values=palette_options, 
                     state='readonly', width=15).pack(side='left', padx=5)
-        ttk.Label(palette_frame, text="(for heatmap only)", font=('Arial', 9), foreground='gray').pack(side='left')
+        ttk.Label(palette_frame, text="(for heatmap only)", font=(FONT_FAMILY, 9), foreground='gray').pack(side='left')
         
         # Groups to include section
         ttk.Label(_scroll_body, text="4. Groups to Include",
-                  font=('Arial', 12, 'bold')).pack(anchor='w', padx=20, pady=(10, 5))
+                  font=(FONT_FAMILY, 12, 'bold')).pack(anchor='w', padx=20, pady=(10, 5))
         include_frame = ttk.Frame(_scroll_body)
         include_frame.pack(fill='x', padx=20, pady=5)
 
@@ -1846,14 +1925,14 @@ class AnalysisTab(ttk.Frame):
                 row=i // 3, column=i % 3, sticky='w', padx=(0, 20))
 
         # Treatment order section
-        ttk.Label(_scroll_body, text="5. Treatment Order", font=('Arial', 12, 'bold')).pack(anchor='w', padx=20, pady=(10,5))
-        ttk.Label(_scroll_body, text="(Left to right, or top to bottom)", font=('Arial', 9), foreground='gray').pack(anchor='w', padx=20)
+        ttk.Label(_scroll_body, text="5. Treatment Order", font=(FONT_FAMILY, 12, 'bold')).pack(anchor='w', padx=20, pady=(10,5))
+        ttk.Label(_scroll_body, text="(Left to right, or top to bottom)", font=(FONT_FAMILY, 9), foreground='gray').pack(anchor='w', padx=20)
 
         # Create listbox with treatments
         listbox_frame = ttk.Frame(_scroll_body)
         listbox_frame.pack(fill='both', expand=True, padx=20, pady=10)
         
-        listbox = tk.Listbox(listbox_frame, font=('Arial', 11), height=len(treatments))
+        listbox = tk.Listbox(listbox_frame, font=(FONT_FAMILY, 11), height=len(treatments))
         listbox.pack(side='left', fill='both', expand=True)
         
         scrollbar = ttk.Scrollbar(listbox_frame, orient='vertical', command=listbox.yview)
@@ -1865,7 +1944,7 @@ class AnalysisTab(ttk.Frame):
         
         # ── Section 6: Colors ────────────────────────────────────────────────
         ttk.Label(_scroll_body, text="6. Colors (for graphs, not heatmap)",
-                  font=('Arial', 12, 'bold')).pack(anchor='w', padx=20, pady=(10, 5))
+                  font=(FONT_FAMILY, 12, 'bold')).pack(anchor='w', padx=20, pady=(10, 5))
 
         color_options = {
             'Teal':                  '#66c2a5',
@@ -1917,7 +1996,7 @@ class AnalysisTab(ttk.Frame):
         # Preset palette row
         preset_row = ttk.Frame(individual_frame)
         preset_row.pack(fill='x', pady=(0, 6))
-        ttk.Label(preset_row, text="Quick palettes:", font=('Arial', 9)).pack(side='left', padx=(0, 8))
+        ttk.Label(preset_row, text="Quick palettes:", font=(FONT_FAMILY, 9)).pack(side='left', padx=(0, 8))
 
         PRESETS = {
             'Colorblind-safe': ['#E69F00','#56B4E9','#009E73','#F0E442',
@@ -2029,10 +2108,10 @@ class AnalysisTab(ttk.Frame):
         ttk.Combobox(gveh_row, textvariable=gradient_veh_var,
                      values=list(treatments), state='readonly', width=15).pack(side='left', padx=5)
         ttk.Label(gveh_row, text='\u2192 white with black outline',
-                  font=('Arial', 9), foreground='gray').pack(side='left')
+                  font=(FONT_FAMILY, 9), foreground='gray').pack(side='left')
 
         # Per-treatment swatches that update live
-        ttk.Label(gradient_frame, text="Preview:", font=('Arial', 9)).pack(anchor='w', pady=(4, 1))
+        ttk.Label(gradient_frame, text="Preview:", font=(FONT_FAMILY, 9)).pack(anchor='w', pady=(4, 1))
         grad_swatch_labels = {}
         for t in treatments:
             grow = ttk.Frame(gradient_frame)
@@ -2084,7 +2163,7 @@ class AnalysisTab(ttk.Frame):
 
         ttk.Label(gradient_frame,
                   text='Treatments colored in the list order set above.',
-                  font=('Arial', 9), foreground='gray').pack(anchor='w', pady=2)
+                  font=(FONT_FAMILY, 9), foreground='gray').pack(anchor='w', pady=2)
 
         def _toggle_color_mode(*_):
             if color_mode_var.get() == 'gradient':
@@ -2100,7 +2179,7 @@ class AnalysisTab(ttk.Frame):
         inst_frame = ttk.Frame(_scroll_body)
         inst_frame.pack(fill='x', padx=20, pady=10)
         ttk.Label(inst_frame, text="💡 Tip: Click and drag items in the list to reorder", 
-                 font=('Arial', 9), foreground='blue').pack(anchor='w')
+                 font=(FONT_FAMILY, 9), foreground='blue').pack(anchor='w')
         
         # Variables to store results
         result = {'order': None, 'colors': None, 'time_window': None, 'heatmap_palette': None, 'error_type': None, 'cancelled': False}
@@ -4055,7 +4134,7 @@ class AnalysisTab(ttk.Frame):
         ttk.Label(ctrl_frame, text="min").pack(side='left')
 
         status_lbl = ttk.Label(ctrl_frame, text=f"(showing 0–{current_window} min)",
-                               font=('Arial', 9), foreground='gray')
+                               font=(FONT_FAMILY, 9), foreground='gray')
         status_lbl.pack(side='left', padx=10)
 
         # ── Scrollable content holder (rebuilt on recalculate) ────────────
@@ -4084,7 +4163,7 @@ class AnalysisTab(ttk.Frame):
             title = (f'Statistical Analysis Summary — {behavior_name} '
                      f'(0–{stats_time_var.get()} min)')
             ttk.Label(scrollable_frame, text=title,
-                      font=('Arial', 14, 'bold')).pack(pady=10)
+                      font=(FONT_FAMILY, 14, 'bold')).pack(pady=10)
 
             self.add_stats_section(
                 scrollable_frame, "1. Total Behavior Time",
@@ -4220,7 +4299,7 @@ class AnalysisTab(ttk.Frame):
         # Show two-way ANOVA if available
         if hasattr(self, 'timecourse_anova_results') and self.timecourse_anova_results:
             ttk.Label(section_frame, text="═══ Two-Way ANOVA (Time × Treatment) ═══", 
-                     font=('Arial', 10, 'bold'), foreground='darkblue').pack(anchor='w', pady=5)
+                     font=(FONT_FAMILY, 10, 'bold'), foreground='darkblue').pack(anchor='w', pady=5)
             
             results = self.timecourse_anova_results
             anova_table = results['anova_table']
@@ -4233,7 +4312,7 @@ class AnalysisTab(ttk.Frame):
             # Headers
             headers = ['Source', 'df', 'Sum Sq', 'F-value', 'p-value', 'Significance']
             for i, header in enumerate(headers):
-                ttk.Label(main_effects_frame, text=header, font=('Arial', 9, 'bold'), 
+                ttk.Label(main_effects_frame, text=header, font=(FONT_FAMILY, 9, 'bold'), 
                          relief='solid', borderwidth=1, width=13).grid(row=0, column=i, sticky='ew', padx=1, pady=1)
             
             # Main effects and interaction
@@ -4279,7 +4358,7 @@ class AnalysisTab(ttk.Frame):
                     ttk.Label(main_effects_frame, text=p_text, relief='solid', borderwidth=1, width=13).grid(
                         row=row_idx, column=4, sticky='ew', padx=1, pady=1)
                     ttk.Label(main_effects_frame, text=sig, relief='solid', borderwidth=1, width=13,
-                             foreground=fg, font=('Arial', 9, 'bold')).grid(
+                             foreground=fg, font=(FONT_FAMILY, 9, 'bold')).grid(
                         row=row_idx, column=5, sticky='ew', padx=1, pady=1)
             
             # Interpretation
@@ -4293,15 +4372,15 @@ class AnalysisTab(ttk.Frame):
             else:
                 interp_text += "Groups show similar time patterns (no interaction)."
             
-            ttk.Label(section_frame, text=interp_text, font=('Arial', 9, 'italic'), 
+            ttk.Label(section_frame, text=interp_text, font=(FONT_FAMILY, 9, 'italic'), 
                      foreground='darkblue', wraplength=700).pack(anchor='w', padx=20, pady=5)
             
             ttk.Separator(section_frame, orient='horizontal').pack(fill='x', pady=10)
         
         ttk.Label(section_frame, text="═══ Post-hoc Tests (Per Timepoint) ═══", 
-                 font=('Arial', 10, 'bold'), foreground='darkblue').pack(anchor='w', pady=5)
+                 font=(FONT_FAMILY, 10, 'bold'), foreground='darkblue').pack(anchor='w', pady=5)
         ttk.Label(section_frame, text="Tests if treatments differ at each individual timepoint. Only significant results shown.", 
-                 font=('Arial', 9, 'italic'), foreground='gray').pack(anchor='w', pady=(0,5))
+                 font=(FONT_FAMILY, 9, 'italic'), foreground='gray').pack(anchor='w', pady=(0,5))
         
         # Get unique time bins
         time_bins = sorted(df['Bin_Start_Min'].unique())
@@ -4312,17 +4391,17 @@ class AnalysisTab(ttk.Frame):
         table_frame.pack(fill='x', pady=5)
         
         # Headers
-        ttk.Label(table_frame, text="Time Bin (min)", font=('Arial', 9, 'bold'), 
+        ttk.Label(table_frame, text="Time Bin (min)", font=(FONT_FAMILY, 9, 'bold'), 
                  relief='solid', borderwidth=1, width=15).grid(row=0, column=0, sticky='ew', padx=1, pady=1)
-        ttk.Label(table_frame, text="Test", font=('Arial', 9, 'bold'), 
+        ttk.Label(table_frame, text="Test", font=(FONT_FAMILY, 9, 'bold'), 
                  relief='solid', borderwidth=1, width=18).grid(row=0, column=1, sticky='ew', padx=1, pady=1)
-        ttk.Label(table_frame, text="Statistic", font=('Arial', 9, 'bold'), 
+        ttk.Label(table_frame, text="Statistic", font=(FONT_FAMILY, 9, 'bold'), 
                  relief='solid', borderwidth=1, width=15).grid(row=0, column=2, sticky='ew', padx=1, pady=1)
-        ttk.Label(table_frame, text="p-value", font=('Arial', 9, 'bold'), 
+        ttk.Label(table_frame, text="p-value", font=(FONT_FAMILY, 9, 'bold'), 
                  relief='solid', borderwidth=1, width=15).grid(row=0, column=3, sticky='ew', padx=1, pady=1)
-        ttk.Label(table_frame, text="Significance", font=('Arial', 9, 'bold'),
+        ttk.Label(table_frame, text="Significance", font=(FONT_FAMILY, 9, 'bold'),
                  relief='solid', borderwidth=1, width=12).grid(row=0, column=4, sticky='ew', padx=1, pady=1)
-        ttk.Label(table_frame, text="Effect Size", font=('Arial', 9, 'bold'),
+        ttk.Label(table_frame, text="Effect Size", font=(FONT_FAMILY, 9, 'bold'),
                  relief='solid', borderwidth=1, width=15).grid(row=0, column=5, sticky='ew', padx=1, pady=1)
         
         row_idx = 1
@@ -4438,7 +4517,7 @@ class AnalysisTab(ttk.Frame):
                         row=row_idx, column=3, sticky='ew', padx=1, pady=1)
                     ttk.Label(table_frame, text=sig,
                              relief='solid', borderwidth=1, width=12,
-                             foreground=fg, font=('Arial', 9, 'bold')).grid(
+                             foreground=fg, font=(FONT_FAMILY, 9, 'bold')).grid(
                         row=row_idx, column=4, sticky='ew', padx=1, pady=1)
 
                     # Effect size
@@ -4463,11 +4542,11 @@ class AnalysisTab(ttk.Frame):
         
         if n_significant == 0:
             ttk.Label(section_frame, text="No significant differences found at any timepoint", 
-                     foreground='gray', font=('Arial', 9, 'italic')).pack(anchor='w', pady=5)
+                     foreground='gray', font=(FONT_FAMILY, 9, 'italic')).pack(anchor='w', pady=5)
         else:
             summary_text = f"Found {n_significant} significant time bin(s) out of {len(time_bins)} total bins"
             ttk.Label(section_frame, text=summary_text, 
-                     foreground='darkblue', font=('Arial', 9, 'bold')).pack(anchor='w', pady=5)
+                     foreground='darkblue', font=(FONT_FAMILY, 9, 'bold')).pack(anchor='w', pady=5)
     
     def add_stats_section(self, parent, title, df, treatments, column, agg_method):
         """Add a statistics section with descriptive stats and test results"""
@@ -4486,7 +4565,7 @@ class AnalysisTab(ttk.Frame):
         desc_frame = ttk.Frame(section_frame)
         desc_frame.pack(fill='x', pady=5)
         
-        ttk.Label(desc_frame, text="Descriptive Statistics:", font=('Arial', 10, 'bold')).pack(anchor='w')
+        ttk.Label(desc_frame, text="Descriptive Statistics:", font=(FONT_FAMILY, 10, 'bold')).pack(anchor='w')
         
         # Create table
         desc_table = ttk.Frame(desc_frame)
@@ -4494,7 +4573,7 @@ class AnalysisTab(ttk.Frame):
         
         headers = ['Treatment', 'N', 'Mean', 'SD', 'SEM', 'Min', 'Max']
         for i, header in enumerate(headers):
-            ttk.Label(desc_table, text=header, font=('Arial', 9, 'bold'), 
+            ttk.Label(desc_table, text=header, font=(FONT_FAMILY, 9, 'bold'), 
                      relief='solid', borderwidth=1, width=12).grid(row=0, column=i, sticky='ew', padx=1, pady=1)
         
         for row_idx, treatment in enumerate(treatments, start=1):
@@ -4520,7 +4599,7 @@ class AnalysisTab(ttk.Frame):
                 row=row_idx, column=6, sticky='ew', padx=1, pady=1)
         
         # Statistical test results
-        ttk.Label(section_frame, text="Statistical Test:", font=('Arial', 10, 'bold')).pack(anchor='w', pady=(10, 5))
+        ttk.Label(section_frame, text="Statistical Test:", font=(FONT_FAMILY, 10, 'bold')).pack(anchor='w', pady=(10, 5))
         
         data_by_treatment = {t: per_subject[per_subject['Treatment'] == t][column].values
                             for t in treatments}
@@ -4548,22 +4627,22 @@ class AnalysisTab(ttk.Frame):
                 sig = 'ns'
             
             result_text = f"{test_type}: {p_text} {sig}"
-            ttk.Label(test_frame, text=result_text, font=('Arial', 10), foreground='darkblue').pack(anchor='w')
+            ttk.Label(test_frame, text=result_text, font=(FONT_FAMILY, 10), foreground='darkblue').pack(anchor='w')
             
             # Pairwise comparisons (if ANOVA and significant)
             if 'pairwise' in stats_results and stats_results['pairwise']:
                 ttk.Label(section_frame, text="Pairwise Comparisons:", 
-                         font=('Arial', 10, 'bold')).pack(anchor='w', pady=(10, 5))
+                         font=(FONT_FAMILY, 10, 'bold')).pack(anchor='w', pady=(10, 5))
                 
                 pairwise_table = ttk.Frame(section_frame)
                 pairwise_table.pack(fill='x', pady=5)
                 
                 # Headers
-                ttk.Label(pairwise_table, text="Comparison", font=('Arial', 9, 'bold'), 
+                ttk.Label(pairwise_table, text="Comparison", font=(FONT_FAMILY, 9, 'bold'), 
                          relief='solid', borderwidth=1, width=30).grid(row=0, column=0, sticky='ew', padx=1, pady=1)
-                ttk.Label(pairwise_table, text="p-value", font=('Arial', 9, 'bold'), 
+                ttk.Label(pairwise_table, text="p-value", font=(FONT_FAMILY, 9, 'bold'), 
                          relief='solid', borderwidth=1, width=15).grid(row=0, column=1, sticky='ew', padx=1, pady=1)
-                ttk.Label(pairwise_table, text="Significance", font=('Arial', 9, 'bold'), 
+                ttk.Label(pairwise_table, text="Significance", font=(FONT_FAMILY, 9, 'bold'), 
                          relief='solid', borderwidth=1, width=15).grid(row=0, column=2, sticky='ew', padx=1, pady=1)
                 
                 for row_idx, (comparison, result) in enumerate(stats_results['pairwise'].items(), start=1):
@@ -4599,11 +4678,11 @@ class AnalysisTab(ttk.Frame):
                         fg = 'gray'
                     
                     ttk.Label(pairwise_table, text=sig, relief='solid', borderwidth=1, width=15, 
-                             foreground=fg, font=('Arial', 9, 'bold')).grid(
+                             foreground=fg, font=(FONT_FAMILY, 9, 'bold')).grid(
                         row=row_idx, column=2, sticky='ew', padx=1, pady=1)
         else:
             ttk.Label(section_frame, text="No statistical test performed", 
-                     foreground='gray', font=('Arial', 9, 'italic')).pack(anchor='w')
+                     foreground='gray', font=(FONT_FAMILY, 9, 'italic')).pack(anchor='w')
     
     def export_statistics(self, behavior_name):
         """Export statistics to CSV file"""

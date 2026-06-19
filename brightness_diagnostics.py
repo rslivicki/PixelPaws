@@ -306,7 +306,7 @@ def plot_histograms(features_df, brightness_cols, bodyparts, save_path):
     plt.close()
 
 
-def plot_temporal_brightness(features_df, brightness_cols, bodyparts, fps=30, save_path=None):
+def plot_temporal_brightness(features_df, brightness_cols, bodyparts, fps=60, save_path=None):
     """Plot brightness over time for each bodypart"""
     # Group features by bodypart (handle different naming conventions)
     bodypart_features = {bp: [] for bp in bodyparts}
@@ -642,7 +642,7 @@ def main():
         features_df,
         brightness_cols,
         bodyparts,
-        fps=30,
+        fps=60,
         save_path=os.path.join(output_dir, '3_temporal_brightness.png')
     )
     

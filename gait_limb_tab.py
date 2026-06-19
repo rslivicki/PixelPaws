@@ -77,11 +77,18 @@ from pose_features import PoseFeatureExtractor
 from brightness_features import PixelBrightnessExtractorOptimized
 
 from ui_utils import (ToolTip as _ToolTip,
-                      _bind_tight_layout_on_resize, _draw_canvas_fit)
+                      _bind_tight_layout_on_resize, _draw_canvas_fit,
+                      FONT_FAMILY)
 
 try:
     from evaluation_tab import find_session_triplets
-except ImportError:
+except ImportError as _fst_err:
+    # If evaluation_tab fails to import, this tab gets an empty session
+    # list. Pre-2026-05-01 this happened silently; now we log it once
+    # at module load so the failure is at least traceable.
+    print(f'[gait_limb_tab] WARNING: could not import '
+          f'find_session_triplets from evaluation_tab: {_fst_err}. '
+          f'The Gait & Limb Use tab will show an empty session list.')
     def find_session_triplets(folder, **kw):
         return []
 
@@ -208,7 +215,7 @@ class GaitLimbTab(ttk.Frame):
         hdr = ttk.Frame(self)
         hdr.pack(fill='x', padx=10, pady=(8, 2))
         ttk.Label(hdr, text="🐾  Gait & Limb Use Analysis",
-                  font=('Arial', 13, 'bold')).pack(side='left')
+                  font=(FONT_FAMILY, 13, 'bold')).pack(side='left')
 
         paned = ttk.PanedWindow(self, orient='horizontal')
         paned.pack(fill='both', expand=True, padx=6, pady=4)
@@ -262,7 +269,7 @@ class GaitLimbTab(ttk.Frame):
         self._sess_lbl = ttk.Label(parent, text='', foreground='grey')
         self._sess_lbl.pack(anchor='w', padx=6, pady=(2, 0))
         self._folder_lbl = ttk.Label(parent, text='', foreground='grey',
-                                      wraplength=200, font=('Arial', 8))
+                                      wraplength=200, font=(FONT_FAMILY, 8))
         self._folder_lbl.pack(anchor='w', padx=6)
 
     # ── Middle: Settings ─────────────────────────────────────────────────────
@@ -519,7 +526,7 @@ class GaitLimbTab(ttk.Frame):
 
         ttk.Label(tb_lf,
                   text="Video divided into equal bins. 0 = full session only (no bins).",
-                  font=('Arial', 8), foreground='gray').pack(anchor='w', pady=(2, 0))
+                  font=(FONT_FAMILY, 8), foreground='gray').pack(anchor='w', pady=(2, 0))
         self._tip(_bin_spx,
                   "Number of minutes (or seconds) per time bin.\n"
                   "0 = output the full session as a single row only.")
@@ -720,7 +727,7 @@ class GaitLimbTab(ttk.Frame):
                                  f"Cannot open:\n{video_path}", parent=self)
             return
         n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        fps = cap.get(cv2.CAP_PROP_FPS) or 60.0
 
         # Clamp coordinate arrays to video frame count
         cx = cx[:n_frames]
@@ -796,13 +803,13 @@ class GaitLimbTab(ttk.Frame):
 
         # Summary stats label
         ttk.Separator(ctrl, orient='horizontal').pack(fill='x', pady=4)
-        ttk.Label(ctrl, text="Summary:", font=('Arial', 9, 'bold')).pack(anchor='w')
+        ttk.Label(ctrl, text="Summary:", font=(FONT_FAMILY, 9, 'bold')).pack(anchor='w')
         summary_lbl = ttk.Label(ctrl, text="", wraplength=270, justify='left')
         summary_lbl.pack(anchor='w', pady=(2, 6))
 
         # Current frame readout
         ttk.Separator(ctrl, orient='horizontal').pack(fill='x', pady=4)
-        ttk.Label(ctrl, text="Current frame:", font=('Arial', 9, 'bold')).pack(anchor='w')
+        ttk.Label(ctrl, text="Current frame:", font=(FONT_FAMILY, 9, 'bold')).pack(anchor='w')
         frame_speed_lbl = ttk.Label(ctrl, text="Speed: — px/s", wraplength=270)
         frame_speed_lbl.pack(anchor='w')
         frame_state_lbl = ttk.Label(ctrl, text="State: —", wraplength=270)
@@ -820,7 +827,7 @@ class GaitLimbTab(ttk.Frame):
 
         # Playback controls
         ttk.Separator(ctrl, orient='horizontal').pack(fill='x', pady=4)
-        ttk.Label(ctrl, text="Playback:", font=('Arial', 9, 'bold')).pack(anchor='w')
+        ttk.Label(ctrl, text="Playback:", font=(FONT_FAMILY, 9, 'bold')).pack(anchor='w')
 
         playing = [False]
         play_after_id = [None]
@@ -1854,7 +1861,7 @@ class GaitLimbTab(ttk.Frame):
         note = ttk.Label(win,
                          text=("Cached files are reused automatically when settings match. "
                                "Mismatched sessions will trigger fresh extraction during analysis."),
-                         font=('Arial', 8), foreground='gray', wraplength=780)
+                         font=(FONT_FAMILY, 8), foreground='gray', wraplength=780)
         note.pack(side='bottom', anchor='w', padx=10, pady=(4, 6))
 
         btn_row = ttk.Frame(win)
@@ -2149,7 +2156,7 @@ class GaitLimbTab(ttk.Frame):
         note = ttk.Label(win,
                          text=("Cached files are reused automatically when settings match. "
                                "Mismatched sessions will trigger fresh extraction during analysis."),
-                         font=('Arial', 8), foreground='gray', wraplength=740)
+                         font=(FONT_FAMILY, 8), foreground='gray', wraplength=740)
         note.pack(side='bottom', anchor='w', padx=10, pady=(4, 6))
 
         btn_row = ttk.Frame(win)
@@ -2430,7 +2437,7 @@ class GaitLimbTab(ttk.Frame):
         note = ttk.Label(win,
                          text=("Shows sessions that have BOTH brightness and contour caches. "
                                "Green = shared settings (stride, crop) agree between caches."),
-                         font=('Arial', 8), foreground='gray', wraplength=880)
+                         font=(FONT_FAMILY, 8), foreground='gray', wraplength=880)
         note.pack(side='bottom', anchor='w', padx=10, pady=(4, 6))
 
         btn_row = ttk.Frame(win)
@@ -2686,7 +2693,7 @@ class GaitLimbTab(ttk.Frame):
                 f'+{self._res_tree.winfo_rootx() + event.x + 12}'
                 f'+{self._res_tree.winfo_rooty() + event.y + 16}')
             tk.Label(tip, text=tip_text, background='#ffffcc', relief='solid',
-                     borderwidth=1, font=('Arial', 9), wraplength=280,
+                     borderwidth=1, font=(FONT_FAMILY, 9), wraplength=280,
                      justify='left').pack(ipadx=4, ipady=2)
             _tree_tip[0] = tip
 
@@ -2834,6 +2841,19 @@ class GaitLimbTab(ttk.Frame):
         self._log_text.insert('end', msg + '\n')
         self._log_text.see('end')
         self._log_text.config(state='disabled')
+
+    def _resolve_mm_per_pixel(self, session: dict):
+        """Look up the effective mm_per_pixel for this session, honouring
+        the project's ``calibration_mode``. Returns None when calibration
+        is off or unavailable so callers fall back to legacy pixel
+        behaviour transparently.
+        """
+        try:
+            from project_config import ProjectConfig
+            cfg = ProjectConfig.load(self.app.current_project_folder.get())
+            return cfg.resolve_mm_per_pixel(session)
+        except Exception:
+            return None
 
     # ═══════════════════════════════════════════════════════════════════════
     # Project folder integration
@@ -3548,8 +3568,31 @@ class GaitLimbTab(ttk.Frame):
         active_paws = {role: bp for role, bp in paw_map.items() if bp}
         active_bps  = list(set(active_paws.values()))
 
+        # Resolve mm_per_pixel for this session via project's
+        # calibration_mode. When set, pose extractor scales coords to
+        # mm so output gait metrics (stride length, step length, body
+        # speed) come out in physical units. Falls back to pixels
+        # transparently when calibration is off.
+        _mm_per_px = self._resolve_mm_per_pixel(
+            {'video': video_file, 'mm_per_pixel': None})
+        # When the session has its own embedded mm_per_pixel via
+        # PawCapture metadata, prefer that (auto mode).
+        if _mm_per_px is None:
+            try:
+                from pawcapture_meta import read_calibration as _pc_read
+                _cal = _pc_read(video_file) if video_file else None
+                if _cal and _cal.get('mm_per_pixel'):
+                    _mm_per_px = self._resolve_mm_per_pixel(
+                        {'video': video_file,
+                         'mm_per_pixel': float(_cal['mm_per_pixel'])})
+            except Exception:
+                pass
+
         # ── Paw heights + coordinates ───────────────────────────────────────
-        extractor = PoseFeatureExtractor(active_bps)
+        extractor = PoseFeatureExtractor(active_bps, mm_per_pixel=_mm_per_px)
+        if _mm_per_px is not None:
+            self._log(f"  ✓ Calibration on: gait metrics in mm "
+                      f"(mm_per_pixel={_mm_per_px:.5f})")
         try:
             dlc_df = extractor.load_dlc_data(dlc_file)
             bp_xcord, bp_ycord, bp_prob = extractor.get_bodypart_coords(dlc_df)
@@ -3597,6 +3640,12 @@ class GaitLimbTab(ttk.Frame):
         body_speed = None
         frame_displacements = None
         loco_thresh = params.get('loco_threshold', 20.0)
+        # User-tuned threshold is in px/s. When calibration is on, the
+        # body_speed below comes out in mm/s, so the threshold needs
+        # the same px→mm conversion to remain semantically equivalent
+        # to what the user set in the GUI.
+        if _mm_per_px is not None:
+            loco_thresh = float(loco_thresh) * float(_mm_per_px)
         # Try to find tailbase coordinates
         tb_bp = None
         tb_x_col = None
@@ -3632,7 +3681,9 @@ class GaitLimbTab(ttk.Frame):
             body_speed = frame_displacements * fps
             loco_mask = body_speed > loco_thresh
             n_loco = int(loco_mask.sum())
-            self._log(f"  Body speed computed: {n_loco}/{n_frames} frames above {loco_thresh:.1f} px/s")
+            _unit = 'mm/s' if _mm_per_px is not None else 'px/s'
+            self._log(f"  Body speed computed: {n_loco}/{n_frames} frames above "
+                      f"{loco_thresh:.1f} {_unit}")
         else:
             self._log("  Body speed: no tailbase/body center found, skipping")
 
@@ -3640,6 +3691,11 @@ class GaitLimbTab(ttk.Frame):
         contact_masks = {}
         contact_method = params.get('contact_method', 'height')
         thresh = params['contact_threshold']
+        # User-tuned threshold is in px (matches GUI label "Contact thresh (px):").
+        # Height column is now in mm when calibration is on, so scale
+        # the threshold to keep the user's intent intact.
+        if _mm_per_px is not None:
+            thresh = float(thresh) * float(_mm_per_px)
 
         # Helper to get x,y arrays for a body part
         def _get_xy(bp):
@@ -4734,7 +4790,7 @@ class GaitLimbTab(ttk.Frame):
         win.grab_set()
 
         ttk.Label(win, text="Re-compute contact masks with new parameters",
-                  font=('Arial', 10, 'bold')).pack(padx=12, pady=(10, 6))
+                  font=(FONT_FAMILY, 10, 'bold')).pack(padx=12, pady=(10, 6))
 
         frm = ttk.Frame(win, padding=10)
         frm.pack(fill='x')
@@ -5599,7 +5655,7 @@ class GaitLimbTab(ttk.Frame):
         sel_win.grab_set()
 
         ttk.Label(sel_win, text="Choose metrics to display over time bins:",
-                  font=('Arial', 10, 'bold'), padding=(10, 8, 10, 4)).pack(anchor='w')
+                  font=(FONT_FAMILY, 10, 'bold'), padding=(10, 8, 10, 4)).pack(anchor='w')
 
         chk_frame = ttk.Frame(sel_win, padding=(14, 0, 14, 4))
         chk_frame.pack(fill='x')
@@ -5676,7 +5732,7 @@ class GaitLimbTab(ttk.Frame):
         win.geometry(f"{gw}x{gh}+{gx}+{gy}")
 
         desc_lbl = ttk.Label(win, text='', wraplength=940, foreground='#444',
-                             font=('Arial', 9, 'italic'), padding=(6, 2))
+                             font=(FONT_FAMILY, 9, 'italic'), padding=(6, 2))
         desc_lbl.pack(fill='x', padx=6)
 
         nb = ttk.Notebook(win)
@@ -5748,7 +5804,7 @@ class GaitLimbTab(ttk.Frame):
             pcd = inter.get('paw_contour_data', {})
             if not pcd:
                 continue
-            fps = inter.get('fps', 30)
+            fps = inter.get('fps', 60)
             n_frames = inter.get('n_frames', 0)
             contact_masks = inter.get('contact_masks', {})
 
@@ -5813,7 +5869,7 @@ class GaitLimbTab(ttk.Frame):
                 pcd = inter.get('paw_contour_data', {})
                 if not pcd:
                     continue
-                fps = inter.get('fps', 30)
+                fps = inter.get('fps', 60)
                 n_frames = inter.get('n_frames', 0)
                 contact_masks = inter.get('contact_masks', {})
                 bin_start_s = brow.get('bin_start_s', 0)
@@ -5953,7 +6009,7 @@ class GaitLimbTab(ttk.Frame):
         win.geometry(f"{gw}x{gh}+{gx}+{gy}")
 
         desc_lbl = ttk.Label(win, text='', wraplength=940, foreground='#444',
-                             font=('Arial', 9, 'italic'), padding=(6, 2))
+                             font=(FONT_FAMILY, 9, 'italic'), padding=(6, 2))
         desc_lbl.pack(fill='x', padx=6)
 
         outer_nb = ttk.Notebook(win)
@@ -6846,7 +6902,7 @@ class GaitLimbTab(ttk.Frame):
         _prev = self._last_graph_cfg or {}
 
         ttk.Label(dlg, text="Graph Settings",
-                  font=('Arial', 13, 'bold'), padding=(12, 8, 12, 4)).pack(anchor='w')
+                  font=(FONT_FAMILY, 13, 'bold'), padding=(12, 8, 12, 4)).pack(anchor='w')
 
         # ── Scrollable body ──────────────────────────────────────────────
         _scroll_outer = ttk.Frame(dlg)
@@ -6888,10 +6944,10 @@ class GaitLimbTab(ttk.Frame):
         # ── Treatment order (only if >1 treatment) ───────────────────────
         if len(treatments) > 1:
             ttk.Label(dlg_body, text=f"{_next_sec()} Treatment Order  (drag to reorder)",
-                      font=('Arial', 11, 'bold'), padding=(12, 6, 12, 2)).pack(anchor='w')
+                      font=(FONT_FAMILY, 11, 'bold'), padding=(12, 6, 12, 2)).pack(anchor='w')
             lb_frame = ttk.Frame(dlg_body, padding=(16, 0, 16, 4))
             lb_frame.pack(fill='x')
-            listbox = tk.Listbox(lb_frame, font=('Arial', 10),
+            listbox = tk.Listbox(lb_frame, font=(FONT_FAMILY, 10),
                                  height=min(len(treatments), 8), selectmode='single')
             listbox.pack(side='left', fill='x', expand=True)
             sb = ttk.Scrollbar(lb_frame, orient='vertical', command=listbox.yview)
@@ -6924,7 +6980,7 @@ class GaitLimbTab(ttk.Frame):
 
         # ── Treatment colors ──────────────────────────────────────────────
         ttk.Label(dlg_body, text=f"{_next_sec()} Treatment Colors",
-                  font=('Arial', 11, 'bold'), padding=(12, 6, 12, 2)).pack(anchor='w')
+                  font=(FONT_FAMILY, 11, 'bold'), padding=(12, 6, 12, 2)).pack(anchor='w')
         color_frame = ttk.Frame(dlg_body, padding=(16, 0, 16, 4))
         color_frame.pack(fill='x')
 
@@ -6992,7 +7048,7 @@ class GaitLimbTab(ttk.Frame):
         mode_row.pack(fill='x', pady=(4, 2))
         _prev_color_mode = _prev.get('color_mode', 'individual')
         color_mode_var = tk.StringVar(value=_prev_color_mode)
-        ttk.Label(mode_row, text="Color mode:", font=('Arial', 9, 'bold')).pack(side='left', padx=(0, 8))
+        ttk.Label(mode_row, text="Color mode:", font=(FONT_FAMILY, 9, 'bold')).pack(side='left', padx=(0, 8))
         ttk.Radiobutton(mode_row, text='Individual',
                         variable=color_mode_var, value='individual').pack(side='left')
         ttk.Radiobutton(mode_row, text='Gradient (dose response)',
@@ -7036,7 +7092,7 @@ class GaitLimbTab(ttk.Frame):
         ttk.Combobox(gveh_row, textvariable=gradient_veh_var,
                      values=list(treatments), state='readonly', width=15).pack(side='left', padx=5)
         ttk.Label(gveh_row, text='\u2192 white with black outline',
-                  font=('Arial', 9), foreground='gray').pack(side='left')
+                  font=(FONT_FAMILY, 9), foreground='gray').pack(side='left')
 
         # Gradient preview swatches
         grad_preview_row = ttk.Frame(gradient_frame)
@@ -7047,7 +7103,7 @@ class GaitLimbTab(ttk.Frame):
             tf.pack(side='left', padx=3)
             gsw = tk.Label(tf, width=2, bg='white', relief='solid', bd=1)
             gsw.pack(side='left')
-            ttk.Label(tf, text=t, font=('Arial', 8)).pack(side='left', padx=(2, 0))
+            ttk.Label(tf, text=t, font=(FONT_FAMILY, 8)).pack(side='left', padx=(2, 0))
             grad_swatch_labels[t] = gsw
 
         def _refresh_grad_swatches(*_):
@@ -7080,7 +7136,7 @@ class GaitLimbTab(ttk.Frame):
 
         preset_row = ttk.Frame(individual_frame)
         preset_row.pack(fill='x', pady=(0, 6))
-        ttk.Label(preset_row, text="Quick palettes:", font=('Arial', 9)).pack(side='left', padx=(0, 8))
+        ttk.Label(preset_row, text="Quick palettes:", font=(FONT_FAMILY, 9)).pack(side='left', padx=(0, 8))
         for lbl, hexes in PRESETS.items():
             ttk.Button(preset_row, text=lbl, width=16,
                        command=lambda h=hexes: _apply_preset(h)).pack(side='left', padx=3)
@@ -7193,7 +7249,7 @@ class GaitLimbTab(ttk.Frame):
             row2 = ttk.Frame(treat_frame)
             row2.pack(fill='x', padx=(22, 0), pady=(1, 0))
 
-            ttk.Label(row2, text="Line:", font=('Arial', 9)).pack(side='left')
+            ttk.Label(row2, text="Line:", font=(FONT_FAMILY, 9)).pack(side='left')
             _prev_ls = _prev.get('line_styles', {}).get(treat, '-')
             _ls_init = _ls_values.index(_prev_ls) if _prev_ls in _ls_values else 0
             ls_combo = ttk.Combobox(row2, values=_ls_labels, state='readonly', width=14)
@@ -7201,7 +7257,7 @@ class GaitLimbTab(ttk.Frame):
             ls_combo.pack(side='left', padx=(2, 6))
             line_style_vars[treat] = ls_combo
 
-            ttk.Label(row2, text="W:", font=('Arial', 9)).pack(side='left')
+            ttk.Label(row2, text="W:", font=(FONT_FAMILY, 9)).pack(side='left')
             _prev_lw = _prev.get('line_widths', {}).get(treat, 1.8)
             lw_var = tk.DoubleVar(value=_prev_lw)
             lw_spin = ttk.Spinbox(row2, from_=0.5, to=5.0, increment=0.5,
@@ -7209,7 +7265,7 @@ class GaitLimbTab(ttk.Frame):
             lw_spin.pack(side='left', padx=(2, 6))
             line_width_vars[treat] = lw_var
 
-            ttk.Label(row2, text="Marker:", font=('Arial', 9)).pack(side='left')
+            ttk.Label(row2, text="Marker:", font=(FONT_FAMILY, 9)).pack(side='left')
             _prev_mk = _prev.get('marker_shapes', {}).get(treat, 'o')
             _mk_init = _mk_values.index(_prev_mk) if _prev_mk in _mk_values else 0
             mk_combo = ttk.Combobox(row2, values=_mk_labels, state='readonly', width=14)
@@ -7217,7 +7273,7 @@ class GaitLimbTab(ttk.Frame):
             mk_combo.pack(side='left', padx=(2, 6))
             marker_shape_combos[treat] = mk_combo
 
-            ttk.Label(row2, text="Fill:", font=('Arial', 9)).pack(side='left')
+            ttk.Label(row2, text="Fill:", font=(FONT_FAMILY, 9)).pack(side='left')
             _prev_fill = _prev.get('marker_fills', {}).get(treat, 'full')
             _fill_init = _fill_values.index(_prev_fill) if _prev_fill in _fill_values else 0
             fill_combo = ttk.Combobox(row2, values=_fill_labels, state='readonly', width=10)
@@ -7225,7 +7281,7 @@ class GaitLimbTab(ttk.Frame):
             fill_combo.pack(side='left', padx=(2, 6))
             marker_fill_combos[treat] = fill_combo
 
-            ttk.Label(row2, text="Sz:", font=('Arial', 9)).pack(side='left')
+            ttk.Label(row2, text="Sz:", font=(FONT_FAMILY, 9)).pack(side='left')
             _prev_ms = _prev.get('marker_sizes', {}).get(treat, 5)
             ms_var = tk.IntVar(value=_prev_ms)
             ms_spin = ttk.Spinbox(row2, from_=3, to=12, increment=1,
@@ -7233,7 +7289,7 @@ class GaitLimbTab(ttk.Frame):
             ms_spin.pack(side='left', padx=(2, 6))
             marker_size_vars[treat] = ms_var
 
-            ttk.Label(row2, text="\u03b1:", font=('Arial', 9)).pack(side='left')
+            ttk.Label(row2, text="\u03b1:", font=(FONT_FAMILY, 9)).pack(side='left')
             _prev_op = _prev.get('opacities', {}).get(treat, 1.0)
             op_var = tk.DoubleVar(value=_prev_op)
             op_spin = ttk.Spinbox(row2, from_=0.1, to=1.0, increment=0.1,
@@ -7241,7 +7297,7 @@ class GaitLimbTab(ttk.Frame):
             op_spin.pack(side='left', padx=(2, 6))
             opacity_vars[treat] = op_var
 
-            ttk.Label(row2, text="Edge:", font=('Arial', 9)).pack(side='left')
+            ttk.Label(row2, text="Edge:", font=(FONT_FAMILY, 9)).pack(side='left')
             _prev_edge = _prev.get('marker_edge_colors', {}).get(treat, 'auto')
             _edge_init = _edge_values.index(_prev_edge) if _prev_edge in _edge_values else 0
             edge_combo = ttk.Combobox(row2, values=_edge_labels, state='readonly', width=10)
@@ -7251,7 +7307,7 @@ class GaitLimbTab(ttk.Frame):
 
         # ── Error bar type ────────────────────────────────────────────────
         ttk.Label(dlg_body, text=f"{_next_sec()} Error Bar Type",
-                  font=('Arial', 11, 'bold'), padding=(12, 6, 12, 2)).pack(anchor='w')
+                  font=(FONT_FAMILY, 11, 'bold'), padding=(12, 6, 12, 2)).pack(anchor='w')
         err_frame = ttk.Frame(dlg_body, padding=(16, 0, 16, 4))
         err_frame.pack(fill='x')
         error_var = tk.StringVar(value=_prev.get('error_type', 'SEM'))
@@ -7262,9 +7318,9 @@ class GaitLimbTab(ttk.Frame):
         ttk.Radiobutton(err_frame, text="95% CI (Confidence Interval)",
                         variable=error_var, value='95CI').pack(anchor='w')
         ttk.Label(err_frame, text="SEM = SD/\u221an    95% CI = t* \u00d7 SEM  (uses Student's t distribution)",
-                  font=('Arial', 9), foreground='gray').pack(anchor='w', pady=(2, 0))
+                  font=(FONT_FAMILY, 9), foreground='gray').pack(anchor='w', pady=(2, 0))
 
-        ttk.Label(err_frame, text="Display style:", font=('Arial', 10),
+        ttk.Label(err_frame, text="Display style:", font=(FONT_FAMILY, 10),
                   padding=(0, 6, 0, 0)).pack(anchor='w')
         err_display_var = tk.StringVar(value=_prev.get('error_display', 'circles_caps'))
         ttk.Radiobutton(err_frame, text="Shaded region",
@@ -7277,7 +7333,7 @@ class GaitLimbTab(ttk.Frame):
         # ── Display Options (preview + individual traces) ───────────────
         sig_style_var = tk.StringVar(value=_prev.get('sig_style', 'asterisk'))
         ttk.Label(dlg_body, text=f"{_next_sec()} Display Options",
-                  font=('Arial', 11, 'bold'), padding=(12, 6, 12, 2)).pack(anchor='w')
+                  font=(FONT_FAMILY, 11, 'bold'), padding=(12, 6, 12, 2)).pack(anchor='w')
         disp_frame = ttk.Frame(dlg_body, padding=(16, 0, 16, 8))
         disp_frame.pack(fill='x')
         indiv_var = tk.BooleanVar(value=_prev.get('show_individual', False))
@@ -7434,7 +7490,7 @@ class GaitLimbTab(ttk.Frame):
 
         # ── Statistical Tests ────────────────────────────────────────────
         ttk.Label(dlg_body, text=f"{_next_sec()} Statistical Tests",
-                  font=('Arial', 11, 'bold'), padding=(12, 6, 12, 2)).pack(anchor='w')
+                  font=(FONT_FAMILY, 11, 'bold'), padding=(12, 6, 12, 2)).pack(anchor='w')
         st_frame = ttk.Frame(dlg_body, padding=(16, 0, 16, 8))
         st_frame.pack(fill='x')
 
@@ -7488,7 +7544,7 @@ class GaitLimbTab(ttk.Frame):
         time_var = None
         if max_time_min is not None:
             ttk.Label(dlg_body, text=f"{_next_sec()} Time Window",
-                      font=('Arial', 11, 'bold'), padding=(12, 6, 12, 2)).pack(anchor='w')
+                      font=(FONT_FAMILY, 11, 'bold'), padding=(12, 6, 12, 2)).pack(anchor='w')
             tw_frame = ttk.Frame(dlg_body, padding=(16, 0, 16, 8))
             tw_frame.pack(fill='x')
             ttk.Label(tw_frame, text="Show data up to:").pack(side='left')
@@ -7501,7 +7557,7 @@ class GaitLimbTab(ttk.Frame):
         rebin_var = None
         if max_time_min is not None:
             ttk.Label(dlg_body, text=f"{_next_sec()} Display Bin Size",
-                      font=('Arial', 11, 'bold'), padding=(12, 6, 12, 2)).pack(anchor='w')
+                      font=(FONT_FAMILY, 11, 'bold'), padding=(12, 6, 12, 2)).pack(anchor='w')
             rb_frame = ttk.Frame(dlg_body, padding=(16, 0, 16, 8))
             rb_frame.pack(fill='x')
             ttk.Label(rb_frame, text="Aggregate bins to:").pack(side='left')
@@ -7513,7 +7569,7 @@ class GaitLimbTab(ttk.Frame):
 
         # ── Graph Sets ─────────────────────────────────────────────────────
         ttk.Label(dlg_body, text=f"{_next_sec()} Graph Sets to Show",
-                  font=('Arial', 11, 'bold'), padding=(12, 6, 12, 2)).pack(anchor='w')
+                  font=(FONT_FAMILY, 11, 'bold'), padding=(12, 6, 12, 2)).pack(anchor='w')
         gs_frame = ttk.Frame(dlg_body, padding=(16, 0, 16, 8))
         gs_frame.pack(fill='x')
 
@@ -7539,7 +7595,7 @@ class GaitLimbTab(ttk.Frame):
             row_f.pack(fill='x', pady=1)
             ttk.Checkbutton(row_f, text=label, variable=var).pack(side='left')
             ttk.Label(row_f, text=f"  \u2014 {desc}", foreground='gray',
-                      font=('Arial', 9)).pack(side='left')
+                      font=(FONT_FAMILY, 9)).pack(side='left')
 
         # Sub-option for Full Stance under Paw Contour
         fs_var = tk.BooleanVar(value=prev_sets.get('full_stance', False))
@@ -7549,7 +7605,7 @@ class GaitLimbTab(ttk.Frame):
         ttk.Checkbutton(fs_row, text="Include Full Stance metrics",
                         variable=fs_var).pack(side='left')
         ttk.Label(fs_row, text="  \u2014 Paw metrics only during frames where all 4 paws contact simultaneously",
-                  foreground='gray', font=('Arial', 9)).pack(side='left')
+                  foreground='gray', font=(FONT_FAMILY, 9)).pack(side='left')
 
         # ── Buttons ───────────────────────────────────────────────────────
         result = [None]
@@ -7709,16 +7765,16 @@ class GaitLimbTab(ttk.Frame):
         if ax is not None:
             axis_row = ttk.Frame(frame)
             axis_row.pack(side='bottom', fill='x', padx=4, pady=(0, 2))
-            ttk.Label(axis_row, text="Y:", font=('Arial', 9)).pack(side='left')
+            ttk.Label(axis_row, text="Y:", font=(FONT_FAMILY, 9)).pack(side='left')
             y_min_e = ttk.Entry(axis_row, width=6)
             y_min_e.pack(side='left', padx=2)
-            ttk.Label(axis_row, text="to", font=('Arial', 9)).pack(side='left')
+            ttk.Label(axis_row, text="to", font=(FONT_FAMILY, 9)).pack(side='left')
             y_max_e = ttk.Entry(axis_row, width=6)
             y_max_e.pack(side='left', padx=2)
-            ttk.Label(axis_row, text="   X:", font=('Arial', 9)).pack(side='left')
+            ttk.Label(axis_row, text="   X:", font=(FONT_FAMILY, 9)).pack(side='left')
             x_min_e = ttk.Entry(axis_row, width=6)
             x_min_e.pack(side='left', padx=2)
-            ttk.Label(axis_row, text="to", font=('Arial', 9)).pack(side='left')
+            ttk.Label(axis_row, text="to", font=(FONT_FAMILY, 9)).pack(side='left')
             x_max_e = ttk.Entry(axis_row, width=6)
             x_max_e.pack(side='left', padx=2)
 
@@ -7829,10 +7885,10 @@ class GaitLimbTab(ttk.Frame):
         # --- selector row ---
         sel_row = ttk.Frame(cat_frame)
         sel_row.pack(side='top', fill='x', padx=6, pady=(4, 2))
-        ttk.Label(sel_row, text="Metric:", font=('Arial', 10)).pack(
+        ttk.Label(sel_row, text="Metric:", font=(FONT_FAMILY, 10)).pack(
             side='left', padx=(0, 4))
         combo = ttk.Combobox(sel_row, state='readonly', width=50,
-                             font=('Arial', 10))
+                             font=(FONT_FAMILY, 10))
         combo.pack(side='left', fill='x', expand=True, padx=(0, 6))
 
         registry = []
@@ -10019,14 +10075,14 @@ class GaitLimbTab(ttk.Frame):
 
         # ── Descriptive statistics table ─────────────────────────────────
         ttk.Label(section_frame, text="Descriptive Statistics:",
-                  font=('Arial', 10, 'bold')).pack(anchor='w')
+                  font=(FONT_FAMILY, 10, 'bold')).pack(anchor='w')
 
         desc_table = ttk.Frame(section_frame)
         desc_table.pack(fill='x', pady=5)
 
         headers = ['Treatment', 'N', 'Mean', 'SD', 'SEM', 'Min', 'Max']
         for i, hdr in enumerate(headers):
-            ttk.Label(desc_table, text=hdr, font=('Arial', 9, 'bold'),
+            ttk.Label(desc_table, text=hdr, font=(FONT_FAMILY, 9, 'bold'),
                       relief='solid', borderwidth=1, width=12).grid(
                 row=0, column=i, sticky='ew', padx=1, pady=1)
 
@@ -10049,7 +10105,7 @@ class GaitLimbTab(ttk.Frame):
 
         # ── Statistical test ─────────────────────────────────────────────
         ttk.Label(section_frame, text="Statistical Test:",
-                  font=('Arial', 10, 'bold')).pack(anchor='w', pady=(10, 5))
+                  font=(FONT_FAMILY, 10, 'bold')).pack(anchor='w', pady=(10, 5))
 
         data_by_treatment = {t: per_subject[per_subject['treatment'] == t][metric]
                                .dropna().values
@@ -10059,7 +10115,7 @@ class GaitLimbTab(ttk.Frame):
         if stats_res is None:
             ttk.Label(section_frame,
                       text="No statistical test performed (enable in Statistical Tests panel).",
-                      foreground='gray', font=('Arial', 9, 'italic')).pack(anchor='w')
+                      foreground='gray', font=(FONT_FAMILY, 9, 'italic')).pack(anchor='w')
             return
 
         p_val = stats_res['p_value']
@@ -10074,24 +10130,24 @@ class GaitLimbTab(ttk.Frame):
             p_text, sig = f'p = {p_val:.4f}', 'ns'
 
         result_text = f"{stats_res['test_type']}: {p_text} {sig}"
-        ttk.Label(section_frame, text=result_text, font=('Arial', 10),
+        ttk.Label(section_frame, text=result_text, font=(FONT_FAMILY, 10),
                   foreground='darkblue').pack(anchor='w')
 
         if 'effect_size' in stats_res:
             es_text = f"Effect size ({stats_res['effect_size_type']}): {stats_res['effect_size']:.3f}"
-            ttk.Label(section_frame, text=es_text, font=('Arial', 10),
+            ttk.Label(section_frame, text=es_text, font=(FONT_FAMILY, 10),
                       foreground='darkblue').pack(anchor='w')
 
         # ── Pairwise comparisons (ANOVA + significant) ───────────────────
         if 'pairwise' in stats_res and stats_res['pairwise']:
             ttk.Label(section_frame, text="Pairwise Comparisons:",
-                      font=('Arial', 10, 'bold')).pack(anchor='w', pady=(10, 5))
+                      font=(FONT_FAMILY, 10, 'bold')).pack(anchor='w', pady=(10, 5))
             pw_table = ttk.Frame(section_frame)
             pw_table.pack(fill='x', pady=5)
 
             for col_idx, (hdr, w) in enumerate(
                     [('Comparison', 30), ('p-value', 15), ('Significance', 15)]):
-                ttk.Label(pw_table, text=hdr, font=('Arial', 9, 'bold'),
+                ttk.Label(pw_table, text=hdr, font=(FONT_FAMILY, 9, 'bold'),
                           relief='solid', borderwidth=1, width=w).grid(
                     row=0, column=col_idx, sticky='ew', padx=1, pady=1)
 
@@ -10117,7 +10173,7 @@ class GaitLimbTab(ttk.Frame):
                     row=row_idx, column=1, sticky='ew', padx=1, pady=1)
                 ttk.Label(pw_table, text=sig, relief='solid', borderwidth=1,
                           width=15, foreground=fg,
-                          font=('Arial', 9, 'bold')).grid(
+                          font=(FONT_FAMILY, 9, 'bold')).grid(
                     row=row_idx, column=2, sticky='ew', padx=1, pady=1)
 
     def _add_wb_timecourse_stats_section(self, parent_frame, bins_df,
@@ -10139,7 +10195,7 @@ class GaitLimbTab(ttk.Frame):
         # ── Part A: Two-Way ANOVA ────────────────────────────────────────
         ttk.Label(section_frame,
                   text="═══ Two-Way ANOVA (Treatment × Time) ═══",
-                  font=('Arial', 10, 'bold'), foreground='darkblue').pack(
+                  font=(FONT_FAMILY, 10, 'bold'), foreground='darkblue').pack(
             anchor='w', pady=5)
 
         try:
@@ -10164,7 +10220,7 @@ class GaitLimbTab(ttk.Frame):
             headers = ['Source', 'df', 'Sum Sq', 'F-value', 'p-value', 'Significance']
             for i, hdr in enumerate(headers):
                 ttk.Label(main_effects_frame, text=hdr,
-                          font=('Arial', 9, 'bold'), relief='solid',
+                          font=(FONT_FAMILY, 9, 'bold'), relief='solid',
                           borderwidth=1, width=13).grid(
                     row=0, column=i, sticky='ew', padx=1, pady=1)
 
@@ -10225,13 +10281,13 @@ class GaitLimbTab(ttk.Frame):
                 else:
                     interp += "Groups show similar time patterns (no interaction)."
             ttk.Label(section_frame, text=interp,
-                      font=('Arial', 9, 'italic'), foreground='darkblue',
+                      font=(FONT_FAMILY, 9, 'italic'), foreground='darkblue',
                       wraplength=700).pack(anchor='w', padx=20, pady=5)
 
         except Exception as e:
             ttk.Label(section_frame,
                       text=f"Two-way ANOVA failed: {e}",
-                      foreground='red', font=('Arial', 9, 'italic')).pack(anchor='w')
+                      foreground='red', font=(FONT_FAMILY, 9, 'italic')).pack(anchor='w')
 
         ttk.Separator(section_frame, orient='horizontal').pack(fill='x', pady=10)
 
@@ -10239,17 +10295,17 @@ class GaitLimbTab(ttk.Frame):
         if not self._timecourse_posthoc_var.get():
             ttk.Label(section_frame,
                       text='Enable "Show pairwise post-hoc at each timepoint" to see per-bin results.',
-                      foreground='gray', font=('Arial', 9, 'italic')).pack(anchor='w')
+                      foreground='gray', font=(FONT_FAMILY, 9, 'italic')).pack(anchor='w')
             return
 
         ttk.Label(section_frame,
                   text="═══ Post-hoc Tests (Per Timepoint) ═══",
-                  font=('Arial', 10, 'bold'), foreground='darkblue').pack(
+                  font=(FONT_FAMILY, 10, 'bold'), foreground='darkblue').pack(
             anchor='w', pady=5)
         ttk.Label(section_frame,
                   text="Tests if treatments differ at each individual timepoint. "
                        "Only significant results shown.",
-                  font=('Arial', 9, 'italic'), foreground='gray').pack(
+                  font=(FONT_FAMILY, 9, 'italic'), foreground='gray').pack(
             anchor='w', pady=(0, 5))
 
         time_bins   = sorted(bins_df['bin_start_s'].dropna().unique())
@@ -10259,7 +10315,7 @@ class GaitLimbTab(ttk.Frame):
         col_specs = [('Time (s)', 15), ('Test', 18), ('Statistic', 15),
                      ('p-value', 15), ('Significance', 12)]
         for col_idx, (hdr, w) in enumerate(col_specs):
-            ttk.Label(table_frame, text=hdr, font=('Arial', 9, 'bold'),
+            ttk.Label(table_frame, text=hdr, font=(FONT_FAMILY, 9, 'bold'),
                       relief='solid', borderwidth=1, width=w).grid(
                 row=0, column=col_idx, sticky='ew', padx=1, pady=1)
 
@@ -10342,12 +10398,12 @@ class GaitLimbTab(ttk.Frame):
         if n_sig == 0:
             ttk.Label(section_frame,
                       text='No significant differences found at any timepoint.',
-                      foreground='gray', font=('Arial', 9, 'italic')).pack(
+                      foreground='gray', font=(FONT_FAMILY, 9, 'italic')).pack(
                 anchor='w', pady=5)
         else:
             ttk.Label(section_frame,
                       text=f'Found {n_sig} significant timepoint(s) out of {len(time_bins)} bins.',
-                      foreground='darkblue', font=('Arial', 9, 'bold')).pack(
+                      foreground='darkblue', font=(FONT_FAMILY, 9, 'bold')).pack(
                 anchor='w', pady=5)
 
     def _create_wb_statistics_tab(self, nb, summary_df, bins_df,
@@ -10376,7 +10432,7 @@ class GaitLimbTab(ttk.Frame):
 
         status_lbl = ttk.Label(ctrl_frame,
                                text=f"(showing 0\u2013{max_time_int} min)",
-                               font=('Arial', 9), foreground='gray')
+                               font=(FONT_FAMILY, 9), foreground='gray')
         status_lbl.pack(side='left', padx=10)
 
         # ── Category notebook for sub-tabs ────────────────────────────────

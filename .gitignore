@@ -33,6 +33,8 @@ PixelPaws_GU.py
 brightness_features_backup.py
 brightness_features_cpu_backup.py
 enable_pytorch_gpu_fixed.py
+*.bak
+*.vscode-overwrite-*
 
 # ── Project config (user-specific) ───────────────────────────────────────────
 PixelPaws_project.json
@@ -51,6 +53,10 @@ Thumbs.db
 backup_pre_refactor_20260418/
 
 # ── Local research materials (papers, datasheets, raw screenshots) ───────────
+# These were moved into _research_artifacts/ during the 2026-05-01 folder
+# restructure — keeping the legacy root patterns ignored too in case any
+# stragglers reappear.
+_research_artifacts/
 lupe.pdf
 lupe_page*.png
 s41467-021-25420-x.pdf
@@ -60,3 +66,25 @@ theme_*.png
 
 # ── Local working notes (not part of the shipped project) ────────────────────
 behavior_labeling_guide.md
+
+# Private (webhooks, lab-internal notes)
+docs/private/
+
+# ── Secrets: real Discord webhook URLs live here, never commit ────────────────
+pp_secrets.py
+**/pp_secrets.py
+.env
+
+# ── Research run artifacts / logs / outputs (not code) ───────────────────────
+encyclopedia_runs/
+analysis_output/
+_audit_screenshots/
+_logs/
+**/telemetry/
+**/batch_extract_logs/
+*.log
+*.log.fail
+*.npz
+*blinding_key*.json
+scripts/research/*.png
+scripts/research/*.svg

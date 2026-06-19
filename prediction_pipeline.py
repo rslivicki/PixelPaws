@@ -287,13 +287,22 @@ def auto_detect_bodyparts_from_model(clf_data, verbose=True):
             """Strip egocentric prefix — Ego_flpaw → flpaw."""
             return bp[4:] if bp.startswith('Ego_') else bp
 
-        # From velocity features (most reliable): bodypart_Vel1, bodypart_Vel2, bodypart_Vel10
+        # From velocity features (most reliable): bodypart_Vel1, bodypart_Vel2, bodypart_Vel10.
+        # Skip contralateral pair features (fl-fr_VelCorr, hl-hr_VelCorr) — those are
+        # cross-bodypart and would inject fake "hl-hr"-style bodyparts into the set.
         vel_count = 0
         for f in features:
-            if '_Vel' in f and 'sum_' not in f and 'Pix' not in f and 'Dis_' not in f:
-                bp = _strip_ego(f.split('_Vel')[0])
-                bodypart_names.add(bp)
-                vel_count += 1
+            if '_Vel' not in f:
+                continue
+            if 'sum_' in f or 'Pix' in f or 'Dis_' in f:
+                continue
+            if f.endswith('_VelCorr'):
+                continue  # contralateral pair feature, not a single bodypart
+            bp = _strip_ego(f.split('_Vel')[0])
+            if '-' in bp:
+                continue  # belt-and-suspenders: skip any remaining pair-format names
+            bodypart_names.add(bp)
+            vel_count += 1
         if verbose and vel_count > 0:
             print(f"    Found {len(bodypart_names)} body parts from {vel_count} velocity features")
 
@@ -379,6 +388,10 @@ def PixelPaws_ExtractFeatures(pose_data_file, video_file_path, bp_pixbrt_list,
                               crop_offset_x=0, crop_offset_y=0, config_yaml_path=None,
                               include_optical_flow=False, bp_optflow_list=None,
                               cancel_flag=None,
+                              compute_silhouette=False, silhouette_floor=35,
+                              mm_per_pixel=None,
+                              clf_data=None,
+                              session=None,
                               ):
     """
     Extract features using new modular system (with fallback to original).
@@ -410,6 +423,18 @@ def PixelPaws_ExtractFeatures(pose_data_file, video_file_path, bp_pixbrt_list,
             "  - brightness_features.py\n"
             "  - classifier_training.py"
         )
+
+    # Auto-resolve mm_per_pixel from clf_data / session when not given.
+    # Predict-tab callers can pass `clf_data=clf_data` and (optionally)
+    # `session=session` instead of remembering to extract the right
+    # field. Explicit `mm_per_pixel=` always wins.
+    if mm_per_pixel is None and clf_data is not None:
+        mm_per_pixel = clf_data.get('training_mm_per_pixel')
+        # Under calibration_mode='auto', the trained value is None
+        # (varies per session) — fall back to the per-video mm/px.
+        if mm_per_pixel is None and session is not None and \
+                clf_data.get('training_calibration_mode', 'off') == 'auto':
+            mm_per_pixel = session.get('mm_per_pixel')
 
     print("  Extracting features with PixelPaws modules...")
 
@@ -485,8 +510,12 @@ def PixelPaws_ExtractFeatures(pose_data_file, video_file_path, bp_pixbrt_list,
     pose_extractor = PoseFeatureExtractor(
         bodyparts=bp_include_list_cleaned,
         likelihood_threshold=min_prob,
-        velocity_delta=dt_vel
+        velocity_delta=dt_vel,
+        mm_per_pixel=mm_per_pixel,
     )
+    if mm_per_pixel is not None:
+        print(f"  ✓ Calibration on: features will be in mm "
+              f"(mm_per_pixel={mm_per_pixel:.5f})")
 
     # DEBUG: Print what body parts we're actually using
     print(f"  Body parts for pose features: {bp_include_list_cleaned}")
@@ -531,12 +560,21 @@ def PixelPaws_ExtractFeatures(pose_data_file, video_file_path, bp_pixbrt_list,
         create_video=False,
         optical_flow_extractor=of_extractor,
         cancel_flag=cancel_flag,
+        compute_silhouette=compute_silhouette,
+        silhouette_floor=silhouette_floor,
     )
 
     # 3. Combine features
     X = pd.concat([X_pose, X_brightness], axis=1)
 
-    print(f"  ✓ Extracted {X.shape[1]} features from {X.shape[0]} frames")
+    # 4. Downcast float64 -> float32 to ~halve cache size (XGBoost is float32 internally, so
+    #    predictions are unaffected; ints/flags left as-is). Same 8aed1c22 hash (config-based).
+    _f64 = X.select_dtypes('float64').columns
+    if len(_f64):
+        X = X.astype({c: 'float32' for c in _f64})
+
+    print(f"  ✓ Extracted {X.shape[1]} features from {X.shape[0]} frames "
+          f"(float32; downcast {len(_f64)} cols)")
     return X
 
 
@@ -544,7 +582,8 @@ def PixelPaws_ExtractFeatures(pose_data_file, video_file_path, bp_pixbrt_list,
 # XGBoost prediction (strict feature alignment)
 # ---------------------------------------------------------------------------
 
-def predict_with_xgboost(model, X, calibrator=None, fold_models=None):
+def predict_with_xgboost(model, X, calibrator=None, fold_models=None,
+                         log_fn=None):
     """
     Predict with XGBoost model, handling GPU models and feature selection.
 
@@ -559,10 +598,18 @@ def predict_with_xgboost(model, X, calibrator=None, fold_models=None):
         fold_models: Optional list of additional XGBoost models (one per CV fold).
                      When provided, their predict_proba outputs are averaged with
                      the primary model's before calibration is applied.
+        log_fn: Optional logger callback ``log_fn(str)`` for status / warning
+                messages. When None, falls back to ``print``. Pre-2026-05-01
+                this function logged exclusively via ``print()``, so calibrator
+                failures and fold-averaging notices were invisible from the GUI
+                (the controlling console is hidden when launched from a shortcut).
+                Pass ``self._log_msg`` (or equivalent tab logger) to surface
+                these warnings in the UI.
 
     Returns:
         Array of prediction probabilities (calibrated if calibrator was provided)
     """
+    _log = log_fn if log_fn is not None else print
     try:
         # CRITICAL: Select only features the model was trained on
         if hasattr(model, 'feature_names_in_'):
@@ -583,10 +630,10 @@ def predict_with_xgboost(model, X, calibrator=None, fold_models=None):
 
             # Select features in correct order (critical for XGBoost!)
             X_model = X[model.feature_names_in_]
-            print(f"  Selected {len(model.feature_names_in_)} features for prediction")
+            _log(f"  Selected {len(model.feature_names_in_)} features for prediction")
         else:
             # Older model without feature names - use all features
-            print("  Warning: Model doesn't have feature_names_in_. Using all features.")
+            _log("  Warning: Model doesn't have feature_names_in_. Using all features.")
             X_model = X
 
     except ValueError:
@@ -594,7 +641,7 @@ def predict_with_xgboost(model, X, calibrator=None, fold_models=None):
         raise
     except Exception as e:
         # Log other errors but continue with fallback
-        print(f"  Warning during prediction setup: {e}")
+        _log(f"  Warning during prediction setup: {e}")
         # Use X_model if we got that far, otherwise use X
         X_model = X_model if 'X_model' in locals() else X
 
@@ -607,17 +654,17 @@ def predict_with_xgboost(model, X, calibrator=None, fold_models=None):
                 _fm_X = X[_fm.feature_names_in_] if hasattr(_fm, 'feature_names_in_') else X_model
                 fold_probas.append(_fm.predict_proba(_fm_X)[:, 1])
             except Exception as _fm_err:
-                print(f"  Warning: fold model predict failed ({_fm_err}); skipping")
+                _log(f"  Warning: fold model predict failed ({_fm_err}); skipping")
         if len(fold_probas) > 1:
             y_proba = np.mean(np.stack(fold_probas, axis=0), axis=0)
-            print(f"  Averaged {len(fold_probas)} models (final + {len(fold_probas) - 1} fold)")
+            _log(f"  Averaged {len(fold_probas)} models (final + {len(fold_probas) - 1} fold)")
 
     if calibrator is not None:
         try:
             y_proba = np.clip(calibrator.predict(y_proba), 0.0, 1.0)
-            print("  Applied probability calibration")
+            _log("  Applied probability calibration")
         except Exception as _cal_err:
-            print(f"  Warning: calibrator failed ({_cal_err}); using raw probabilities")
+            _log(f"  Warning: calibrator failed ({_cal_err}); using raw probabilities")
 
     return y_proba
 
@@ -631,14 +678,37 @@ def augment_features_post_cache(X, clf_data, model, dlc_path, log_fn=None):
     Add egocentric and lag features to X if the model requires them.
     Matches the post-cache augmentation done during training.
     Returns the (possibly augmented) DataFrame.
+
+    Failure handling:
+      Each augmentation step is wrapped in try/except so a single failing
+      step (e.g. a missing _Height column for contact features) doesn't
+      abort the whole pipeline. Pre-2026-05-01 these failures were emitted
+      via ``if log_fn: log_fn(...)``, so when called without a logger
+      (some CLI scripts, ad-hoc Jupyter use) the warnings vanished.
+      The failure paths now use ``(log_fn or print)`` so warnings always
+      reach SOME output. Success messages still respect log_fn=None and
+      stay quiet.
     """
+    _warn = log_fn if log_fn is not None else print
+
+    # mm/pixel calibration carried from training. When set, post-cache
+    # extractors re-read the DLC file with the same scaling so their
+    # output remains in mm and is comparable to the cached X (which was
+    # extracted at the same calibration). None for legacy pixel cases.
+    _mm_per_px = clf_data.get('training_mm_per_pixel')
+    if _mm_per_px is None:
+        # Per-video override populated by the predict caller from the
+        # session dict (find_session_triplets). Falls back to None when
+        # the video isn't camsync-calibrated.
+        _mm_per_px = clf_data.get('mm_per_pixel_at_runtime')
+
     # --- Egocentric features ---
     try:
         _need_ego = clf_data.get('use_egocentric', False)
         if not _need_ego and hasattr(model, 'feature_names_in_'):
             _need_ego = any(f.startswith('Ego_') for f in model.feature_names_in_)
         if _need_ego:
-            _ego_ext = PoseFeatureExtractor(bodyparts=[])
+            _ego_ext = PoseFeatureExtractor(bodyparts=[], mm_per_pixel=_mm_per_px)
             _ego_dlc = _ego_ext.load_dlc_data(dlc_path)
             _ego_xc, _ego_yc, _ = _ego_ext.get_bodypart_coords(_ego_dlc)
             _ego_x, _ego_y = _ego_ext.normalize_egocentric(_ego_xc, _ego_yc)
@@ -648,12 +718,19 @@ def augment_features_post_cache(X, clf_data, model, dlc_path, log_fn=None):
             _ego_vel.columns = [f'Ego_{c}' for c in _ego_vel.columns]
             _ego_df = pd.concat([_ego_dist, _ego_vel], axis=1).fillna(0)
             _ego_df = _ego_df.iloc[:len(X)].reset_index(drop=True)
-            X = pd.concat([X.reset_index(drop=True), _ego_df], axis=1)
-            if log_fn:
-                log_fn(f'  + {len(_ego_df.columns)} egocentric features')
+            # Skip any Ego_ columns the cache already carries — rich caches (e.g. the
+            # 635-col 8aed1c22 set) already include egocentric features, so blindly
+            # concatenating would create duplicate column labels and later break
+            # df.reindex(...) ("cannot reindex on an axis with duplicate labels").
+            _ego_df = _ego_df[[c for c in _ego_df.columns if c not in set(X.columns)]]
+            if not _ego_df.empty:
+                X = pd.concat([X.reset_index(drop=True), _ego_df], axis=1)
+                if log_fn:
+                    log_fn(f'  + {len(_ego_df.columns)} egocentric features')
+            elif log_fn:
+                log_fn('  egocentric features already present in cache — none added')
     except Exception as e:
-        if log_fn:
-            log_fn(f'  ⚠️  Egocentric augmentation failed: {e}')
+        _warn(f'  ⚠️  Egocentric augmentation failed: {e}')
 
     # --- Contact state features ---
     try:
@@ -663,8 +740,14 @@ def augment_features_post_cache(X, clf_data, model, dlc_path, log_fn=None):
         if _need_contact:
             _height_cols = [c for c in X.columns if c.endswith('_Height')]
             if _height_cols and not any(c.endswith('_ContactState') for c in X.columns):
+                # Threshold lives in coordinate units. When the cached X
+                # was extracted in mm, the trained `contact_threshold`
+                # is already in mm; pass it through unchanged.
                 _ct_thresh = clf_data.get('contact_threshold', 15.0)
-                _ct_ext = PoseFeatureExtractor(bodyparts=[], contact_threshold=_ct_thresh)
+                _ct_ext = PoseFeatureExtractor(
+                    bodyparts=[], contact_threshold=_ct_thresh,
+                    mm_per_pixel=_mm_per_px,
+                )
                 _ct_df = _ct_ext.calculate_contact_features(X)
                 if not _ct_df.empty:
                     _ct_df = _ct_df.iloc[:len(X)].reset_index(drop=True)
@@ -672,8 +755,7 @@ def augment_features_post_cache(X, clf_data, model, dlc_path, log_fn=None):
                     if log_fn:
                         log_fn(f'  + {len(_ct_df.columns)} contact state features')
     except Exception as e:
-        if log_fn:
-            log_fn(f'  ⚠️  Contact augmentation failed: {e}')
+        _warn(f'  ⚠️  Contact augmentation failed: {e}')
 
     # --- Lag/lead features ---
     try:
@@ -709,8 +791,54 @@ def augment_features_post_cache(X, clf_data, model, dlc_path, log_fn=None):
                 if log_fn:
                     log_fn(f'  + {len(_lag_df.columns)} lag/lead features (variance fallback)')
     except Exception as e:
-        if log_fn:
-            log_fn(f'  ⚠️  Lag augmentation failed: {e}')
+        _warn(f'  ⚠️  Lag augmentation failed: {e}')
+
+    # --- Multi-timescale rolling stats (lean: std + max, 100/700 ms) -------
+    # Opt-in; controlled by the classifier's `use_multiscale_features` flag
+    # or auto-detected from a model whose feature_names_in_ already contains
+    # ``..._std_NNNms`` / ``..._max_NNNms`` columns. Lean filter only expands
+    # raw Pix_<bp> + bodypart_Vel1 base columns, so the column count stays
+    # ~72 at default rig.
+    try:
+        _need_multi = clf_data.get('use_multiscale_features', False)
+        if not _need_multi and hasattr(model, 'feature_names_in_'):
+            _need_multi = any(
+                re.search(r'_(std|max)_\d+ms$', f) for f in model.feature_names_in_)
+        if _need_multi:
+            _ms_fps = float(clf_data.get('multiscale_fps', 60.0))
+            # Warn loudly if the project the classifier is being applied
+            # against now reports a different process_fps than the one
+            # baked into the classifier — the multiscale window
+            # frame-counts will be computed at the *trained* fps,
+            # which means the real-time span of each window shifts.
+            # Caller (predict tab) populates `process_fps_at_runtime`
+            # from project config before invoking this function.
+            _runtime_fps = clf_data.get('process_fps_at_runtime')
+            if _runtime_fps is not None:
+                try:
+                    _runtime_fps = float(_runtime_fps)
+                    if abs(_runtime_fps - _ms_fps) > 0.5:
+                        _warn(
+                            f'  ⚠️  multiscale fps mismatch: classifier trained at '
+                            f'{_ms_fps:.1f} fps but project process_fps is '
+                            f'{_runtime_fps:.1f} fps. Window time-spans will '
+                            f'differ by ~{(_ms_fps / _runtime_fps):.2f}x. '
+                            f'Re-train at the new fps for best results.')
+                except (TypeError, ValueError):
+                    pass
+            _ms_windows = tuple(clf_data.get('multiscale_windows_ms', [100, 700]))
+            _ms_stats = tuple(clf_data.get('multiscale_stats', ['std', 'max']))
+            _ms_ext = PoseFeatureExtractor(bodyparts=[])
+            _ms_df = _ms_ext.calculate_multiscale_features(
+                X, fps=_ms_fps, windows_ms=_ms_windows, stats=_ms_stats)
+            if not _ms_df.empty:
+                X = pd.concat([X.reset_index(drop=True),
+                               _ms_df.reset_index(drop=True)], axis=1)
+                if log_fn:
+                    log_fn(f'  + {len(_ms_df.columns)} multi-timescale features '
+                           f'(fps={_ms_fps:.1f}, windows={list(_ms_windows)} ms)')
+    except Exception as e:
+        _warn(f'  ⚠️  Multi-timescale augmentation failed: {e}')
 
     # --- Brightness Category B (post-cache derived) ------------------------
     # All 7 are deterministic transforms of existing cache columns.  Always
@@ -720,8 +848,7 @@ def augment_features_post_cache(X, clf_data, model, dlc_path, log_fn=None):
     try:
         X = compute_brightness_category_b(X, log_fn=log_fn)
     except Exception as e:
-        if log_fn:
-            log_fn(f'  ⚠️  Brightness Category-B augmentation failed: {e}')
+        _warn(f'  ⚠️  Brightness Category-B augmentation failed: {e}')
 
     # --- Normalized pairwise distances (ARBEL parity) ----------------------
     # Same design as Category B: always compute when Dis_ columns exist,
@@ -729,8 +856,19 @@ def augment_features_post_cache(X, clf_data, model, dlc_path, log_fn=None):
     try:
         X = compute_normalized_distances(X, log_fn=log_fn)
     except Exception as e:
-        if log_fn:
-            log_fn(f'  ⚠️  Normalized-distance augmentation failed: {e}')
+        _warn(f'  ⚠️  Normalized-distance augmentation failed: {e}')
+
+    # --- Duplicate-column guard ------------------------------------------------
+    # Belt-and-suspenders: if any augmentation step re-added a column the cache
+    # already had, drop the duplicates (keep first = the cache's canonical value,
+    # which is what the model trained on). A duplicate label would otherwise make
+    # X[col] return a DataFrame (breaking downstream steps) and crash the eventual
+    # df.reindex(...) with "cannot reindex on an axis with duplicate labels".
+    if X.columns.duplicated().any():
+        _dups = X.columns[X.columns.duplicated()].unique().tolist()
+        X = X.loc[:, ~X.columns.duplicated()]
+        _warn(f'  ⚠️  Dropped {len(_dups)} duplicate feature column(s) '
+              f'(e.g. {_dups[:4]}) — kept the cache copy.')
 
     # --- Final sanitization — no inf / NaN / huge values reach the trainer.
     # XGBoost rejects inf outright; cheap belt-and-suspenders that catches
@@ -740,12 +878,16 @@ def augment_features_post_cache(X, clf_data, model, dlc_path, log_fn=None):
         if len(_num_cols) > 0:
             _inf_mask = np.isinf(X[_num_cols].values)
             if _inf_mask.any():
-                if log_fn:
-                    log_fn(f'  ⚠️  Sanitized {int(_inf_mask.sum())} inf values in features')
+                _warn(f'  ⚠️  Sanitized {int(_inf_mask.sum())} inf values in features')
                 X[_num_cols] = X[_num_cols].replace([np.inf, -np.inf], 0.0).fillna(0.0)
                 X[_num_cols] = X[_num_cols].clip(lower=-1e9, upper=1e9)
-    except Exception:
-        pass
+    except Exception as e:
+        # Pre-2026-05-01 this was a bare ``except: pass``. Now we at
+        # least surface the failure — sanitization errors (e.g. dtype
+        # promotion bugs) used to vanish silently and propagate inf
+        # values into XGBoost, which then errored out with a confusing
+        # message about training data containing inf.
+        _warn(f'  ⚠️  Final inf-sanitization failed: {e}')
 
     return X
 
@@ -784,6 +926,40 @@ def compute_normalized_distances(X, log_fn=None):
     if log_fn:
         log_fn(f'  + {len(_norm_df.columns)} normalized distance features')
     return X
+
+
+def _vectorized_rolling_onset(series, window=11):
+    """Vectorized replacement for `rolling(window, center=True, min_periods=1).apply(_onset)`.
+
+    The original `_onset(arr)` is `arr.max() / (|argmax(arr) - arr.size//2| + 1)`,
+    or 0.0 when the truncated window has fewer than 2 elements or its max is <= 0.
+    For interior frames pandas passes the full window; near the edges the window
+    is truncated by `min_periods=1`, so `arr.size` and the center-index shrink.
+    The vectorized form pads with NaN, uses one stride view + nanmax/nanargmax,
+    and reconstructs the truncated-window center via the per-frame pad widths.
+    """
+    arr = series.to_numpy(dtype=np.float64, copy=False)
+    n = arr.size
+    if n == 0:
+        return pd.Series([], index=series.index, name=series.name, dtype=float)
+    half = window // 2
+    padded = np.concatenate([np.full(half, np.nan), arr, np.full(half, np.nan)])
+    sw = np.lib.stride_tricks.sliding_window_view(padded, window)  # (n, window)
+    idx = np.arange(n)
+    pad_left = np.maximum(0, half - idx)
+    pad_right = np.maximum(0, idx + half + 1 - n)
+    valid_size = window - pad_left - pad_right
+    with np.errstate(invalid='ignore'):
+        win_max = np.nanmax(sw, axis=1)
+        win_argmax = np.nanargmax(sw, axis=1)
+    argmax_in_valid = win_argmax - pad_left
+    center_in_valid = valid_size // 2
+    out = np.where(
+        (valid_size < 2) | (win_max <= 0) | np.isnan(win_max),
+        0.0,
+        win_max / (np.abs(argmax_in_valid - center_in_valid) + 1.0),
+    )
+    return pd.Series(out, index=series.index, name=series.name).fillna(0)
 
 
 def compute_brightness_category_b(X, log_fn=None):
@@ -837,13 +1013,14 @@ def compute_brightness_category_b(X, log_fn=None):
         _aug_dfs.append(_j.rename(f'Pix_jerk_{_bp}').to_frame())
 
     # B.4 brightness onset sharpness (peak / time-to-peak)
-    def _onset(arr):
-        if arr.size < 2 or arr.max() <= 0:
-            return 0.0
-        return float(arr.max()) / (abs(int(np.argmax(arr)) - (arr.size // 2)) + 1.0)
+    # Vectorized equivalent of:
+    #   rolling(11, center=True, min_periods=1).apply(
+    #     lambda a: a.max() / (|argmax(a) - a.size//2| + 1) if a.size >= 2 and a.max() > 0 else 0
+    #   )
+    # ~50-100x faster than rolling.apply with a Python callback.
     for _col in _pix_cols:
         _bp = _col[len('Pix_'):]
-        _o = X[_col].rolling(11, center=True, min_periods=1).apply(_onset, raw=True).fillna(0)
+        _o = _vectorized_rolling_onset(X[_col], window=11)
         _aug_dfs.append(_o.rename(f'Pix_onset_{_bp}').to_frame())
 
     # B.5 pre-event quiescence on brightness (stillness-before-spike)
@@ -925,6 +1102,7 @@ _POST_CACHE_RE = re.compile(
     r'|_lag[mp]\d+$'
     r'|^Pix_(baseline_sub|std_temporal|jerk|onset|prequi|corr|velprod)_'
     r'|^Dis_norm_'
+    r'|_(std|max)_\d+ms$'
 )
 
 

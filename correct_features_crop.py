@@ -12,6 +12,7 @@ import cv2
 import pickle
 import glob
 from tkinter import Tk, filedialog, messagebox
+from ui_utils import FONT_FAMILY
 
 
 def find_config_yaml(video_path):
@@ -231,15 +232,15 @@ def recalculate_brightness(features_df, video_path, x_offset=0, y_offset=0, radi
     progress_win.geometry(f"550x140+{(_sw-550)//2}+{(_sh-140)//2}")
     
     Label(progress_win, text="Re-extracting brightness (single-pass)...", 
-          font=('Arial', 11, 'bold')).pack(pady=10)
+          font=(FONT_FAMILY, 11, 'bold')).pack(pady=10)
     
-    progress_label = Label(progress_win, text="Starting...", font=('Arial', 9))
+    progress_label = Label(progress_win, text="Starting...", font=(FONT_FAMILY, 9))
     progress_label.pack(pady=5)
     
     progress_bar = ttk.Progressbar(progress_win, length=400, mode='determinate')
     progress_bar.pack(pady=10)
     
-    time_label = Label(progress_win, text="", font=('Arial', 9), foreground='gray')
+    time_label = Label(progress_win, text="", font=(FONT_FAMILY, 9), foreground='gray')
     time_label.pack(pady=5)
     
     start_time = time.time()

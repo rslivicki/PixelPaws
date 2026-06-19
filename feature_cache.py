@@ -64,6 +64,32 @@ class FeatureCacheManager:
             'include_optical_flow': bool(cfg.get('include_optical_flow', False)),
             'bp_optflow_list':      list(cfg.get('bp_optflow_list', [])),
         }
+        # Silhouette is opt-in (project-level); include in the hash only
+        # when enabled so existing projects without the key keep their
+        # existing hashes. When enabled, the floor is also part of the
+        # hash so changing the threshold properly invalidates caches.
+        if bool(cfg.get('compute_silhouette', False)):
+            key_dict['compute_silhouette'] = True
+            key_dict['silhouette_floor']   = int(cfg.get('silhouette_floor', 35))
+
+        # process_fps and mm_per_pixel are opt-in (added 2026-05-07).
+        # Only include them when set, so legacy projects without the
+        # keys keep their existing hashes intact.
+        process_fps = cfg.get('process_fps')
+        if process_fps is not None:
+            key_dict['process_fps'] = round(float(process_fps), 4)
+        # Accept either 'mm_per_pixel' (extraction-time config) or
+        # 'training_mm_per_pixel' (clf_data — what predict flows pass).
+        # This means a classifier trained at 0.149 mm/px will key a
+        # cache file separately from a pixel-trained classifier even
+        # when the predict caller hands us clf_data directly without
+        # remapping the field name.
+        mm_per_pixel = (
+            cfg.get('mm_per_pixel')
+            or cfg.get('training_mm_per_pixel')
+        )
+        if mm_per_pixel is not None:
+            key_dict['mm_per_pixel'] = round(float(mm_per_pixel), 6)
         return hashlib.md5(repr(key_dict).encode('utf-8')).hexdigest()[:8]
 
     # ------------------------------------------------------------------

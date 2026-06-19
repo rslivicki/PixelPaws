@@ -9,6 +9,7 @@ existing tab creation code works unchanged.
 """
 
 import tkinter as tk
+from ui_utils import FONT_FAMILY
 
 try:
     import ttkbootstrap as ttk
@@ -145,7 +146,7 @@ class SidebarNav(ttk.Frame):
         # App title
         title = tk.Label(self._sidebar, text="PixelPaws",
                          bg=c['sidebar_bg'], fg=c['title_fg'],
-                         font=('Arial', 13, 'bold'), anchor='w')
+                         font=(FONT_FAMILY, 13, 'bold'), anchor='w')
         title.pack(fill='x', padx=12, pady=(14, 4))
         self._title_label = title
 
@@ -169,7 +170,7 @@ class SidebarNav(ttk.Frame):
         # Group header
         grp = tk.Label(container, text=group_name.upper(),
                        bg=c['sidebar_bg'], fg=c['group_fg'],
-                       font=('Arial', 8, 'bold'), anchor='w')
+                       font=(FONT_FAMILY, 8, 'bold'), anchor='w')
         grp.pack(fill='x', padx=14, pady=(12, 2))
         self._group_labels[group_name] = grp
 
@@ -196,11 +197,11 @@ class SidebarNav(ttk.Frame):
         label_text = parts[1] if len(parts) > 1 else text
 
         emoji_lbl = tk.Label(row, text=emoji, bg=c['sidebar_bg'],
-                             font=('Arial', 11), width=2, anchor='center')
+                             font=(FONT_FAMILY, 11), width=2, anchor='center')
         emoji_lbl.pack(side='left', padx=(4, 2), pady=6)
 
         text_lbl = tk.Label(row, text=label_text, bg=c['sidebar_bg'],
-                            fg=c['item_fg'], font=('Arial', 10), anchor='w')
+                            fg=c['item_fg'], font=(FONT_FAMILY, 10), anchor='w')
         text_lbl.pack(side='left', fill='x', expand=True, pady=6)
         self._text_labels[text] = text_lbl
 
@@ -431,7 +432,7 @@ class SidebarNav(ttk.Frame):
                   widgets['text_lbl'], widgets['dot']):
             w.config(bg=c['active_bg'])
         widgets['accent'].config(bg=c['accent'])
-        widgets['text_lbl'].config(font=('Arial', 10, 'bold'))
+        widgets['text_lbl'].config(font=(FONT_FAMILY, 10, 'bold'))
 
     def _unhighlight_nav(self, text):
         """Remove highlight from a nav item."""
@@ -443,7 +444,7 @@ class SidebarNav(ttk.Frame):
                   widgets['text_lbl'], widgets['dot']):
             w.config(bg=c['sidebar_bg'])
         widgets['accent'].config(bg=c['sidebar_bg'])
-        widgets['text_lbl'].config(font=('Arial', 10))
+        widgets['text_lbl'].config(font=(FONT_FAMILY, 10))
 
     def _enable_hover(self):
         """Called after construction delay to enable hover effects."""

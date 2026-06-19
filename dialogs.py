@@ -46,8 +46,10 @@ try:
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
     from matplotlib.figure import Figure
+    MATPLOTLIB_AVAILABLE = True
 except ImportError:
     plt = None
+    MATPLOTLIB_AVAILABLE = False
 
 try:
     from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_score
@@ -59,9 +61,7 @@ try:
 except ImportError:
     beta = None
 
-from ui_utils import _bind_tight_layout_on_resize
-
-
+from ui_utils import _bind_tight_layout_on_resize, FONT_FAMILY, ToolTip, METRICS_HELP
 class Theme:
     """Theme management — delegates to ttkbootstrap when available, falls back to manual."""
 
@@ -324,6 +324,33 @@ class TrainingVisualizationWindow:
     
     def setup_ui(self):
         """Setup visualization UI"""
+        # Honest-F1 headline (mirrors the AL retrain window). Set via set_headline()
+        # once the nested-LOFO honest F1 / AUPRC are known (after CV).
+        self.headline_var = tk.StringVar(value="⏳ Training…")
+        self.headline_lbl = ttk.Label(self.window, textvariable=self.headline_var,
+                                      font=('TkDefaultFont', 12, 'bold'))
+        self.headline_lbl.pack(pady=(8, 2))
+        # Hover legend explaining each headline endpoint (HONEST F1 / bout-F1 / AUPRC / …).
+        self.headline_help = ttk.Label(self.window, text="ⓘ what these metrics mean",
+                                       font=('TkDefaultFont', 8), foreground='#6b7280',
+                                       cursor='hand2')
+        self.headline_help.pack(pady=(0, 2))
+        ToolTip(self.headline_help, METRICS_HELP)
+        # Paw-print loading animation (replaces the marquee bar): 🐾 rotated 90° march
+        # left→right like footprints, accumulating 1→PAW_MAX then resetting, until
+        # set_headline() stops it. Uses a Canvas so the glyph can be rotated (angle=).
+        self._PAW_MAX = 8
+        self._paw_n = 0
+        self._paw_running = True
+        try:
+            _bg = self.window.cget('bg')
+        except Exception:
+            _bg = None
+        self.paw_canvas = tk.Canvas(self.window, height=40, width=440,
+                                    highlightthickness=0, **({'bg': _bg} if _bg else {}))
+        self.paw_canvas.pack(pady=(0, 4))
+        self._animate_paws()
+
         # Create notebook for different plots
         self.notebook = ttk.Notebook(self.window)
         self.notebook.pack(fill='both', expand=True, padx=5, pady=5)
@@ -382,13 +409,15 @@ class TrainingVisualizationWindow:
         precs = [r['precision'] for r in self.fold_f1_scores]
         recs = [r['recall'] for r in self.fold_f1_scores]
         
-        self.f1_ax.bar([f - 0.2 for f in folds], f1s, 0.2, label='F1', alpha=0.8)
-        self.f1_ax.bar(folds, precs, 0.2, label='Precision', alpha=0.8)
-        self.f1_ax.bar([f + 0.2 for f in folds], recs, 0.2, label='Recall', alpha=0.8)
+        # AL-window colour palette (matches active_learning_v2.ALRetrainWindow.draw_folds)
+        self.f1_ax.bar([f - 0.2 for f in folds], f1s, 0.2, label='F1', color='#2c7fb8')
+        self.f1_ax.bar(folds, precs, 0.2, label='Precision', color='#7fcdbb')
+        self.f1_ax.bar([f + 0.2 for f in folds], recs, 0.2, label='Recall', color='#fdae61')
         
         self.f1_ax.set_xlabel('Fold', color=self.theme.colors['plot_fg'])
         self.f1_ax.set_ylabel('Score', color=self.theme.colors['plot_fg'])
-        self.f1_ax.set_title('Cross-Validation Scores', color=self.theme.colors['plot_fg'])
+        self.f1_ax.set_title('Cross-Validation Scores  @0.5 (raw, pre-threshold)',
+                             color=self.theme.colors['plot_fg'])
         self.f1_ax.legend()
         self.f1_ax.set_ylim([0, 1])
         self.f1_ax.tick_params(colors=self.theme.colors['plot_fg'])
@@ -413,6 +442,44 @@ class TrainingVisualizationWindow:
 
         self.time_canvas.draw()
     
+    def _draw_paws(self, n, done=False):
+        """Draw n paw prints rotated 90° marching left→right (footstep step offset)."""
+        try:
+            self.paw_canvas.delete('all')
+            for i in range(n):
+                x = 16 + i * 46
+                y = 20 + (4 if i % 2 else -4)   # alternate up/down → 'walking' steps
+                # angle=270 (clockwise 90°) → toes point RIGHT, i.e. walking left→right.
+                self.paw_canvas.create_text(x, y, text="🐾", angle=270,
+                                            font=('TkDefaultFont', 15))
+            if done:
+                self.paw_canvas.create_text(16 + n * 46 + 6, 20, text="✓",
+                                            font=('TkDefaultFont', 14, 'bold'),
+                                            fill='#2ca02c')
+        except Exception:
+            self._paw_running = False   # canvas/window gone
+
+    def _animate_paws(self):
+        """Advance the paw-print loading animation (paws appear one after another)."""
+        if not getattr(self, '_paw_running', False):
+            return
+        self._paw_n = (self._paw_n % self._PAW_MAX) + 1
+        self._draw_paws(self._paw_n)
+        try:
+            self.window.after(320, self._animate_paws)
+        except Exception:
+            self._paw_running = False   # window gone
+
+    def set_headline(self, text, done=True):
+        """Set the bold headline (e.g. honest F1 / AUPRC) and stop the paw animation."""
+        try:
+            self.headline_var.set(text)
+            if done:
+                self._paw_running = False
+                self._draw_paws(self._PAW_MAX, done=True)
+        except Exception:
+            pass
+
     def update_status(self):
         """Update status text"""
         if self.fold_f1_scores:
@@ -508,34 +575,62 @@ class AutoLabelWindow:
                   command=self.update_stats).pack(side='right', padx=5)
     
     def run_predictions(self):
-        """Run classifier and find uncertain frames"""
-        messagebox.showinfo("Processing", "Running classifier to find uncertain frames...")
-        
-        # TODO: Actually run classifier here
-        # For now, simulate with random data
-        np.random.seed(42)
-        self.probabilities = np.random.beta(2, 2, self.total_frames)
-        self.predictions = (self.probabilities > 0.5).astype(int)
-        
-        # Find uncertain frames (probability between 0.4 and 0.6)
-        self.uncertain_frames = np.where(
-            (self.probabilities > 0.4) & (self.probabilities < 0.6)
-        )[0].tolist()
-        
+        """Run classifier and find uncertain frames.
+
+        DISABLED 2026-05-01 — this method's pre-existing implementation
+        was a stub: it generated fake uncertainty scores via
+        ``np.random.beta(2, 2)`` instead of running a real classifier.
+        Anyone who labelled the surfaced "uncertain frames" was labelling
+        random nonsense, with no warning. Use the Active Learning tab
+        instead — its query strategy is real.
+        """
+        messagebox.showwarning(
+            "Auto-labeler not implemented",
+            "This dialog's classifier-driven 'uncertain frame' picker "
+            "was a stub that generated random uncertainty scores — never "
+            "wired to a real classifier.\n\n"
+            "Use the Active Learning tab instead. It runs the actual "
+            "classifier and queries genuinely uncertain frames.\n\n"
+            "(If you want this dialog re-enabled with a real classifier, "
+            "add classifier loading + predict_with_xgboost call here and "
+            "remove the warning guard.)"
+        )
+        # Refuse to populate self.probabilities with random data — that
+        # is what corrupted the dataset previously.
+        self.probabilities = None
+        self.predictions = None
+        self.uncertain_frames = []
         self.update_stats()
-        
-        if self.uncertain_frames:
-            self.load_frame(self.uncertain_frames[0])
     
     def load_frame(self, frame_num):
         """Load and display frame with prediction info"""
         self.current_frame = frame_num
-        
+
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
         ret, frame = self.cap.read()
-        
+
         if ret:
             # Add info overlay
+            # Guard against the disabled run_predictions path (2026-05-01).
+            # When run_predictions is the new no-op stub, probabilities and
+            # predictions are None — show the frame with a hint banner
+            # instead of indexing into None and crashing into Tk's void.
+            if self.probabilities is None or self.predictions is None:
+                cv2.putText(frame,
+                            "Auto-labeler disabled — use Active Learning tab",
+                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                            (0, 200, 255), 2)
+                # Reuse the same resize+display path as the normal branch.
+                height, width = frame.shape[:2]
+                scale = min(800 / width, 450 / height)
+                frame = cv2.resize(
+                    frame, (int(width * scale), int(height * scale)))
+                from PIL import Image, ImageTk
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                self.photo = ImageTk.PhotoImage(image=Image.fromarray(frame_rgb))
+                self.canvas.delete("all")
+                self.canvas.create_image(400, 225, image=self.photo)
+                return
             prob = self.probabilities[frame_num]
             pred = self.predictions[frame_num]
             label = self.labels[frame_num]
@@ -636,22 +731,33 @@ class AutoLabelWindow:
     
     def export_labels(self):
         """Export corrected labels"""
+        if self.probabilities is None or self.predictions is None:
+            # run_predictions was disabled in 2026-05-01 — refuse to
+            # export. Without classifier-driven uncertainty there's
+            # nothing to fall back to here.
+            messagebox.showwarning(
+                "Nothing to export",
+                "Run Predictions has been disabled (the previous "
+                "implementation generated random uncertainty scores). "
+                "Use the Active Learning tab to do this properly.")
+            return
+
         output_path = filedialog.asksaveasfilename(
             defaultextension=".csv",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
         )
-        
+
         if output_path:
             # Convert labels: 0=unlabeled, 1=no behavior, 2=behavior
             final_labels = np.where(self.labels == 0, self.predictions, self.labels - 1)
-            
+
             df = pd.DataFrame({
                 'frame': range(len(final_labels)),
                 'label': final_labels,
                 'probability': self.probabilities,
                 'user_corrected': (self.labels > 0).astype(int)
             })
-            
+
             df.to_csv(output_path, index=False)
             messagebox.showinfo("Exported", f"Labels saved to:\n{output_path}")
 
@@ -732,7 +838,7 @@ class SideBySidePreview:
         info.pack(fill='x', padx=5, pady=5)
         
         ttk.Label(info, text=f"Behavior: {self.behavior_name} | Threshold: {self.threshold:.3f}",
-                 font=('Arial', 10, 'bold')).pack(side='left')
+                 font=(FONT_FAMILY, 10, 'bold')).pack(side='left')
         
         n_pos = np.sum(self.predictions)
         pct = (n_pos / len(self.predictions)) * 100
@@ -762,11 +868,11 @@ class SideBySidePreview:
                             f"Comparison ({min_length}/{len(self.predictions)} frames): " \
                             f"Acc: {accuracy:.1f}% | F1: {f1:.1f}% | " \
                             f"Prec: {precision:.1f}% | Rec: {recall:.1f}%"
-            ttk.Label(info, text=comparison_text, font=('Arial', 9), 
+            ttk.Label(info, text=comparison_text, font=(FONT_FAMILY, 9), 
                      foreground='blue').pack(side='right', padx=10)
         else:
             ttk.Label(info, text=f"Detected: {n_pos} frames ({pct:.1f}%)",
-                     font=('Arial', 9)).pack(side='right')
+                     font=(FONT_FAMILY, 9)).pack(side='right')
         
         # Video panel (single, centered)
         video_frame = ttk.LabelFrame(self.window, text="Video with Predictions", padding=5)
@@ -812,7 +918,7 @@ class SideBySidePreview:
                   command=lambda: self.set_speed(5.0)).pack(side='left', padx=1)
         
         self.speed_label = ttk.Label(controls, text=f"{self.playback_speed:.0f}x", 
-                                     font=('Arial', 9, 'bold'))
+                                     font=(FONT_FAMILY, 9, 'bold'))
         self.speed_label.pack(side='left', padx=5)
         
         # Show Graph button on the right
@@ -975,20 +1081,25 @@ class SideBySidePreview:
     
     def show_frame(self, frame, canvas):
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        cw = canvas.winfo_width() or 640
-        ch = canvas.winfo_height() or 480
-        
+
+        cw = canvas.winfo_width()
+        ch = canvas.winfo_height()
+        # Before the window is laid out, winfo_* return 1 (not 0) → fall back to a
+        # default size so the first frame doesn't crash cv2.resize with a 0 dimension.
+        if cw <= 1 or ch <= 1:
+            cw, ch = 640, 480
+
         h, w = frame_rgb.shape[:2]
-        aspect = w / h
-        
+        aspect = w / h if h else 1.0
+
         if cw / ch > aspect:
             nh = ch
             nw = int(ch * aspect)
         else:
             nw = cw
             nh = int(cw / aspect)
-        
+        nw = max(1, nw); nh = max(1, nh)   # never pass a 0 dimension to cv2.resize
+
         frame_resized = cv2.resize(frame_rgb, (nw, nh))
         image = Image.fromarray(frame_resized)
         photo = ImageTk.PhotoImage(image)
@@ -1035,78 +1146,6 @@ class SideBySidePreview:
         self.update_frame()
         # Update graph after jumping
         self.window.after(100, self.safe_update_graph)
-    
-    def jump_to_next_bout(self):
-        """Jump to start of next behavior bout"""
-        # Find all bouts (continuous sequences of predictions == 1)
-        bouts = []
-        in_bout = False
-        bout_start = None
-        
-        for i in range(len(self.predictions)):
-            if self.predictions[i] == 1 and not in_bout:
-                bout_start = i
-                in_bout = True
-            elif self.predictions[i] == 0 and in_bout:
-                bouts.append((bout_start, i - 1))
-                in_bout = False
-        
-        if in_bout:  # Close final bout
-            bouts.append((bout_start, len(self.predictions) - 1))
-        
-        if not bouts:
-            messagebox.showinfo("No Bouts", "No behavior bouts detected in video.")
-            return
-        
-        # Find next bout after current frame
-        for start, end in bouts:
-            if start > self.current_frame:
-                self.current_frame = start
-                self.update_frame()
-                self.window.after(100, self.safe_update_graph)
-                return
-        
-        # No bout found forward, wrap to first bout
-        self.current_frame = bouts[0][0]
-        self.update_frame()
-        self.window.after(100, self.safe_update_graph)
-        messagebox.showinfo("Wrapped", f"Jumped to first bout (frame {bouts[0][0]})")
-    
-    def jump_to_prev_bout(self):
-        """Jump to start of previous behavior bout"""
-        # Find all bouts
-        bouts = []
-        in_bout = False
-        bout_start = None
-        
-        for i in range(len(self.predictions)):
-            if self.predictions[i] == 1 and not in_bout:
-                bout_start = i
-                in_bout = True
-            elif self.predictions[i] == 0 and in_bout:
-                bouts.append((bout_start, i - 1))
-                in_bout = False
-        
-        if in_bout:
-            bouts.append((bout_start, len(self.predictions) - 1))
-        
-        if not bouts:
-            messagebox.showinfo("No Bouts", "No behavior bouts detected in video.")
-            return
-        
-        # Find previous bout before current frame
-        for start, end in reversed(bouts):
-            if start < self.current_frame:
-                self.current_frame = start
-                self.update_frame()
-                self.window.after(100, self.safe_update_graph)
-                return
-        
-        # No bout found backward, wrap to last bout
-        self.current_frame = bouts[-1][0]
-        self.update_frame()
-        self.window.after(100, self.safe_update_graph)
-        messagebox.showinfo("Wrapped", f"Jumped to last bout (frame {bouts[-1][0]})")
     
     def jump_to_frame_input(self):
         """Jump to frame from input box"""
@@ -1193,7 +1232,7 @@ class SideBySidePreview:
         
         self.graph_current_frame_label = ttk.Label(controls_bottom, 
                                                     text=f"Current Frame: {self.current_frame}/{self.total_frames}",
-                                                    font=('Arial', 9, 'bold'))
+                                                    font=(FONT_FAMILY, 9, 'bold'))
         self.graph_current_frame_label.pack(side='left', padx=10)
         
         ttk.Separator(controls_bottom, orient='vertical').pack(side='left', padx=10, fill='y')
@@ -1648,7 +1687,6 @@ class DataQualityChecker:
             if session.get('target_path') and os.path.exists(session['target_path']):
                 try:
                     labels = pd.read_csv(session['target_path'])
-                    4
                     # Check label distribution
                     for col in labels.columns:
                         if col.lower() != 'frame':
@@ -1703,10 +1741,10 @@ class DataQualityChecker:
                             # Try to get FPS for duration check
                             try:
                                 cap = cv2.VideoCapture(session['video_path'])
-                                fps = cap.get(cv2.CAP_PROP_FPS) or 30
+                                fps = cap.get(cv2.CAP_PROP_FPS) or 60
                                 cap.release()
                             except Exception:
-                                fps = 30
+                                fps = 60
                             long_thresh_frames = fps * 30  # 30 seconds
                             long_bouts = sum(1 for b in bouts if b > long_thresh_frames)
                             if long_bouts > 0:
@@ -2056,7 +2094,7 @@ class ConfidenceHistogramDialog:
         self._thresh_label.pack(side='left')
 
         # Eligible count
-        self._count_label = ttk.Label(self.win, text="", font=('Arial', 10))
+        self._count_label = ttk.Label(self.win, text="", font=(FONT_FAMILY, 10))
         self._count_label.pack(pady=2)
 
         # Buttons

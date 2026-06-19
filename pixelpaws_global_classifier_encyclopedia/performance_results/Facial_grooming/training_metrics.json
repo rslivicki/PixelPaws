@@ -1,0 +1,51 @@
+{
+  "cv_f1_mean": 0.8997053331023919,
+  "cv_f1_std": 0.03791370137248125,
+  "cv_f1_per_fold": [
+    0.8288452761296212,
+    0.9158614188074475,
+    0.939124243503026,
+    0.8965217391304348,
+    0.9181739879414298
+  ],
+  "oof_best_f1": 0.9944801610494188,
+  "best_thresh": 0.85,
+  "min_bout": 15.0,
+  "min_after_bout": 0.0,
+  "max_gap": 0.0,
+  "n_train_sessions": 7,
+  "training_sessions": [
+    "260318_JG_9417_Baseline",
+    "260318_JG_9418_Baseline",
+    "260318_JG_9419_Baseline",
+    "260318_JG_9420_Baseline",
+    "260318_JG_9424_Baseline",
+    "260318_JG_9433_Baseline",
+    "260318_JG_9435_Baseline"
+  ],
+  "feature_schema": {
+    "pose_feature_version": 5,
+    "brightness_feature_version": 1,
+    "include_optical_flow": true,
+    "square_size": [
+      40,
+      40,
+      40
+    ],
+    "bp_pixbrt_list": [
+      "hrpaw",
+      "hlpaw",
+      "snout"
+    ]
+  },
+  "expected_fps": 60,
+  "diagnostics": {
+    "cv_f1": 0.8997053331023919,
+    "oof_proba_mean": 0.08128784145197714,
+    "oof_proba_median": 0.0004835568543057889,
+    "oof_proba_above_0_5_frac": 0.07711648983200707,
+    "oof_n_frames": 108576
+  },
+  "status": "KEEP",
+  "source_cohort": "260506_RS_THC_Withdrawal"
+}

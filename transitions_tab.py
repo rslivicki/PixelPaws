@@ -66,9 +66,7 @@ except ImportError:
     _TRANS_FEATURE_CACHE_AVAILABLE = False
 
 
-from ui_utils import _bind_tight_layout_on_resize
-
-
+from ui_utils import _bind_tight_layout_on_resize, FONT_FAMILY
 # ═══════════════════════════════════════════════════════════════════════════
 # Transition computation (pure functions, no GUI dependency)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -760,7 +758,8 @@ class TransitionsTab(ttk.Frame):
         self.app = main_gui
 
         # Internal state
-        self._state_seqs = {}       # {session_name: np.array of int}
+        self._state_seqs = {}       # {session_name: np.array of int} — analysis-time, may be capped
+        self._state_seqs_full = {}  # {session_name: np.array of int} — uncapped, for UI 1:1 lookup
         self._states = []           # ordered state IDs
         self._state_labels = {}     # {state_id: user label}  e.g. {0: "Still"}
         self._matrices = {}         # {session_name: (matrix, states)}
@@ -796,7 +795,11 @@ class TransitionsTab(ttk.Frame):
         self._pending_session_selection = None  # set by _load_config, consumed by _scan_trans_sessions
         self._effective_fps = 25.0
         self._assign_mode = tk.StringVar(value='priority')
-        self._palette_var  = tk.StringVar(value='deep')
+        # 'inferno' is in _SEQUENTIAL (the heatmap whitelist) and matches
+        # the project's house palette. Pre-2026-05-01 the default was
+        # 'deep' (a discrete palette), which silently fell through to
+        # YlOrRd via _heatmap_cmap's else-branch.
+        self._palette_var  = tk.StringVar(value='inferno')
         self._bot_palette_var = tk.StringVar(value='tab10')
         self._show_annot_var = tk.BooleanVar(value=True)
         self._show_sig_var = tk.BooleanVar(value=False)
@@ -830,7 +833,7 @@ class TransitionsTab(ttk.Frame):
 
         # Title
         ttk.Label(sf, text="Behavioral State Transitions",
-                  font=('Arial', 14, 'bold')).pack(anchor='w', padx=20, pady=(15, 5))
+                  font=(FONT_FAMILY, 14, 'bold')).pack(anchor='w', padx=20, pady=(15, 5))
         ttk.Label(sf, text="Compute transition probabilities between behavioral "
                   "states and compare across treatment groups.",
                   wraplength=700).pack(anchor='w', padx=20, pady=(0, 10))
@@ -1198,8 +1201,9 @@ class TransitionsTab(ttk.Frame):
         self._view_combo = ttk.Combobox(
             view_row, textvariable=self._view_var, state='readonly', width=20,
             values=['Ethogram', 'Temporal Probability', 'Heatmap', 'Network',
-                   'Group Comparison', 'Timeline', 'Behavior Over Time',
-                   'Latent States', 'State Occupancy', 'PCA', 'Meta-cluster Summary'])
+                   'Group Networks', 'Group Comparison', 'Timeline',
+                   'Behavior Over Time', 'Latent States', 'State Occupancy',
+                   'PCA', 'Meta-cluster Summary'])
         self._view_combo.pack(side='left', padx=5)
         self._view_combo.bind('<<ComboboxSelected>>', self._on_view_changed)
 
@@ -1351,7 +1355,7 @@ class TransitionsTab(ttk.Frame):
 
         bname = cd.get('Behavior_type', f'Classifier {idx+1}')
         ttk.Label(dlg, text=f"Editing: {bname}",
-                  font=('Arial', 10, 'bold')).grid(
+                  font=(FONT_FAMILY, 10, 'bold')).grid(
             row=0, column=0, columnspan=2, padx=15, pady=(12, 8), sticky='w')
 
         fields = [
@@ -1705,9 +1709,9 @@ class TransitionsTab(ttk.Frame):
         self._label_entries.clear()
 
         ttk.Label(self._label_table_frame, text="ID", width=6,
-                  font=('Arial', 9, 'bold')).grid(row=0, column=0)
+                  font=(FONT_FAMILY, 9, 'bold')).grid(row=0, column=0)
         ttk.Label(self._label_table_frame, text="Label", width=20,
-                  font=('Arial', 9, 'bold')).grid(row=0, column=1)
+                  font=(FONT_FAMILY, 9, 'bold')).grid(row=0, column=1)
 
         for i, sid in enumerate(states):
             ttk.Label(self._label_table_frame,
@@ -2239,6 +2243,11 @@ class TransitionsTab(ttk.Frame):
                 fps = fps / n
             self._effective_fps = fps   # store for _plot_behavior_over_time
 
+            # Always preserve a full-length copy so UI consumers (Video Preview)
+            # can index 1:1 against video frames even when analysis pipelines
+            # use a duration cap.
+            self._state_seqs_full = dict(processed)
+
             # Duration cap (applies to all time modes)
             if self._dur_limit_var.get():
                 cap_frames = int(self._dur_limit_min.get() * 60 * fps)
@@ -2635,6 +2644,8 @@ class TransitionsTab(ttk.Frame):
                 self._plot_heatmap()
             elif view == 'Network':
                 self._plot_network()
+            elif view == 'Group Networks':
+                self._plot_group_networks()
             elif view == 'Group Comparison':
                 self._plot_group_comparison()
             elif view == 'Timeline':
@@ -2810,6 +2821,103 @@ class TransitionsTab(ttk.Frame):
         ax.set_title("State Transition Network")
         ax.axis('off')
 
+    def _plot_group_networks(self):
+        """One transition-network panel per group, side-by-side, shared layout."""
+        if not NETWORKX_AVAILABLE:
+            ax = self._fig.add_subplot(111)
+            ax.text(0.5, 0.5, "networkx not installed.\npip install networkx",
+                    ha='center', va='center', transform=ax.transAxes)
+            return
+        if not self._group_matrices:
+            ax = self._fig.add_subplot(111)
+            ax.text(0.5, 0.5,
+                    "Load a key file and compute\nto see group networks.",
+                    ha='center', va='center', transform=ax.transAxes)
+            return
+
+        groups = sorted(self._group_matrices.keys())
+        n_groups = len(groups)
+        threshold = 0.02
+
+        # Map sessions to groups (mirrors the assembly at lines 2419-2428 used
+        # to build self._group_matrices).
+        group_sessions = {grp: [] for grp in groups}
+        if self._key_df is not None:
+            for name in self._matrices:
+                subj = self._session_subjects.get(name, name)
+                row = self._key_df[self._key_df['Subject'] == subj]
+                if not row.empty:
+                    grp = str(row.iloc[0]['Treatment'])
+                    if grp in group_sessions:
+                        group_sessions[grp].append(name)
+
+        # Shared spring layout: union of every node and every above-threshold
+        # edge across all groups, so node positions are identical across
+        # panels and the eye can trace transitions group-to-group.
+        union = nx.DiGraph()
+        for s in self._states:
+            union.add_node(self._state_name(s))
+        for mat in self._group_matrices.values():
+            for i, si in enumerate(self._states):
+                for j, sj in enumerate(self._states):
+                    if i != j and mat[i, j] > threshold:
+                        union.add_edge(self._state_name(si),
+                                       self._state_name(sj))
+        pos = nx.spring_layout(union, seed=42, k=2.0)
+
+        cmap = self._get_cmap()
+        axes = self._fig.subplots(1, n_groups, squeeze=False)[0]
+
+        for gi, grp in enumerate(groups):
+            ax = axes[gi]
+            mean_mat = self._group_matrices[grp]
+
+            # Per-group state-time fractions. Prefer the uncapped sequences so
+            # the analysis-time duration cap doesn't skew node sizes.
+            sess_for_grp = group_sessions.get(grp, [])
+            seqs = []
+            for n in sess_for_grp:
+                seq = self._state_seqs_full.get(n) if hasattr(
+                    self, '_state_seqs_full') else None
+                if seq is None:
+                    seq = self._state_seqs.get(n)
+                if seq is not None:
+                    seqs.append(np.asarray(seq))
+            all_seqs = np.concatenate(seqs) if seqs else np.array([])
+            state_fracs = {
+                s: (float((all_seqs == s).mean()) if all_seqs.size else 0.0)
+                for s in self._states}
+
+            G = nx.DiGraph()
+            for i, si in enumerate(self._states):
+                G.add_node(self._state_name(si),
+                           size=state_fracs.get(si, 0.0),
+                           color=cmap(i))
+            for i, si in enumerate(self._states):
+                for j, sj in enumerate(self._states):
+                    if i != j and mean_mat[i, j] > threshold:
+                        G.add_edge(self._state_name(si),
+                                   self._state_name(sj),
+                                   weight=mean_mat[i, j])
+
+            node_sizes = [G.nodes[n]['size'] * 3000 + 200 for n in G.nodes]
+            node_colors = [G.nodes[n]['color'] for n in G.nodes]
+            edge_widths = [G.edges[e]['weight'] * 5 for e in G.edges]
+
+            nx.draw_networkx_nodes(G, pos, ax=ax, node_size=node_sizes,
+                                   node_color=node_colors, alpha=0.85)
+            nx.draw_networkx_labels(G, pos, ax=ax, font_size=8)
+            nx.draw_networkx_edges(G, pos, ax=ax, width=edge_widths,
+                                   alpha=0.6, edge_color='gray',
+                                   arrows=True, arrowsize=15,
+                                   connectionstyle='arc3,rad=0.15')
+            edge_labels = {e: f"{G.edges[e]['weight']:.2f}" for e in G.edges
+                           if G.edges[e]['weight'] > 0.05}
+            nx.draw_networkx_edge_labels(G, pos, edge_labels, ax=ax,
+                                         font_size=6)
+            ax.set_title(f"{grp}  (n={len(sess_for_grp)})", fontsize=10)
+            ax.axis('off')
+
     def _compute_sig_matrix(self, mats_a, mats_b):
         """Return Bonferroni-corrected p-value matrix (Mann-Whitney U, two-sided)."""
         from scipy.stats import mannwhitneyu
@@ -2851,14 +2959,24 @@ class TransitionsTab(ttk.Frame):
         _diff_shrink = min(0.75, max(0.28, n_states / (n_states + 9)))
         _SEQUENTIAL = {'magma', 'plasma', 'viridis', 'inferno', 'cividis', 'turbo'}
         _heatmap_cmap = self._palette_var.get() if self._palette_var.get() in _SEQUENTIAL else 'YlOrRd'
-        # n_groups heatmaps + difference if exactly 2 groups
+        # n_groups heatmaps + difference if exactly 2 groups. Resize the
+        # figure so each panel + its colorbar gets enough horizontal
+        # room — at the default 9×5 the diff colorbar gets pushed off
+        # the right edge and looks "missing".
         n_plots = n_groups + (1 if n_groups == 2 else 0)
+        n_cbars = (1 if n_groups >= 1 else 0) + (1 if n_groups == 2 else 0)
+        target_w = max(9.0, 3.4 * n_plots + 0.6 * n_cbars + 1.2)
+        target_h = max(5.0, 2.8 * (1 + 0.18 * (n_states / 5)))
+        self._fig.set_size_inches(target_w, target_h, forward=True)
         axes = self._fig.subplots(1, n_plots, squeeze=False)[0]
 
         for gi, grp in enumerate(groups):
             mat = self._group_matrices[grp]
-            # Only show colorbar on the first group heatmap — all share 0-1 scale
-            show_cbar = (gi == 0)
+            # Shared 0-1 colorbar sits to the right of the LAST group panel,
+            # not wedged between the first and second, so the side-by-side
+            # comparison isn't visually broken. The diff panel (when present)
+            # gets its own diverging colorbar to its right.
+            show_cbar = (gi == n_groups - 1)
             sns.heatmap(mat, annot=show_annot,
                         fmt='.1f' if n_states > 10 else '.2f',
                         annot_kws={'size': annot_size} if show_annot else {},
@@ -2880,14 +2998,25 @@ class TransitionsTab(ttk.Frame):
         if n_groups == 2:
             diff = (self._group_matrices[groups[1]] -
                     self._group_matrices[groups[0]])
-            vmax = max(abs(diff.min()), abs(diff.max()), 0.01)
-            sns.heatmap(diff, annot=show_annot,
-                        fmt='.1f' if n_states > 10 else '.2f',
+            # Render the diff in the SAME sequential palette as the group
+            # panels (inferno/plasma/etc.). Color = |Δ| so brightness
+            # encodes magnitude of change; the cell text shows the SIGNED
+            # value (+0.14 / -0.19) so direction is preserved.
+            diff_mag = diff.abs()
+            vmax = max(float(diff_mag.values.max()), 0.01)
+            _fmt_signed = '{:+.1f}' if n_states > 10 else '{:+.2f}'
+            diff_text = diff.applymap(lambda v: _fmt_signed.format(v))
+            sns.heatmap(diff_mag,
+                        annot=diff_text if show_annot else False,
+                        fmt='' if show_annot else '',
                         annot_kws={'size': annot_size} if show_annot else {},
                         cmap=_heatmap_cmap,
                         xticklabels=labels, yticklabels=[],
-                        ax=axes[-1], vmin=-vmax, vmax=vmax, square=use_square,
-                        cbar_kws={'shrink': _diff_shrink})
+                        ax=axes[-1], vmin=0, vmax=vmax, square=use_square,
+                        cbar=True,
+                        cbar_kws={'shrink': _diff_shrink,
+                                    'pad': 0.04, 'aspect': 18,
+                                    'label': f'|{groups[1]} − {groups[0]}|'})
             axes[-1].set_title(f"{groups[1]} - {groups[0]}", fontsize=10)
             axes[-1].set_xlabel("To")
             axes[-1].set_ylabel("")
@@ -3576,7 +3705,11 @@ class TransitionsTab(ttk.Frame):
                 f"Cannot locate video file for '{session_name}'.", parent=self)
             return
 
-        state_seq  = self._state_seqs[session_name]
+        # Prefer the uncapped sequence so the Video Preview can index 1:1 with
+        # video frames; fall back to the capped sequence for older runs that
+        # didn't snapshot the full length.
+        state_seq  = self._state_seqs_full.get(session_name,
+                                               self._state_seqs[session_name])
         prob_mat   = self._frame_probs.get(session_name)   # may be None (unsupervised)
         state_names = ['Other'] + [
             cd.get('Behavior_type', f'State {i+1}')

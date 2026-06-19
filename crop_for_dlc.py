@@ -21,6 +21,12 @@ Usage
 
   # Write offsets into PixelPaws project config as well
   python crop_for_dlc.py session.mp4 --project /path/to/project
+
+  # Custom output naming (defaults: '_cropped' for video, '_crop' for JSON)
+  python crop_for_dlc.py session.mp4 --video-suffix _roi --json-suffix _roi_meta
+
+  # Skip JSON sidecar entirely
+  python crop_for_dlc.py session.mp4 --no-sidecar
 """
 
 import argparse
@@ -33,6 +39,15 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
+
+# ---------------------------------------------------------------------------
+# Default output naming — overridable via GUI fields and CLI args.
+# Pre-2026-05-05 these were hardcoded inline. Centralising here so callers
+# can rename without touching string literals scattered through the file.
+# ---------------------------------------------------------------------------
+
+DEFAULT_VIDEO_SUFFIX = "_cropped"   # appended to the stem: <stem>_cropped<ext>
+DEFAULT_JSON_SUFFIX  = "_crop"      # used as: <stem>_crop.json (sidecar)
 
 # ---------------------------------------------------------------------------
 # FFmpeg helpers
@@ -60,16 +75,16 @@ def parse_time(s: str):
 
 
 def _get_video_info(video_path: str):
-    """Returns (total_frames, fps, duration_sec) or (0, 30.0, 0) on failure."""
+    """Returns (total_frames, fps, duration_sec) or (0, 60.0, 0) on failure."""
     try:
         import cv2
         cap = cv2.VideoCapture(video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        fps = cap.get(cv2.CAP_PROP_FPS) or 60.0
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
         return total, fps, total / fps
     except Exception:
-        return 0, 30.0, 0
+        return 0, 60.0, 0
 
 
 def _get_frame_count(video_path: str, start_time=None, end_time=None) -> int:
@@ -127,7 +142,7 @@ def crop_video_opencv(input_path: str, output_path: str,
     if not cap.isOpened():
         raise IOError(f"Cannot open video: {input_path}")
 
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    fps = cap.get(cv2.CAP_PROP_FPS) or 60.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     if start_time:
@@ -252,10 +267,15 @@ def select_crop_interactive(video_path: str):
 # Sidecar JSON + project config
 # ---------------------------------------------------------------------------
 
-def save_crop_sidecar(video_path: str, x: int, y: int, w: int, h: int) -> str:
-    """Write <stem>_crop.json next to the video. Returns the sidecar path."""
+def save_crop_sidecar(video_path: str, x: int, y: int, w: int, h: int,
+                      json_suffix: str = DEFAULT_JSON_SUFFIX,
+                      output_dir: str = None) -> str:
+    """Write <stem><json_suffix>.json next to the video (or in *output_dir*).
+    Returns the sidecar path. Set *json_suffix=''* to write '<stem>.json'."""
     p = Path(video_path)
-    sidecar = p.with_name(p.stem + "_crop.json")
+    target_dir = Path(output_dir) if output_dir else p.parent
+    target_dir.mkdir(parents=True, exist_ok=True)
+    sidecar = target_dir / (p.stem + json_suffix + ".json")
     data = {"x": x, "y": y, "w": w, "h": h, "source": p.name}
     sidecar.write_text(json.dumps(data, indent=2))
     return str(sidecar)
@@ -282,13 +302,33 @@ def update_project_config(project_folder: str, x: int, y: int) -> None:
 def process_single(video_path: str, x: int, y: int, w: int, h: int,
                    output_dir: str = None, project_folder: str = None,
                    crf: int = 23, start_time=None, end_time=None,
-                   log_fn=None, progress_fn=None) -> str:
+                   log_fn=None, progress_fn=None,
+                   video_suffix: str = DEFAULT_VIDEO_SUFFIX,
+                   json_suffix: str = DEFAULT_JSON_SUFFIX,
+                   write_sidecar: bool = True) -> str:
+    """Crop one video and (optionally) write the JSON sidecar.
+
+    *video_suffix* — appended to the input stem to form the output filename
+                     (e.g. ``"_cropped"`` → ``session_cropped.mp4``). May be
+                     empty, in which case the output overwrites the input —
+                     refused unless *output_dir* is set so we don't clobber.
+    *json_suffix*  — same idea for the sidecar (``"_crop"`` → ``session_crop.json``).
+    *write_sidecar* — set False to skip writing the JSON entirely.
+    """
     _log = log_fn or print
 
     p = Path(video_path)
     out_dir = Path(output_dir) if output_dir else p.parent
     out_dir.mkdir(parents=True, exist_ok=True)
-    output_path = str(out_dir / (p.stem + "_cropped" + p.suffix))
+
+    # Refuse to silently overwrite the source video.
+    if not video_suffix and out_dir == p.parent:
+        raise ValueError(
+            "video_suffix is empty and output_dir is unset — that would "
+            "overwrite the source video. Set a non-empty suffix or specify "
+            "an output_dir.")
+
+    output_path = str(out_dir / (p.stem + video_suffix + p.suffix))
 
     _log(f"Cropping: {p.name}  →  {Path(output_path).name}")
     _log(f"  Region: x={x} y={y} w={w} h={h}")
@@ -309,8 +349,13 @@ def process_single(video_path: str, x: int, y: int, w: int, h: int,
                           log_fn=_log, progress_fn=progress_fn,
                           start_time=start_time, end_time=end_time)
 
-    sidecar = save_crop_sidecar(video_path, x, y, w, h)
-    _log(f"  Sidecar: {Path(sidecar).name}")
+    if write_sidecar:
+        sidecar = save_crop_sidecar(video_path, x, y, w, h,
+                                    json_suffix=json_suffix,
+                                    output_dir=str(out_dir))
+        _log(f"  Sidecar: {Path(sidecar).name}")
+    else:
+        _log("  Sidecar: skipped (write_sidecar=False)")
 
     if project_folder:
         update_project_config(project_folder, x, y)
@@ -323,7 +368,10 @@ def process_single(video_path: str, x: int, y: int, w: int, h: int,
 def process_batch(folder: str, x: int, y: int, w: int, h: int,
                   output_dir: str = None, project_folder: str = None,
                   crf: int = 23, start_time=None, end_time=None,
-                  log_fn=None, progress_fn=None) -> list:
+                  log_fn=None, progress_fn=None,
+                  video_suffix: str = DEFAULT_VIDEO_SUFFIX,
+                  json_suffix: str = DEFAULT_JSON_SUFFIX,
+                  write_sidecar: bool = True) -> list:
     video_exts = {".mp4", ".avi", ".mov", ".mkv", ".wmv"}
     videos = sorted(f for f in Path(folder).iterdir()
                     if f.is_file() and f.suffix.lower() in video_exts)
@@ -338,7 +386,10 @@ def process_batch(folder: str, x: int, y: int, w: int, h: int,
                 progress_fn((i + p) / n)
         out = process_single(str(vp), x, y, w, h, output_dir, project_folder,
                              crf=crf, start_time=start_time, end_time=end_time,
-                             log_fn=log_fn, progress_fn=_prog)
+                             log_fn=log_fn, progress_fn=_prog,
+                             video_suffix=video_suffix,
+                             json_suffix=json_suffix,
+                             write_sidecar=write_sidecar)
         outputs.append(out)
     return outputs
 
@@ -409,6 +460,24 @@ class CropForDLCApp:
         ttk.Entry(out_row, textvariable=self.outdir_var, width=40).pack(
             side="left", padx=4, fill="x", expand=True)
         ttk.Button(out_row, text="Browse…", command=self._browse_outdir).pack(side="left")
+
+        # Output naming — suffix for video and sidecar JSON
+        suffix_row = ttk.Frame(file_frame)
+        suffix_row.pack(fill="x", **pad)
+        ttk.Label(suffix_row, text="Video suffix:").pack(side="left")
+        self.video_suffix_var = tk.StringVar(value=DEFAULT_VIDEO_SUFFIX)
+        ttk.Entry(suffix_row, textvariable=self.video_suffix_var,
+                  width=12).pack(side="left", padx=4)
+        ttk.Label(suffix_row, text="JSON suffix:").pack(side="left", padx=(12, 0))
+        self.json_suffix_var = tk.StringVar(value=DEFAULT_JSON_SUFFIX)
+        ttk.Entry(suffix_row, textvariable=self.json_suffix_var,
+                  width=12).pack(side="left", padx=4)
+        self.write_sidecar_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(suffix_row, text="Write JSON sidecar",
+                        variable=self.write_sidecar_var).pack(side="left", padx=12)
+        ttk.Label(suffix_row,
+                  text="(e.g. session_cropped.mp4 + session_crop.json)",
+                  foreground="gray").pack(side="left", padx=4)
 
         # ---- Crop parameters ----
         crop_frame = ttk.LabelFrame(self.root, text="Crop Parameters")
@@ -837,6 +906,21 @@ class CropForDLCApp:
         project = self.project_var.get().strip() if self.save_to_project_var.get() else None
         crf = int(self.crf_var.get())
 
+        # Output naming knobs (added 2026-05-05).
+        video_suffix = self.video_suffix_var.get()  # may be ''
+        json_suffix  = self.json_suffix_var.get()
+        write_sidecar = bool(self.write_sidecar_var.get())
+
+        # Refuse the corner case here (better than letting process_single
+        # raise mid-run with the progress bar already moving).
+        if not video_suffix and not outdir:
+            messagebox.showwarning(
+                "Empty video suffix",
+                "Video suffix is empty AND output folder is unset — that "
+                "would overwrite the source video. Set a non-empty suffix "
+                "OR choose an output folder.")
+            return
+
         start_time = end_time = None
         if self.trim_enabled.get():
             try:
@@ -849,11 +933,16 @@ class CropForDLCApp:
         self.progress_bar["value"] = 0
         self.run_btn.config(state="disabled")
         t = threading.Thread(target=self._run_thread,
-                             args=(video, x, y, w, h, outdir, project, crf, start_time, end_time),
+                             args=(video, x, y, w, h, outdir, project, crf,
+                                   start_time, end_time,
+                                   video_suffix, json_suffix, write_sidecar),
                              daemon=True)
         t.start()
 
-    def _run_thread(self, video, x, y, w, h, outdir, project, crf, start_time, end_time):
+    def _run_thread(self, video, x, y, w, h, outdir, project, crf, start_time, end_time,
+                    video_suffix=DEFAULT_VIDEO_SUFFIX,
+                    json_suffix=DEFAULT_JSON_SUFFIX,
+                    write_sidecar=True):
         def log(msg):
             self.root.after(0, self._log, msg)
         def progress(pct):
@@ -932,14 +1021,20 @@ class CropForDLCApp:
                         progress((i + p) / n)
                     process_single(str(vp), cx, cy, cw, ch, outdir, project,
                                    crf=crf, start_time=start_time, end_time=end_time,
-                                   log_fn=log, progress_fn=_prog)
+                                   log_fn=log, progress_fn=_prog,
+                                   video_suffix=video_suffix,
+                                   json_suffix=json_suffix,
+                                   write_sidecar=write_sidecar)
             else:
                 if not os.path.isfile(video):
                     log(f"Error: file not found: {video}")
                     return
                 process_single(video, x, y, w, h, outdir, project,
                                crf=crf, start_time=start_time, end_time=end_time,
-                               log_fn=log, progress_fn=progress)
+                               log_fn=log, progress_fn=progress,
+                               video_suffix=video_suffix,
+                               json_suffix=json_suffix,
+                               write_sidecar=write_sidecar)
             log("All done.")
         except Exception as exc:
             log(f"ERROR: {exc}")
@@ -991,6 +1086,19 @@ def main():
                         help="Start time (HH:MM:SS or seconds)")
     parser.add_argument("--end", metavar="TIME",
                         help="End time (HH:MM:SS or seconds)")
+    parser.add_argument("--video-suffix", metavar="STR",
+                        default=DEFAULT_VIDEO_SUFFIX,
+                        help=f"Suffix appended to the output video stem "
+                             f"(default: {DEFAULT_VIDEO_SUFFIX!r}). Empty "
+                             f"string requires --output-dir to avoid "
+                             f"overwriting the source.")
+    parser.add_argument("--json-suffix", metavar="STR",
+                        default=DEFAULT_JSON_SUFFIX,
+                        help=f"Suffix appended to the JSON sidecar stem "
+                             f"(default: {DEFAULT_JSON_SUFFIX!r}). Empty "
+                             f"string yields '<stem>.json'.")
+    parser.add_argument("--no-sidecar", action="store_true",
+                        help="Skip writing the JSON sidecar entirely.")
     args = parser.parse_args()
 
     try:
@@ -999,12 +1107,20 @@ def main():
     except ValueError as e:
         parser.error(str(e))
 
+    write_sidecar = not args.no_sidecar
+    suffix_kwargs = dict(
+        video_suffix=args.video_suffix,
+        json_suffix=args.json_suffix,
+        write_sidecar=write_sidecar,
+    )
+
     if args.batch:
         if None in (args.x, args.y, args.w, args.h):
             parser.error("--batch requires --x --y --w --h")
         process_batch(args.batch, args.x, args.y, args.w, args.h,
                       args.output_dir, args.project,
-                      start_time=start_time, end_time=end_time)
+                      start_time=start_time, end_time=end_time,
+                      **suffix_kwargs)
         return
 
     if args.video:
@@ -1018,7 +1134,8 @@ def main():
         else:
             x, y, w, h = args.x, args.y, args.w, args.h
         process_single(args.video, x, y, w, h, args.output_dir, args.project,
-                       start_time=start_time, end_time=end_time)
+                       start_time=start_time, end_time=end_time,
+                       **suffix_kwargs)
         return
 
     # ------------------------------------------------------------------

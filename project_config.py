@@ -39,6 +39,25 @@ class ProjectConfig:
     dlc_config: str = ''
     last_classifier: str = ''
 
+    # Frame-rate handling (added 2026-05-07).
+    # process_fps is the rate at which features are computed for this
+    # project. None = use the video's stored fps (legacy). When videos
+    # were captured with held/duplicated frames (see
+    # scripts/utilities/diagnose_duplicate_frames.py), set process_fps
+    # to the true acquisition rate after running
+    # frame_rate_normalize.normalize_project. source_fps_note is free
+    # text for provenance (e.g. "duplicated_60_to_30").
+    process_fps: Optional[float] = None
+    source_fps_note: str = ''
+
+    # PawCapture (camsync) calibration policy (added 2026-05-07).
+    # 'auto'  = each video uses its own embedded mm_per_pixel
+    #           (read by pawcapture_meta.read_calibration)
+    # 'fixed' = project-wide override via fixed_mm_per_pixel
+    # 'off'   = features stay in pixels (legacy default)
+    calibration_mode: str = 'off'
+    fixed_mm_per_pixel: Optional[float] = None
+
     # ------------------------------------------------------------------
     # Load
     # ------------------------------------------------------------------
@@ -67,6 +86,8 @@ class ProjectConfig:
             'bp_include_list', 'bp_pixbrt_list', 'square_size',
             'pix_threshold', 'include_optical_flow', 'bp_optflow_list',
             'roi_size', 'dlc_config', 'last_classifier',
+            'process_fps', 'source_fps_note',
+            'calibration_mode', 'fixed_mm_per_pixel',
         ):
             if key in data:
                 setattr(cfg, key, data[key])
@@ -128,3 +149,32 @@ class ProjectConfig:
     def to_dict(self) -> dict:
         """Return a plain dict (for passing to hash functions etc.)."""
         return asdict(self)
+
+    # ------------------------------------------------------------------
+    # Calibration helpers (added 2026-05-07)
+    # ------------------------------------------------------------------
+
+    def resolve_mm_per_pixel(self, session: Optional[dict] = None) -> Optional[float]:
+        """Return the effective mm_per_pixel for a session given this
+        project's ``calibration_mode``.
+
+        - 'off'   → None (legacy pixel features)
+        - 'fixed' → ``self.fixed_mm_per_pixel`` (single rig, project-wide)
+        - 'auto'  → ``session['mm_per_pixel']`` from camsync metadata,
+                    or None when the video isn't calibrated.
+
+        When ``session`` is None, only 'fixed' returns a value; 'auto'
+        returns None (no per-video calibration to consult).
+        """
+        mode = (self.calibration_mode or 'off').lower()
+        if mode == 'off':
+            return None
+        if mode == 'fixed':
+            v = self.fixed_mm_per_pixel
+            return float(v) if v is not None else None
+        if mode == 'auto':
+            if session is None:
+                return None
+            v = session.get('mm_per_pixel')
+            return float(v) if v is not None else None
+        return None

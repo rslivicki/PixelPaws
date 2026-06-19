@@ -45,9 +45,8 @@ except ImportError:
     MATPLOTLIB_AVAILABLE = False
 
 
-from ui_utils import (ToolTip as _ToolTip, _bind_tight_layout_on_resize)
-
-
+from ui_utils import (ToolTip as _ToolTip, _bind_tight_layout_on_resize,
+                      FONT_FAMILY)
 # ---------------------------------------------------------------------------
 # Optional: UMAP + HDBSCAN + StandardScaler
 # ---------------------------------------------------------------------------
@@ -211,6 +210,14 @@ class UnsupervisedTab(ttk.Frame):
         self._fit_thread: threading.Thread = None
         self._cancel_flag = threading.Event()
 
+        # ── Vars used by callbacks BEFORE _build_ui completes ──────────────
+        # These must exist even when umap/hdbscan are missing (the
+        # _build_missing_deps_ui branch returns early and skips
+        # _build_sessions_panel where this used to be created). Without
+        # them, on_project_changed -> _scan_sessions raises
+        # AttributeError silently into the Tk callback void.
+        self._video_ext_var = tk.StringVar(value='.mp4')
+
         self._build_ui()
 
     # ======================================================================
@@ -226,7 +233,7 @@ class UnsupervisedTab(ttk.Frame):
         hdr = ttk.Frame(self)
         hdr.pack(fill='x', padx=10, pady=(8, 2))
         ttk.Label(hdr, text="🔍 Unsupervised Behavior Discovery",
-                  font=('Arial', 14, 'bold')).pack(side='left')
+                  font=(FONT_FAMILY, 14, 'bold')).pack(side='left')
 
         # ── Three-column paned window (fills the tab) ─────────────────────
         paned = ttk.PanedWindow(self, orient='horizontal')
@@ -250,7 +257,7 @@ class UnsupervisedTab(ttk.Frame):
         wrapper.place(relx=0.5, rely=0.4, anchor='center')
 
         ttk.Label(wrapper, text="⚠️  Missing dependencies",
-                  font=('Arial', 14, 'bold')).pack(pady=(0, 12))
+                  font=(FONT_FAMILY, 14, 'bold')).pack(pady=(0, 12))
         ttk.Label(wrapper,
                   text="The Discover tab requires umap-learn and hdbscan.\n"
                        "Install them in your PixelPaws environment:",
@@ -308,11 +315,11 @@ class UnsupervisedTab(ttk.Frame):
         self._tree.tag_configure('new',      foreground='#b07000')
         self._tree.tag_configure('excluded', foreground='#888888')
 
-        # Video extension selector
+        # Video extension selector — _video_ext_var is now created in
+        # __init__ so it survives the missing-deps early-return path.
         ext_row = ttk.Frame(lf)
         ext_row.pack(fill='x', pady=(6, 0))
         ttk.Label(ext_row, text="Video ext:").pack(side='left')
-        self._video_ext_var = tk.StringVar(value='.mp4')
         ttk.Combobox(ext_row, textvariable=self._video_ext_var,
                      values=['.mp4', '.avi', '.MP4', '.AVI'],
                      width=7).pack(side='left', padx=4)
@@ -893,7 +900,15 @@ class UnsupervisedTab(ttk.Frame):
     # ======================================================================
 
     def on_project_changed(self):
-        """Called by PixelPawsGUI._on_project_folder_changed."""
+        """Called by PixelPawsGUI._on_project_folder_changed.
+
+        This can fire before the tab finishes building its widgets (the project
+        folder is set during app init / the setup wizard). _scan_sessions touches
+        UI state (_tree, _video_ext_var, _run_name_var) that only exists after the
+        UI is built, so skip until then — the user's first tab visit rescans.
+        """
+        if not hasattr(self, '_tree'):
+            return
         folder = self.app.current_project_folder.get()
         if folder and os.path.isdir(folder):
             self._scan_sessions()
@@ -2511,7 +2526,7 @@ class UnsupervisedTab(ttk.Frame):
             if not vpath or not os.path.isfile(vpath):
                 canvas.delete('all')
                 canvas.create_text(CW // 2, CH // 2, text="Video not found",
-                                   fill='white', font=('Arial', 14))
+                                   fill='white', font=(FONT_FAMILY, 14))
                 return
 
             if state['cap'] is None or state.get('_cap_path') != vpath:
@@ -2525,7 +2540,7 @@ class UnsupervisedTab(ttk.Frame):
             if not ok:
                 canvas.delete('all')
                 canvas.create_text(CW // 2, CH // 2, text="Read error",
-                                   fill='red', font=('Arial', 14))
+                                   fill='red', font=(FONT_FAMILY, 14))
                 return
 
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -2549,10 +2564,10 @@ class UnsupervisedTab(ttk.Frame):
             _show_frame(state['bout_idx'], state['frame_pos'])
             try:
                 spd   = float(speed_var.get())
-                fps   = 30.0
+                fps   = 60.0
                 delay = max(1, int(1000 / (fps * spd)))
             except Exception:
-                delay = 33
+                delay = 16
             state['after_id'] = win.after(delay, _step)
 
         def _play_pause():

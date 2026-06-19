@@ -76,7 +76,9 @@ class PixelBrightnessExtractorOptimized:
                                     stride: int = 1,
                                     frame_mask=None,
                                     cancel_flag=None,
-                                    frame_callback=None) -> pd.DataFrame:
+                                    frame_callback=None,
+                                    compute_silhouette: bool = False,
+                                    silhouette_floor: int = 35) -> pd.DataFrame:
         """
         Extract brightness features using optimized CPU processing.
 
@@ -128,6 +130,8 @@ class PixelBrightnessExtractorOptimized:
             frame_mask=frame_mask,
             cancel_flag=cancel_flag,
             frame_callback=frame_callback,
+            compute_silhouette=compute_silhouette,
+            silhouette_floor=silhouette_floor,
         )
         
         # Calculate absolute first derivative (temporal changes)
@@ -147,8 +151,20 @@ class PixelBrightnessExtractorOptimized:
             diff_extra.columns = [f"|d/dt{dt_extra}({col})|" for col in brightness.columns]
             feature_parts.append(diff_extra)
 
-        # Per-body-part derived features from base brightness columns
-        pix_cols = [c for c in brightness.columns if c.startswith('Pix_')]
+        # Per-body-part derived features from base brightness columns.
+        # Defensive filter: skip Category B columns (computed post-cache in
+        # prediction_pipeline.augment_features_post_cache) so their names can
+        # never have _BrightAccel / _BrightOnsetPeak / etc. appended.
+        _CATB_PREFIXES = (
+            'Pix_baseline_sub_', 'Pix_std_temporal_', 'Pix_jerk_',
+            'Pix_onset_', 'Pix_prequi_', 'Pix_corr_', 'Pix_velprod_',
+        )
+        pix_cols = [
+            c for c in brightness.columns
+            if c.startswith('Pix_')
+            and not c.startswith(_CATB_PREFIXES)
+            and '/' not in c  # Skip Log10(Pix_a/Pix_b)-style ratio names
+        ]
         for col in pix_cols:
             bp_tag = col  # e.g. "Pix_hl"
             raw = brightness[col]
@@ -200,7 +216,9 @@ class PixelBrightnessExtractorOptimized:
                            stride: int = 1,
                            frame_mask=None,
                            cancel_flag=None,
-                           frame_callback=None):
+                           frame_callback=None,
+                           compute_silhouette: bool = False,
+                           silhouette_floor: int = 35):
         """
         Vectorized extraction - pre-allocate arrays and minimize Python loops
         """
@@ -254,12 +272,37 @@ class PixelBrightnessExtractorOptimized:
                     y_float = label[y_col].values.astype(np.float64)
                     x_orig = np.where(np.isnan(x_float), -1, x_float).astype(np.int32)
                     y_orig = np.where(np.isnan(y_float), -1, y_float).astype(np.int32)
-                    
+                    prob_arr = label[prob_col].values.astype(np.float32)
+
+                    # Align DLC arrays to video num_frames. Some video files
+                    # report N frames via cv2 but the DLC h5 has N-1 (or +1)
+                    # due to decoder edge cases. The brightness loop indexes
+                    # coords[bp][i_frame] using video-frame indices, so the
+                    # arrays MUST match num_frames or we get an IndexError
+                    # near the end of the video (e.g. cohort2 9519_1h).
+                    # Pad missing trailing frames with -1 sentinel so the
+                    # `if x < 0 or y < 0: continue` branch skips them.
+                    dlc_len = len(x_orig)
+                    if dlc_len != num_frames:
+                        if bp == self.bodyparts_to_track[0]:
+                            print(f"  DLC has {dlc_len} frames, video {num_frames}; "
+                                  f"aligning (sentinel for missing).")
+                        n_copy = min(dlc_len, num_frames)
+                        x_aligned = np.full(num_frames, -1, dtype=np.int32)
+                        y_aligned = np.full(num_frames, -1, dtype=np.int32)
+                        prob_aligned = np.zeros(num_frames, dtype=np.float32)
+                        x_aligned[:n_copy] = x_orig[:n_copy]
+                        y_aligned[:n_copy] = y_orig[:n_copy]
+                        prob_aligned[:n_copy] = prob_arr[:n_copy]
+                        x_orig = x_aligned
+                        y_orig = y_aligned
+                        prob_arr = prob_aligned
+
                     # Apply crop offset
                     coords[bp] = {
                         'x': x_orig + self.crop_offset_x,  # Apply offset
                         'y': y_orig + self.crop_offset_y,  # Apply offset
-                        'prob': label[prob_col].values.astype(np.float32)
+                        'prob': prob_arr,
                     }
                     
                     print(f"  ✓ Found columns for {bp}: {x_col}, {y_col}, {prob_col}")
@@ -456,6 +499,36 @@ class PixelBrightnessExtractorOptimized:
                     bp_data[f'{bp}_FlowMag'] = vals['mag']
                     bp_data[f'{bp}_FlowX']   = vals['x']
                     bp_data[f'{bp}_FlowY']   = vals['y']
+
+            # Whole-frame silhouette features. Project-level opt-in (flag
+            # belongs in PixelPaws_project.json: `compute_silhouette: true`,
+            # optionally `silhouette_floor: <int>` to override the default
+            # background threshold). Designed for bottom-up rigs with a
+            # near-black background where any pixel above the floor is
+            # animal-on-glass.
+            #
+            # silhouette_frac      — fraction of frame above floor (raw)
+            # silhouette_blob_frac — same, restricted to the largest
+            #                          connected component (filters incidental
+            #                          hardware reflections / dust)
+            # silhouette_aspect    — min/max bbox dim of that blob, 1.0 =
+            #                          square (compact pose), → 0 = elongated
+            if compute_silhouette:
+                sil_mask = (gray_u8 > silhouette_floor)
+                bp_data['silhouette_frac'] = float(sil_mask.mean())
+                n_lbl, _, stats, _ = cv2.connectedComponentsWithStats(
+                    sil_mask.astype(np.uint8), connectivity=8)
+                if n_lbl > 1:
+                    biggest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+                    _x, _y, w_b, h_b, blob_area = stats[biggest]
+                    bp_data['silhouette_blob_frac'] = (
+                        float(blob_area) / float(sil_mask.size))
+                    bp_data['silhouette_aspect'] = (
+                        float(min(w_b, h_b)) / float(max(w_b, h_b))
+                        if max(w_b, h_b) > 0 else float('nan'))
+                else:
+                    bp_data['silhouette_blob_frac'] = float('nan')
+                    bp_data['silhouette_aspect']    = float('nan')
 
             brightness_features[i_frame] = bp_data
             prev_gray_u8 = gray_u8
