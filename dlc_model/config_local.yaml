@@ -1,0 +1,244 @@
+# Project definitions (do not edit)
+Task: palmreader-500
+scorer: AlexZ
+date: Mar25
+multianimalproject: false
+identity:
+
+
+# Project path (change when moving around)
+project_path: E:\Sync_from_lab\2511_RSGNKK_Blackbox
+
+
+# Default DeepLabCut engine to use for shuffle creation (either pytorch or tensorflow)
+engine: pytorch
+
+
+# Annotation data set configuration (and individual video cropping parameters)
+video_sets:
+  E:\RSVIDS\Blackbox\2510_Blackbox_Rimonabant\251030_S1_Baseline.mp4:
+    crop: 0, 1280, 0, 720
+  E:\RSVIDS\Blackbox\2510_Blackbox_Rimonabant\251030_S1_Rimonabant.mp4:
+    crop: 0, 1280, 0, 720
+  E:\RSVIDS\Blackbox\2510_Blackbox_Rimonabant\251030_S2_Baseline.mp4:
+    crop: 0, 1280, 0, 720
+  E:\RSVIDS\Blackbox\2510_Blackbox_Rimonabant\251030_S2_Rimonabant.mp4:
+    crop: 0, 1280, 0, 720
+  E:\RSVIDS\Blackbox\2510_Blackbox_Rimonabant\251030_S3_Baseline.mp4:
+    crop: 0, 1280, 0, 720
+  E:\RSVIDS\Blackbox\2510_Blackbox_Rimonabant\251030_S3_Rimonabant.mp4:
+    crop: 0, 1280, 0, 720
+  E:\RSVIDS\Blackbox\2510_Blackbox_Rimonabant\251031_S4_F_Baseline.mp4:
+    crop: 0, 1280, 0, 720
+  E:\RSVIDS\Blackbox\2510_Blackbox_Rimonabant\251031_S4_F_Rimonabant.mp4:
+    crop: 0, 1280, 0, 720
+  E:\RSVIDS\Blackbox\2510_Blackbox_Rimonabant\251031_S5_F_Baseline.mp4:
+    crop: 0, 1280, 0, 720
+  E:\RSVIDS\Blackbox\2510_Blackbox_Rimonabant\251031_S5_F_Rimonabant.mp4:
+    crop: 0, 1280, 0, 720
+  E:\RSVIDS\Blackbox\2510_Blackbox_Rimonabant\251031_S6_F_Baseline.mp4:
+    crop: 0, 1280, 0, 720
+  E:\RSVIDS\Blackbox\2510_Blackbox_Rimonabant\251031_S6_F_Rimonabant.mp4:
+    crop: 0, 1280, 0, 720
+
+
+
+  E:\RSVIDS\Blackbox\2511_Blackbox_Formalin\251114_Formalin_encoded\251114_Formalin_S1.mp4:
+    crop: 0, 1080, 0, 720
+  E:\RSVIDS\Blackbox\2511_Blackbox_Formalin\251114_Formalin_encoded\251114_Formalin_S2.mp4:
+    crop: 0, 1028, 0, 720
+  E:\RSVIDS\Blackbox\2511_Blackbox_Formalin\251114_Formalin_encoded\251114_Formalin_S3.mp4:
+    crop: 0, 1056, 0, 720
+  E:\RSVIDS\Blackbox\2511_Blackbox_Formalin\251114_Formalin_encoded\251114_Formalin_S4.mp4:
+    crop: 0, 1040, 0, 720
+  E:\RSVIDS\Blackbox\2511_Blackbox_Formalin\251114_Formalin_encoded\251126_Formalin_F_S1.mp4:
+    crop: 0, 870, 0, 720
+  E:\RSVIDS\Blackbox\2511_Blackbox_Formalin\251114_Formalin_encoded\251126_Formalin_F_S2.mp4:
+    crop: 0, 996, 0, 720
+  E:\RSVIDS\Blackbox\2511_Blackbox_Formalin\251114_Formalin_encoded\251126_Formalin_F_S3.mp4:
+    crop: 0, 998, 0, 720
+  E:\RSVIDS\Blackbox\2511_Blackbox_Formalin\251114_Formalin_encoded\251126_Formalin_F_S4.mp4:
+    crop: 0, 872, 0, 692
+  E:\RSVIDS\Blackbox\2512_Blackbox_CCIX\251202_CCIX_9415.mp4:
+    crop: 0, 1280, 0, 720
+  E:\RSVIDS\Blackbox\2512_Blackbox_CCIX\251202_CCIX_9416.mp4:
+    crop: 0, 1280, 0, 720
+  E:\RSVIDS\Blackbox\2512_Blackbox_Formalin_Oxy\Left_paws\Cut_videos\2512_FormOxy_S5_Cut.mp4:
+    crop: 0, 1280, 0, 720
+  E:\RSVIDS\Video_transfer_portal\secret_exp_HW\260304_HW_CCI_FED3_M1R.mp4:
+    crop: 0, 1280, 0, 720
+  E:\RSVIDS\Video_transfer_portal\secret_exp_HW\260304_HW_CCI_FED3_M2R.mp4:
+    crop: 0, 1280, 0, 720
+  E:\RSVIDS\Video_transfer_portal\secret_exp_HW\260304_HW_CCI_FED3_MLR.mp4:
+    crop: 0, 1280, 0, 720
+  E:\RSVIDS\Blackbox\2603_SNLT_JG\Baseline\videos\260318_JG_9417_Baseline.mp4:
+    crop: 0, 740, 0, 710
+  E:\RSVIDS\Blackbox\2603_SNLT_JG\Baseline\videos\260318_JG_9418_Baseline.mp4:
+    crop: 0, 718, 0, 698
+  E:\RSVIDS\Blackbox\2603_SNLT_JG\Baseline\videos\260318_JG_9419_Baseline.mp4:
+    crop: 0, 710, 0, 698
+  E:\RSVIDS\Blackbox\2603_SNLT_JG\Baseline\videos\260318_JG_9420_Baseline.mp4:
+    crop: 0, 718, 0, 704
+  E:\RSVIDS\Blackbox\2603_SNLT_JG\Baseline\videos\260318_JG_9424_Baseline.mp4:
+    crop: 0, 732, 0, 704
+  E:\RSVIDS\Blackbox\2603_SNLT_JG\Baseline\videos\260318_JG_9433_Baseline.mp4:
+    crop: 0, 738, 0, 704
+  E:\RSVIDS\Blackbox\2603_SNLT_JG\Baseline\videos\260318_JG_9435_Baseline.mp4:
+    crop: 0, 738, 0, 706
+  E:\Sync_from_lab\2511_RSGNKK_Blackbox\videos\2606_chloro_S3_post-drug.mp4:
+    crop: 0, 764, 0, 720
+  E:\Sync_from_lab\2511_RSGNKK_Blackbox\videos\2606_chloro_S2_post-drug.mp4:
+    crop: 0, 706, 0, 708
+  E:\Sync_from_lab\2511_RSGNKK_Blackbox\videos\2606_chloro_S5_post-drug.mp4:
+    crop: 0, 706, 0, 708
+  E:\Sync_from_lab\2511_RSGNKK_Blackbox\videos\2606_chloro_S9_post-drug.mp4:
+    crop: 0, 764, 0, 720
+  E:\Sync_from_lab\2511_RSGNKK_Blackbox\videos\2606_chloro_S11_post-drug.mp4:
+    crop: 0, 706, 0, 708
+  E:\Sync_from_lab\2511_RSGNKK_Blackbox\videos\2606_chloro_S14_post-drug.mp4:
+    crop: 0, 706, 0, 708
+  D:\PixelPaws_Active\2606_AOW\videos\2606_AOW_S1_post-nal.mp4:
+    crop: 0, 744, 0, 720
+  D:\PixelPaws_Active\2606_AOW\videos\2606_AOW_S2_post-nal.mp4:
+    crop: 0, 706, 0, 708
+  D:\PixelPaws_Active\2606_AOW\videos\2606_AOW_S3_post-nal.mp4:
+    crop: 0, 764, 0, 720
+  D:\PixelPaws_Active\2606_AOW\videos\2606_AOW_S4_post-nal.mp4:
+    crop: 0, 744, 0, 720
+  D:\PixelPaws_Active\2606_AOW\videos\2606_AOW_S5_post-nal.mp4:
+    crop: 0, 706, 0, 708
+  D:\PixelPaws_Active\2606_AOW\videos\2606_AOW_S6_post-nal.mp4:
+    crop: 0, 764, 0, 720
+  D:\PixelPaws_Active\2606_AOW\videos\2606_AOW_S7_post-nal.mp4:
+    crop: 0, 744, 0, 720
+  D:\PixelPaws_Active\2606_AOW\videos\2606_AOW_S8_post-nal.mp4:
+    crop: 0, 706, 0, 708
+  D:\PixelPaws_Active\2606_AOW\videos\2606_AOW_S9_post-nal.mp4:
+    crop: 0, 764, 0, 720
+  D:\PixelPaws_Active\2606_Chloroquine\videos\2606_chloro_S6_post-drug.mp4:
+    crop: 0, 764, 0, 720
+bodyparts:
+- tailtip
+- tailbase
+- centroid
+- neck
+- snout
+- hlpaw
+- hrpaw
+- flpaw
+- frpaw
+
+    # Fraction of video to start/stop when extracting frames for labeling/refinement
+
+
+# Fraction of video to start/stop when extracting frames for labeling/refinement
+
+
+# Fraction of video to start/stop when extracting frames for labeling/refinement
+
+
+# Fraction of video to start/stop when extracting frames for labeling/refinement
+
+
+# Fraction of video to start/stop when extracting frames for labeling/refinement
+
+
+# Fraction of video to start/stop when extracting frames for labeling/refinement
+
+
+# Fraction of video to start/stop when extracting frames for labeling/refinement
+
+
+# Fraction of video to start/stop when extracting frames for labeling/refinement
+
+
+# Fraction of video to start/stop when extracting frames for labeling/refinement
+
+
+# Fraction of video to start/stop when extracting frames for labeling/refinement
+
+
+# Fraction of video to start/stop when extracting frames for labeling/refinement
+
+
+# Fraction of video to start/stop when extracting frames for labeling/refinement
+
+
+# Fraction of video to start/stop when extracting frames for labeling/refinement
+
+
+# Fraction of video to start/stop when extracting frames for labeling/refinement
+
+
+# Fraction of video to start/stop when extracting frames for labeling/refinement
+
+
+# Fraction of video to start/stop when extracting frames for labeling/refinement
+
+
+# Fraction of video to start/stop when extracting frames for labeling/refinement
+start: 0
+stop: 1
+numframes2pick: 15
+
+
+# Plotting configuration
+skeleton:
+- - snout
+  - neck
+- - neck
+  - centroid
+- - centroid
+  - tailbase
+- - tailbase
+  - tailtip
+- - tailbase
+  - hlpaw
+- - hlpaw
+  - flpaw
+- - flpaw
+  - snout
+- - snout
+  - frpaw
+- - frpaw
+  - hrpaw
+- - hrpaw
+  - tailbase
+skeleton_color: yellow
+pcutoff: 0.6
+dotsize: 5
+alphavalue: 0.7
+colormap: Paired
+
+
+# Training,Evaluation and Analysis configuration
+TrainingFraction:
+- 0.95
+iteration: 2
+default_net_type: resnet_50
+default_augmenter: default
+snapshotindex: best
+detector_snapshotindex: -1
+batch_size: 32
+detector_batch_size: 4
+
+
+# Cropping Parameters (for analysis and outlier frame detection)
+cropping: false
+#if cropping is true for analysis, then set the values here:
+x1: 250
+x2: 1090
+y1: 0
+y2: 720
+
+
+# Refinement configuration (parameters from annotation dataset configuration also relevant in this stage)
+corner2move2:
+- 50
+- 50
+move2corner: false
+
+
+# Conversion tables to fine-tune SuperAnimal weights
+SuperAnimalConversionTables:
+croppedtraining: false
