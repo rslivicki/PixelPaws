@@ -4,36 +4,184 @@ Working log so context can be restored across sessions. Newest first.
 
 ---
 
-## 2026-05-07 (round 2) — RWD OFRS auto-pairing
+## 2026-06-29 — record-collision guard + shared output folder
 
-Pairs PawCapture sessions with RWD-FPsystem (OFRS) photometry sessions automatically. Targets the typical single-animal workflow where one PawCapture recording corresponds to one OFRS session.
+Two requested features.
 
-### How it works
-- **Config** — `OFRS…` button on the legend bar opens a dialog to set the OFRS data root (typically `D:\RWD-OFRS\RWD-Data`) and toggle auto-pair. Persisted to `~/PawCapture/ofrs_config.json`.
-- **Snapshot at start** — `_ofrs_take_snapshot` walks the data root for folders matching `\d{4}_\d{2}_\d{2}-\d{2}_\d{2}_\d{2}` containing `Events.csv` and stores the set on `self._ofrs_pre_snapshot`. Anchored on `Events.csv` rather than directory name alone so a half-written folder doesn't get treated as a new session.
-- **Diff at stop** — `_ofrs_collect_new` rescans, set-diffs, and filters by folder-name datetime falling within `[start - 60 s, end + 60 s]` (slack covers OFRS folder-create vs PawCapture wall-clock skew on the same host).
-- **Alignment** — folder name parses to OFRS session wall-clock start; `Events.csv` `TimeStamp` column is session-relative ms (verified against three sessions: matches `Fluorescence.csv`'s 0-based clock). Each event becomes a `MARK` at `(ofrs_start - pawcapture_start).total_seconds() + ts_ms/1000`.
-- **Manifest** — events land in `marks` with `label = "OFRS:<name>=<state>"` and `source = "ofrs"`. Raw OFRS metadata (folder path, event count, full event list) lives in a new top-level `ofrs_sessions` array so PixelPaws doesn't have to walk OFRS disk.
+### 1. Refuse to record over an existing filename
+- **`Recorder.start()`** now checks `self.path.exists()` right after resolving the target (before any mkdir / FFmpeg launch) and returns `(False, "FILE_EXISTS:<path>")`. This is the authoritative guard — it checks the exact path about to be written, covering Phase 1 (inline) and Phase 2 (subprocess). Previously Phase 2's `-y` silently overwrote and Phase 1's muxer would stall on the overwrite prompt. Module constant `FILE_EXISTS_TAG = "FILE_EXISTS"` marks the sentinel.
+- **`CameraPanel._peek_record_target()`** (new) resolves the would-be path with no side effects (reuses `Recorder._resolve_path`), used for a pre-flight check so the user gets a clean message instead of an FFmpeg error.
+- **Per-cam** (`_do_start_rec`) pre-flights and shows `_warn_file_exists(...)`; **global** (`_start_recording_session`) pre-flights ALL live cams before starting any (no half-started sessions), listing each clashing cam. Both also detect the `FILE_EXISTS:` sentinel as a race backstop.
+- Note: with a timestamp suffix (default `_%Y%m%d_%H%M%S`) names are unique, so this only ever triggers when the suffix is cleared/coarse (e.g. the research profiles that use `suffix=""` + phase tags) — exactly where collisions happen.
 
-### Why
-One animal at a time, both apps running on the same host. User wanted to skip the post-hoc alignment step. Auto-pair-on-stop hides the post-hoc work behind RECORD ALL — start OFRS, start PawCapture, stop both, manifest has everything. No OFRS-side changes, no hardware sync.
+### 2. Per-camera "sync all cams to this folder"
+Each camera's Folder row gains a compact **"⇲ all"** button (`sync_dirs_btn`). Clicking
+it copies *that* camera's folder to every camera — a one-shot action; cameras stay
+independently changeable afterward (no lock, no global mode).
+- **CameraPanel**: `_sync_all_to_my_dir()` calls the window's sync with `self._out_dir`;
+  reuses `set_out_dir(path)` (programmatic folder set + path-preview refresh).
+- **MainWindow**: `_sync_all_to_folder(path)` pushes the folder to every panel and shows
+  a status-bar confirmation.
+- Nothing new to persist: each panel's `_out_dir` is already saved per profile, so a
+  synced layout round-trips naturally.
 
-### Smoke-tested
-Helpers exercised against the live `D:\RWD-OFRS\RWD-Data` tree (143 existing sessions). Parse, scan, and alignment all produce sane results. Wall-time stamping verified end-to-end (folder `2025_11_11-10_11_20` + first STIM `ts=96877 ms` → wall time `10:12:56.877`).
+(Design note: this replaced an earlier global legend "Same folder" toggle + folder-lock
+mode — the user preferred a per-camera one-shot button, so the legend control, the lock
+machinery, and `_insert_panel` inheritance were reverted.)
+
+Verified headlessly (stubbed-connect MainWindow): collision guard returns the sentinel + peek detects existing files; the per-camera sync propagates panel-0's folder to all panels, updates labels/tooltips, leaves buttons enabled, and a camera can still change independently afterward; the removed legend/lock attributes are confirmed gone. All checks passed. `py_compile` clean.
 
 ---
 
-## 2026-05-07 — phase tag (baseline / post-drug / antagonist) folder + filename
+## 2026-06-16 — crash loading a profile that adds panels (`'int' object is not subscriptable`)
 
-Adds a session-global **Phase** selector to the legend bar with options *None / Baseline / Post-Drug / Antagonist / Custom…* plus a *Prefix / Suffix* position toggle. When a phase is set, recordings land in `recordings/YYYY-MM-DD/<phase>/` and the tag is added to the filename (`baseline_CAM_1_…mp4` or `CAM_1_…_baseline.mp4`). Date folder stays auto. None reproduces the prior path layout exactly.
+**Symptom:** Loading the 4-camera profile crashed the app (silent under pythonw — no traceback).
 
-### Implementation
-- `Recorder._resolve_path` / `Recorder.start` gain `phase_tag` + `phase_position` kwargs. Empty `phase_tag` short-circuits back to the old `day_dir / f"{label}{ts}.mp4"` shape, so existing behavior is preserved when phase is unset.
-- `MainWindow.current_phase_tag()` / `current_phase_position()` are read by `CameraPanel.start_rec` via `self.window()`. Custom names are sanitized to `[a-z0-9_-]` (lowercase, spaces → `_`, leading/trailing punctuation stripped).
-- Per-camera RECORD and global RECORD ALL both honor the phase. Session manifest sidecar lands inside the phase folder alongside the recordings (no manifest code changes needed — it derives `target_dir` from the first cam's file path).
+**Root cause:** Captured via a stubbed-connect repro harness. `CameraPanel.__init__` seeds its device combo with a placeholder `addItem(..., userData=self.cam_index)` — an **int** — replaced by real `(idx, dev_id)` tuples only after async enumeration completes. The previous fix grows panel count during `load_profile`, but a newly-spawned panel hasn't enumerated yet, so `apply_settings` ran `self.dev_combo.itemData(i)[1]` against the int placeholder → `TypeError: 'int' object is not subscriptable`.
 
-### Why
-Drug-experiment workflow: each session is one phase, three cameras roll, files need to be sorted into baseline/post-drug/antagonist buckets at write time so PixelPaws sees the right grouping without manual triage.
+**Fix:**
+- `load_profile` now populates the newly-spawned panels' combos synchronously (one shared `enumerate_cameras()`) right after growing, so their device selection actually works instead of staying on a placeholder.
+- Defensive guards so a non-tuple combo entry can never crash again: `apply_settings`' device-id match now `isinstance(..., (tuple, list))`-checks each entry; `_selected_cam_index`/`_selected_device_id` do the same on `currentData()`.
+- Added `_install_crash_logger()` (called at top of `main()`): unhandled exceptions are appended to `logs/crash.log` with a timestamp. Under pythonw there's no console, so this is the only way a future crash leaves a trace.
+
+---
+
+## 2026-06-16 — profile load drops cameras beyond the current panel count
+
+**Symptom:** Saving a profile with a 4th camera, then loading it, didn't restore the 4th camera.
+
+**Root cause:** The window starts with 3 panels (`MainWindow.__init__`, `for i in range(3)`). `load_profile` applied saved cameras with `if i < len(self.panels)`, so a profile's 4th entry (i=3) was silently skipped whenever fewer than 4 panels existed. `save_profile`/`export_profile` already persist all panels, so the data was in the JSON — it just had nowhere to land.
+
+**Fix:** `load_profile` now grows the layout to match the profile (`while len(self.panels) < len(cam_list): self._add_camera()`) before applying settings, so every saved camera gets a panel. Does not auto-shrink (loading a smaller profile leaves extra panels untouched, as before).
+
+---
+
+## 2026-06-16 — 4th-camera "Could not run graph / device in use" fix
+
+**Symptom:** Adding a 4th See3CAM_CU27 failed on CONNECT with FFmpeg `Could not run graph (… device in use)` + I/O error. The dropdown entry the user selected (`[1A18659]`) resolved to a *different* PnP path at open time (`8&17FD5B55`) — one already being streamed by another panel. Worked fine at 3 cameras.
+
+**Root cause:** `enumerate_cameras()` paired FFmpeg's `-list_devices` order with WMI's `Win32_PnPEntity` order **by occurrence index** (`device_id = wmi_ids[n]`). For N identical cameras the two tools enumerate in *different* permutations (verified live: FFmpeg order `[1A18659, 1AAED507, F6248A2, 17FD5B55]` vs WMI `[F6248A2, 1AAED507, 17FD5B55, 1A18659]`), so the serial shown on a combo entry described one physical camera while the connect path (`device_name` + `ff_instance` indexed into a *fresh* `_list_dshow_devices()` call) opened another. DirectShow enumeration order is also not stable across calls, compounding it. With 4 cameras the mismatch forced a collision onto an in-use PnP path. Not USB bandwidth, not a stale process (confirmed: exactly 3 ffmpeg procs running, no orphan).
+
+**Fix:**
+- `_instance_key()` (new, next to `_usb_port_label`) — extracts the canonical instance segment (e.g. `8&1a18659&0&0000`) from *either* a WMI DeviceID or an FFmpeg dshow Alternative-name path, so the two can be matched by content.
+- `enumerate_cameras()` — device_id is now the FFmpeg Alternative-name path itself (the exact, directly-openable identity); the visible `[serial]` suffix is derived from that same path's instance key, so the label always names the camera the entry opens. WMI-by-index is kept only as a fallback when no dshow path exists.
+- `CameraThread` gains `dshow_path`; `_open_ffmpeg_capture` opens it verbatim (`video=<alt>`) when set, instead of re-resolving by name + occurrence index. Legacy index path retained as fallback.
+- `CameraPanel._connect` passes the selected entry's stored path through as `dshow_path`.
+
+**Note:** This changes the stored `device_id` form (was WMI DeviceID, now the dshow path), so existing `~/PawCapture/camera_slots.json` pins won't match on first launch after this build — panels fall back to the name-slot default and re-pin on next connect. Self-healing, one-time.
+
+**Verify before relying on it:** connect all 4 cameras and confirm each panel shows live video from a *distinct* chamber (the labels should now be trustworthy).
+
+---
+
+## 2026-05-08 — mouse-absence Discord alerts
+
+Adds a notify-on-departure feature: when a camera's preview shows no motion for N seconds, PawCapture posts a Discord webhook with a snapshot. Driven by MOG2 background subtraction with a low learning rate (0.0008), so a stationary mouse stays foreground for many minutes — only an actually empty frame trips the alarm.
+
+### Components
+- **`MouseAbsenceMonitor`** (camsync_precursor.py, after `_DshowCameraControl`) — per-camera detector. `process(frame_bgr)` is called from each `CameraPanel._on_frame`; sampling throttled to ~5 Hz. Foreground fraction below `min_motion_pct` for `absence_seconds` fires `on_absent(label, jpg_bytes)`. Recovery fires `on_present(label)`.
+- **`DiscordNotifier`** (same file, just above `MouseAbsenceMonitor`) — single shared instance owned by `MainWindow`. `notify(message, image_jpg, cooldown_key, force)` posts via stdlib `urllib.request` on a daemon thread, with multipart-form attachment when an image is supplied. Per-key cooldown table prevents spam. Failures append to `~/PawCapture/logs/discord_errors.log`.
+- **`_AlertsConfigDialog`** — webhook URL + thresholds + per-cam enable, with a "Test" button that pings via a transient notifier so disk isn't touched until OK.
+
+### Wiring
+- `CameraPanel.__init__` instantiates a monitor and stores `_alert_enabled` (per-cam, persisted in profile via `_alert_enabled` key in `get_settings`/`apply_settings`).
+- `_on_frame` feeds the monitor when `_alerts_active` is true (computed in `_refresh_alerts_active` from: global enable AND per-cam enable AND `_live` AND optionally "while recording only").
+- Header gets a small `alert_dot` next to the existing connection dot. Click toggles `_alert_enabled` for that camera. Color: dim=disabled/idle, green=monitoring/present, red=absent.
+- `_on_connected`, `_disconnect`, `_start_recording_session`, `_stop_recording_session` all call `_refresh_alerts_active` on each panel so the active flag tracks reality.
+- `MainWindow._insert_panel` wires `set_notifier(self.notifier)` and `apply_alert_global(self._alerts_cfg)` after each panel is added (so dynamically-added cams pick up current config).
+
+### Storage layout
+- `~/PawCapture/discord_webhook.txt` — webhook URL only (one line, no JSON wrapping). Kept separate so `alerts_config.json` and profiles can be shared without leaking the secret.
+- `~/PawCapture/alerts_config.json` — `{enabled, absence_seconds, min_motion_pct, cooldown_seconds, send_recovery, while_recording_only}`. Loaded once at MainWindow init via `_load_alerts_config` (merged onto `ALERTS_DEFAULTS`).
+- Profile JSON gains `_alert_enabled` per-camera.
+
+### UI surface
+- `ALERTS…` button in legend row (next to OFRS button), with a status label showing on/off + active-cam count.
+- Per-panel header alert dot (hidden when alerts globally off).
+- Defaults: 15 s absence threshold, 0.5% min foreground, 60 s cooldown, master **OFF** (opt-in via dialog), recovery message ON, while-recording-only OFF.
+
+### Watch out
+- Discord webhook 2000-char content cap — `_post` truncates to 1900 to leave headroom.
+- MOG2 needs ~1.5 s warmup; first detection won't fire before that even on a black frame.
+- The detector runs on the **post-rotation/crop preview** frame, not the raw source — what you see is what's monitored. (Phase 1 already applies transforms in FFmpeg, so `_apply_rotation` is a no-op there; in Phase 2 it cv2-rotates first.)
+
+---
+
+## 2026-05-12 — fragmented mp4 (crash-resilient) + recovery tool
+
+After a session where six 1-hour `post_rimonabant_*.mp4` recordings ended up with no `moov` atom (PawCapture/FFmpeg killed before the muxer wrote its trailer — every file unplayable), changed the mp4 muxer config on both recording paths so this failure mode is no longer reachable.
+
+### Muxer config
+`+faststart` → `+frag_keyframe+empty_moov+default_base_moof` (plus `+use_metadata_tags` whenever metadata is supplied).
+
+Why each flag:
+- `+empty_moov` writes the moov header **up front** with no sample tables, so the muxer never has to seek back at finalize. A kill at second 0 leaves a valid (empty) file; a kill mid-recording leaves all completed fragments playable.
+- `+frag_keyframe` ends each fragment at an encoder keyframe — a self-contained `moof`+`mdat` pair per GOP, indexable independently of the moov.
+- `+default_base_moof` uses fragment-relative offsets in tfhd, which is the standard fMP4 shape modern players prefer.
+
+Edits at `camsync_precursor.py` Phase-1 (line ~647, inline FFmpeg in `CameraThread._open_ffmpeg_capture`) and Phase-2 (line ~2241, legacy `Recorder` subprocess) — both build the same `movflags` string from the same logic.
+
+### Tradeoffs
+- ~1% size overhead from per-fragment moof headers — acceptable on 8 Mbps recordings.
+- `major_brand` becomes `isom` with sub-brand `iso5`. VLC, Quicktime, ffmpeg, OpenCV, PixelPaws (via ffprobe) all read fragmented mp4 fine.
+- Worst-case data loss on a kill is now bounded by encoder keyframe interval — typically 2–5 s for h264_qsv defaults — instead of the entire recording.
+- Verified via the resilient launch: file structure for a 1-hour recording shows ~864 `moof`+`mdat` pairs plus a trailing `mfra` random-access index.
+
+### Companion recovery tool
+`tools/recover_mp4.py` — pure Python (no third-party binary). Reads SPS+PPS from a reference file's `avcC` box, walks the broken file's `mdat` as AVCC length-prefix NALs, scans-and-resyncs past mid-stream gaps (write-cache holes), emits Annex B to a piped `ffmpeg -f h264 -c copy` remux. Used to recover all six 2026-05-12 files with <0.001% data loss each. Kept around so a future moov-less file (from this codebase or another) can be salvaged with one command:
+
+    py tools/recover_mp4.py <reference.mp4> <broken.mp4> <output.mp4> [fps]
+
+The reference can be any twin file from the same recording session — same encoder/settings is what matters.
+
+---
+
+## 2026-05-08 — Discord pings for recording lifecycle
+
+Adds three knobs to the existing ALERTS dialog (consolidates everything Discord-related in one place):
+
+- **Notify on RECORD ALL start** — defaults ON. Posts cam list + phase tag + periodic-ping cadence (if set).
+- **Notify on RECORD ALL stop** — defaults ON. Posts duration + cam count + file count.
+- **Periodic ping every N minutes** — defaults 0 (off). Fires during long sessions; message includes elapsed time, CPU/RAM/GPU/Disk for a quick remote sanity check.
+
+### Plumbing
+- `ALERTS_DEFAULTS` gained `notify_on_record_start`, `notify_on_record_stop`, `periodic_minutes`. `_load_alerts_config` already merges onto defaults so existing on-disk configs pick up the new keys with default values.
+- `_AlertsConfigDialog` exposes them under a "Recording session pings" subsection beneath the existing mouse-absence options.
+- `MainWindow._start_recording_session` calls `_send_recording_start_notification(started)` once panels are confirmed.
+- `MainWindow._stop_recording_session` snapshots `_rec_start` + `_session_panels` BEFORE clearing them (the ping needs that state) and calls `_send_recording_stop_notification(start, end, panels, paths)` after teardown.
+- `MainWindow._update_global_timer` (the existing 1 s session ticker) now also checks the periodic-minutes config and fires `_send_periodic_recording_notification(elapsed_min)` once per `N`-minute boundary, guarded by `_last_periodic_min` against double-fire within the same minute.
+
+### Defaults
+Mouse-absence master switch flipped from ON → **OFF** at user request. Lifecycle pings stay ON because they only fire during real recording sessions (not noisy).
+
+---
+
+## 2026-05-08 — OBS-style system stats footer
+
+Bottom-right of the status bar now shows `CPU N% · RAM N% · GPU N% · Disk N GB`, color-coded (yellow ≥80%/<20 GB, red ≥95%/<5 GB).
+
+- **CPU + RAM**: 1 Hz QTimer on the GUI thread via `psutil`. Optional dependency — falls back to "—" if missing. cpu_percent is primed at startup so the first reading isn't a fake 0.0.
+- **GPU**: a `_GpuPollThread(QThread)` in the same module polls every 3 s via PowerShell `Get-Counter '\GPU Engine(*)\Utilization Percentage'`, summing all engines across all GPUs. ~1 s/call which is why it's on a worker thread. Covers Intel iGPU (QSV), NVIDIA, and AMD on Windows 10+. nvidia-smi was rejected because this rig encodes via QSV on the Intel iGPU — nvidia-smi only sees the discrete card and would report ~0% during recording.
+- **Disk**: `shutil.disk_usage(RECORDINGS_DIR).free`, formatted by magnitude.
+- Thread is stopped + joined (2 s timeout) in `MainWindow.closeEvent` so a stray `powershell.exe` doesn't outlive the app.
+- Spawns are subprocess-only with `creationflags=CREATE_NO_WINDOW` (matching the rest of the file's pattern) so no console window flashes.
+
+Implementation note: `QLabel.setText` with `<span style='color:...'>` lets us color-code only the *values* (CPU/RAM/GPU numbers, disk free figure) while leaving the labels themselves at the dim default — saves having to maintain four separate widgets.
+
+---
+
+## 2026-05-08 — phase: optional folder + live per-cam path preview
+
+Two small UX wins around the phase tag.
+
+- **"Folder" checkbox** next to the phase position combo (in the legend row). On (default = legacy behavior): phase tag becomes a subfolder under the day folder. Off: tag still appears in the filename via prefix/suffix, but recordings all land in `recordings/YYYY-MM-DD/` directly.
+- **Per-camera path preview reflects phase live.** Each panel's small `suffix_preview` line under the filename now shows the resolved relative path — including the phase tag and (optional) folder — so changing PHASE or toggling Folder at the top updates every panel's preview immediately. Previously the per-cam preview only showed `{name}{suffix}.mp4` and ignored the phase header.
+
+### Plumbing
+- `Recorder._resolve_path` and `Recorder.start` gained a `phase_create_folder=True` kwarg. When `phase_tag and phase_create_folder`, target_dir = `day_dir / tag`; otherwise it's just `day_dir`. Filename composition is unchanged (prefix/suffix logic still applies).
+- `MainWindow.current_phase_create_folder()` mirrors the existing `current_phase_tag` / `current_phase_position` accessors. `CameraPanel.start_rec` reads it and forwards to `Recorder.start`.
+- `_update_phase_preview` now cascades to every panel via `panel._update_path_preview()` — which I promoted from a closure inside `CameraPanel._build` to a real method so MainWindow can call it. The closure-era signal connections (`name_edit.textChanged`, `suffix_combo.currentIndexChanged`, etc.) were rewired to call the method.
+- The new checkbox state is **not persisted** — same as the phase combo itself. It's session-state, defaults to on each launch.
 
 ---
 

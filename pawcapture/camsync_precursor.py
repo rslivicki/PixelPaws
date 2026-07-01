@@ -35,7 +35,7 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QRect, QPoint
 from PyQt5.QtGui import QImage, QPixmap, QColor, QPalette, QCursor, QPainter, QPen, QBrush
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-PAWCAPTURE_VERSION = "1.0.0"
+PAWCAPTURE_VERSION = "0.6.0"
 PREVIEW_W, PREVIEW_H = 360, 203
 DEFAULT_W, DEFAULT_H, DEFAULT_FPS = 1280, 720, 60
 
@@ -43,6 +43,24 @@ PROFILES_DIR     = Path.home() / "PawCapture" / "profiles"
 RECORDINGS_DIR   = Path.home() / "PawCapture" / "recordings"
 LOGS_DIR         = Path.home() / "PawCapture" / "logs"
 OFRS_CONFIG_FILE = Path.home() / "PawCapture" / "ofrs_config.json"
+# Mouse-absence alerts. Webhook URL kept in its own file so settings JSON
+# can be shared/backed-up without leaking the secret.
+DISCORD_WEBHOOK_FILE = Path.home() / "PawCapture" / "discord_webhook.txt"
+ALERTS_CONFIG_FILE   = Path.home() / "PawCapture" / "alerts_config.json"
+ALERTS_DEFAULTS = {
+    "enabled":          False,   # mouse-absence master switch — opt-in via dialog
+    "absence_seconds":  15,      # sustained absence before alerting
+    "min_motion_pct":   0.5,     # foreground % below which the cam is "empty"
+    "cooldown_seconds": 60,      # min gap between Discord posts per cam
+    "send_recovery":    True,    # post a "mouse back" message on recovery
+    "while_recording_only": False,  # if True, monitor only during RECORD ALL
+    # Recording lifecycle pings (independent of mouse-absence detection).
+    # On by default — they only fire during real recording sessions, so
+    # they're not noisy.
+    "notify_on_record_start": True,
+    "notify_on_record_stop":  True,
+    "periodic_minutes":       0,     # 0 = no periodic ping during recording
+}
 
 PROBE_RESOLUTIONS = [
     (640,360),(640,480),(800,600),(1024,576),
@@ -107,6 +125,35 @@ def _load_ofrs_config() -> dict:
 def _save_ofrs_config(cfg: dict):
     OFRS_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     OFRS_CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+
+# ── Mouse-absence alerts (Discord) ─────────────────────────────────────────────
+def _load_discord_webhook() -> str:
+    try:
+        if DISCORD_WEBHOOK_FILE.exists():
+            return DISCORD_WEBHOOK_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    return ""
+
+def _save_discord_webhook(url: str):
+    DISCORD_WEBHOOK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    DISCORD_WEBHOOK_FILE.write_text((url or "").strip(), encoding="utf-8")
+
+def _load_alerts_config() -> dict:
+    cfg = dict(ALERTS_DEFAULTS)
+    try:
+        if ALERTS_CONFIG_FILE.exists():
+            on_disk = json.loads(ALERTS_CONFIG_FILE.read_text())
+            if isinstance(on_disk, dict):
+                cfg.update({k: v for k, v in on_disk.items() if k in ALERTS_DEFAULTS})
+    except Exception:
+        pass
+    return cfg
+
+def _save_alerts_config(cfg: dict):
+    ALERTS_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    safe = {k: cfg[k] for k in ALERTS_DEFAULTS if k in cfg}
+    ALERTS_CONFIG_FILE.write_text(json.dumps(safe, indent=2))
 
 def _scan_ofrs_sessions(root) -> set:
     """Walk `root` recursively and return a set of resolved Paths to OFRS
@@ -211,6 +258,20 @@ def _usb_port_label(device_id: str) -> str:
         return parts[-1][:12]
     return device_id[-8:]
 
+def _instance_key(s: str) -> str:
+    """Canonical unique-per-USB-port key shared by a WMI DeviceID and an
+    FFmpeg dshow 'Alternative name' path, so the two enumerations can be
+    matched to the same physical camera by *content* instead of by their
+    (differing) enumeration order. Both forms embed the instance segment
+    after the interface id, e.g. WMI '...MI_00\\8&1A18659&0&0000' and the
+    dshow path '...mi_00#8&1a18659&0&0000#{guid}...' both yield
+    '8&1a18659&0&0000'. Lowercased for case-insensitive matching."""
+    import re as _re
+    m = _re.search(r'mi_[0-9a-f]{2}[\\#]([0-9a-f]+(?:&[0-9a-f]+)+)', s, _re.I)
+    if m:
+        return m.group(1).lower()
+    return s.lower()
+
 def enumerate_cameras() -> list:
     """
     Returns [(cv_index, display_name, device_id), ...]
@@ -284,6 +345,22 @@ def enumerate_cameras() -> list:
     except Exception:
         pass
 
+    # FFmpeg's "Alternative name" (the dshow PnP path) uniquely identifies one
+    # physical camera and is exactly what FFmpeg opens with `video=<alt>`, so we
+    # use it AS the device_id. The visible disambiguator is derived from that
+    # same path's instance key — guaranteeing the serial shown on a combo entry
+    # always names the camera that entry will actually open.
+    #
+    # The old scheme paired FFmpeg's device list with WMI's by occurrence index
+    # (device_id = wmi_ids[n]). For N identical cameras the two tools enumerate
+    # in *different* orders, so the label came from one physical camera while the
+    # connect path (name + ff_instance) opened another — which, with 4 cameras,
+    # resolved onto a PnP path another panel was already streaming → FFmpeg
+    # "Could not run graph (… device in use)". (Fixed 2026-06-16.)
+    base_counts = {}
+    for _b in ffmpeg_names:
+        base_counts[_b] = base_counts.get(_b, 0) + 1
+
     cameras = []
     name_seen = {}
     for idx, base in enumerate(ffmpeg_names):
@@ -293,29 +370,30 @@ def enumerate_cameras() -> list:
         n = name_seen.get(base, 0)
         name_seen[base] = n + 1
 
-        # Pick a unique-per-physical-cam device_id, in priority order:
-        #   1. WMI DeviceID (stable across USB ports for the same physical
-        #      camera if it carries a USB serial). Use the n-th entry for
-        #      this name to handle multiple cameras of the same model.
-        #   2. FFmpeg's Alternative name (PnP path). Unique per port —
-        #      changes if you reconnect to a different USB port, but at
-        #      least uniquely identifies physical cams within a session.
-        #   3. Fallback: synthetic "FALLBACK_INDEX_<n>".
-        device_id = ""
+        alt = ffmpeg_alts[idx]
         suffix = ""
-        wmi_ids = wmi_map.get(base, [])
-        if n < len(wmi_ids):
-            device_id = wmi_ids[n]
-            if len(wmi_ids) > 1 or n > 0:
-                suffix = f" [{_usb_port_label(device_id)}]"
-        elif ffmpeg_alts[idx]:
-            device_id = ffmpeg_alts[idx]
-            if n > 0:
-                suffix = f" [{_usb_port_label(device_id)}]"
+        if alt:
+            device_id = alt          # exact, directly-openable identity
+            # Show a serial suffix only when more than one camera shares this
+            # model name (otherwise the bare name is already unambiguous).
+            if base_counts.get(base, 0) > 1:
+                seg = _instance_key(alt).split("&")
+                lbl = (seg[1] if len(seg) >= 2 and seg[1] else seg[0]).upper()[:12]
+                if lbl:
+                    suffix = f" [{lbl}]"
         else:
-            device_id = f"FALLBACK_INDEX_{idx}"
-            if n > 0:
-                suffix = f" [{n}]"
+            # No dshow path available (older FFmpeg, or a non-USB source). Fall
+            # back to the WMI id by occurrence index — less robust, but only
+            # reached when there's no per-device path to key on.
+            wmi_ids = wmi_map.get(base, [])
+            if n < len(wmi_ids):
+                device_id = wmi_ids[n]
+                if len(wmi_ids) > 1 or n > 0:
+                    suffix = f" [{_usb_port_label(device_id)}]"
+            else:
+                device_id = f"FALLBACK_INDEX_{idx}"
+                if n > 0:
+                    suffix = f" [{n}]"
         cameras.append((idx, base + suffix, device_id))
 
     # If FFmpeg enumeration returned nothing (no FFmpeg, etc.), fall back to
@@ -445,7 +523,7 @@ class CameraThread(QThread):
 
     def __init__(self, index, initial_props, initial_auto,
                  width=DEFAULT_W, height=DEFAULT_H, fps=DEFAULT_FPS,
-                 device_name="", ff_instance=0):
+                 device_name="", ff_instance=0, dshow_path=""):
         super().__init__()
         self.index          = index
         self._initial_props = initial_props.copy()
@@ -455,6 +533,11 @@ class CameraThread(QThread):
         self._fps           = fps
         self._device_name   = device_name
         self._ff_instance   = ff_instance
+        # Exact dshow 'Alternative name' path for this physical camera. When
+        # set, _open_ffmpeg_capture opens it verbatim instead of resolving by
+        # name + occurrence index (which is order-dependent and unstable across
+        # re-enumerations when several identical cameras are attached).
+        self._dshow_path    = dshow_path
         self._queue         = []
         self._lock          = threading.Lock()
         self.running        = False
@@ -560,22 +643,31 @@ class CameraThread(QThread):
         self._eff_w, self._eff_h = eff_w, eff_h
         frame_bytes = eff_w * eff_h * 3
 
-        # Resolve PnP path for duplicate-camera disambiguation
-        dev_map  = self._list_dshow_devices()
-        pnp_list = dev_map.get(self._device_name, [])
-        if self._ff_instance < len(pnp_list):
-            dshow_name = pnp_list[self._ff_instance]
+        # Resolve the exact dshow target. When the panel handed us the device's
+        # unique 'Alternative name' path (the normal case for USB cameras), open
+        # THAT verbatim — it pins us to one physical camera regardless of dshow's
+        # per-call enumeration order. Only fall back to the name + occurrence
+        # index scheme when no path was provided.
+        if self._dshow_path:
+            dshow_name = self._dshow_path
         else:
-            dshow_name = self._device_name
+            dev_map  = self._list_dshow_devices()
+            pnp_list = dev_map.get(self._device_name, [])
+            if self._ff_instance < len(pnp_list):
+                dshow_name = pnp_list[self._ff_instance]
+            else:
+                dshow_name = self._device_name
 
         # Preview pipe size = effective size after transforms. The filter
         # chain already produces these dimensions, so -s here just declares
         # the output container size to FFmpeg's rawvideo encoder.
         out_size = ["-s", f"{eff_w}x{eff_h}"]
 
-        # Image-transform chain (crop/hflip/transpose). Applied once before
-        # the split so it lands on both [rec] and [prev].
-        tx_chain = self._build_transform_chain()  # "" or e.g. "crop=800:600:0:0,hflip"
+        # Image-transform chain. `common_chain` (crop + rotation) runs
+        # before split=2 so both [rec] and [prev] inherit it. `prev_only_chain`
+        # (hflip) runs after the split on [prev] only — FLIP is a display-side
+        # mirror for chamber centering and must not be baked into the mp4.
+        common_chain, prev_only_chain = self._build_transform_chain()
 
         # ── Build output args ────────────────────────────────────────────────
         # Two shapes, picked at FFmpeg-launch time based on self._record_args:
@@ -592,12 +684,16 @@ class CameraThread(QThread):
             r_br   = float(record_args["bitrate"])
             r_codec = record_args["codec"]
             r_meta = record_args.get("metadata") or {}
-            # `+use_metadata_tags` makes the mp4 muxer write arbitrary
-            # `-metadata key=value` pairs into the file's udta atom (where
-            # the default mp4 muxer would silently drop unknown keys).
-            # Only enable it when there's metadata to emit so existing
-            # recordings keep the same container shape.
-            movflags = "+faststart+use_metadata_tags" if r_meta else "+faststart"
+            # Fragmented mp4: every keyframe ends a self-contained fragment
+            # (moof + mdat pair). If FFmpeg is killed mid-recording the file
+            # is still playable up to the last completed fragment — no trailing
+            # moov atom required, so the legacy "kill = lose everything"
+            # failure mode can't happen. `+empty_moov` writes the moov header
+            # up-front (no need to seek back at finalize); `+default_base_moof`
+            # uses cleaner relative offsets. `+use_metadata_tags` keeps custom
+            # `-metadata key=value` pairs flowing into the udta atom.
+            movflags = ("+frag_keyframe+empty_moov+default_base_moof"
+                        + ("+use_metadata_tags" if r_meta else ""))
             common_enc = ["-pix_fmt", "yuv420p", "-profile:v", "main",
                           "-movflags", movflags]
             meta_args = []
@@ -614,10 +710,16 @@ class CameraThread(QThread):
             # different integer (60, 61, 62), producing differently-timebased
             # files even though the filter graph is identical.
             tscale = r_fps * 256
-            chain_pieces = [tx_chain] if tx_chain else []
+            chain_pieces = [common_chain] if common_chain else []
             chain_pieces.append(f"fps={r_fps}")
-            chain_str = ",".join(chain_pieces)
-            filter_complex = f"[0:v]{chain_str},split=2[rec][prev]"
+            common_str = ",".join(chain_pieces)
+            if prev_only_chain:
+                filter_complex = (
+                    f"[0:v]{common_str},split=2[rec][prev_raw];"
+                    f"[prev_raw]{prev_only_chain}[prev]"
+                )
+            else:
+                filter_complex = f"[0:v]{common_str},split=2[rec][prev]"
             out_args = (
                 ["-filter_complex", filter_complex,
                  "-map", "[rec]", "-c:v", r_codec,
@@ -629,8 +731,9 @@ class CameraThread(QThread):
                 + out_size + ["pipe:1"]
             )
         else:
-            # Preview-only mode: rate-limit input to fps too.
-            chain_pieces = [tx_chain] if tx_chain else []
+            # Preview-only mode: rate-limit input to fps too. No rec branch
+            # to keep clean, so common + preview-only flatten into one chain.
+            chain_pieces = [c for c in (common_chain, prev_only_chain) if c]
             chain_pieces.append(f"fps={fps}")
             vf_args = ["-vf", ",".join(chain_pieces)]
             out_args = (
@@ -909,26 +1012,31 @@ class CameraThread(QThread):
         return int(eff_w), int(eff_h)
 
     def _build_transform_chain(self):
-        """Return an FFmpeg filter chain string (without trailing comma) for
-        the current crop/flip/rotation state. Empty string if no transforms."""
-        parts = []
+        """Return (common, preview_only) FFmpeg filter chain strings.
+
+        `common` is crop + rotation, applied pre-split so it lands on both
+        the recording and preview branches (geometric changes belong in both).
+        `preview_only` is hflip, applied AFTER the split on [prev] only —
+        the FLIP button is a display-side convenience for chamber centering;
+        baking it into the recording inverts left/right paws downstream.
+        Either return may be ''."""
+        common = []
         cr = self._t_crop_rect
         if cr:
             x, y, cw, ch = (int(v) for v in cr)
             if cw > 0 and ch > 0:
-                parts.append(f"crop={cw}:{ch}:{x}:{y}")
-        if self._t_flip_h:
-            parts.append("hflip")
+                common.append(f"crop={cw}:{ch}:{x}:{y}")
         # transpose=1 = 90° clockwise, =2 = 90° CCW. 180° = transpose,transpose
         # (cheap — two passes over the small image).
         r = self._t_rotation
         if r == 90:
-            parts.append("transpose=1")
+            common.append("transpose=1")
         elif r == 270:
-            parts.append("transpose=2")
+            common.append("transpose=2")
         elif r == 180:
-            parts.append("transpose=1,transpose=1")
-        return ",".join(parts)
+            common.append("transpose=1,transpose=1")
+        preview_only = ["hflip"] if self._t_flip_h else []
+        return ",".join(common), ",".join(preview_only)
 
     def is_phase1(self):
         return self._phase == 1
@@ -1916,7 +2024,197 @@ class _DshowCameraControl:
             pass
 
 
+# ── Discord notifier ───────────────────────────────────────────────────────────
+class DiscordNotifier:
+    """Posts messages (with optional JPG snapshot) to a Discord webhook.
+
+    Sends are fire-and-forget on a daemon thread so the GUI never blocks.
+    URL is loaded from DISCORD_WEBHOOK_FILE and refreshable. Per-key
+    cooldown stops a flapping detector from spamming the channel; pass
+    `force=True` to bypass for test pings."""
+
+    def __init__(self):
+        self._url = _load_discord_webhook()
+        self._last_send_at = {}
+        self._cooldown_s   = float(ALERTS_DEFAULTS["cooldown_seconds"])
+        self._lock         = threading.Lock()
+
+    def url(self) -> str: return self._url
+    def configured(self) -> bool: return self._url.startswith("https://")
+
+    def set_url(self, url: str):
+        url = (url or "").strip()
+        self._url = url
+        try: _save_discord_webhook(url)
+        except OSError: pass
+
+    def refresh(self): self._url = _load_discord_webhook()
+
+    def set_cooldown(self, seconds: float):
+        self._cooldown_s = max(1.0, float(seconds))
+
+    def reset_cooldown(self, key: str = None):
+        with self._lock:
+            if key is None: self._last_send_at.clear()
+            else:           self._last_send_at.pop(key, None)
+
+    def _on_cooldown(self, key: str) -> bool:
+        with self._lock:
+            t = self._last_send_at.get(key, 0.0)
+            now = time.monotonic()
+            if now - t < self._cooldown_s: return True
+            self._last_send_at[key] = now
+            return False
+
+    def notify(self, message: str, image_jpg: bytes = None,
+               cooldown_key: str = None, force: bool = False) -> bool:
+        if not self.configured(): return False
+        if not force and cooldown_key and self._on_cooldown(cooldown_key):
+            return False
+        threading.Thread(target=self._post,
+                         args=(self._url, message, image_jpg),
+                         daemon=True).start()
+        return True
+
+    @staticmethod
+    def _post(url: str, message: str, image_jpg: bytes):
+        try:
+            import urllib.request, uuid
+            payload = {"content": (message or "")[:1900]}
+            if image_jpg:
+                boundary = "----PawCapBoundary" + uuid.uuid4().hex
+                parts = [
+                    f"--{boundary}".encode(),
+                    b'Content-Disposition: form-data; name="payload_json"',
+                    b'Content-Type: application/json',
+                    b'',
+                    json.dumps(payload).encode("utf-8"),
+                    f"--{boundary}".encode(),
+                    b'Content-Disposition: form-data; name="files[0]"; filename="snapshot.jpg"',
+                    b'Content-Type: image/jpeg',
+                    b'',
+                    image_jpg,
+                    f"--{boundary}--".encode(),
+                ]
+                body = b"\r\n".join(parts)
+                req = urllib.request.Request(url, data=body, method="POST")
+                req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+            else:
+                body = json.dumps(payload).encode("utf-8")
+                req = urllib.request.Request(url, data=body, method="POST")
+                req.add_header("Content-Type", "application/json")
+            urllib.request.urlopen(req, timeout=8).read()
+        except Exception as e:
+            try: (LOGS_DIR / "discord_errors.log").open("a", encoding="utf-8").write(
+                f"{datetime.now().isoformat(timespec='seconds')}  {e!r}\n")
+            except Exception: pass
+
+
+# ── Mouse-absence monitor ──────────────────────────────────────────────────────
+class MouseAbsenceMonitor:
+    """Background-subtraction-based absence detector for one camera.
+
+    Frames go in via process(); when the foreground fraction stays under
+    `min_motion_pct` for `absence_seconds`, on_absent(label, jpg_bytes)
+    fires once. When motion returns after an absent period,
+    on_present(label) fires. Sampling is throttled to ~5 Hz so we don't
+    pay MOG2 cost on every preview frame.
+
+    Single-producer: process() is intended to run on the Qt thread that
+    owns the camera panel. Not thread-safe to feed from multiple threads."""
+
+    def __init__(self, label: str):
+        self.label             = label
+        self.absence_seconds   = float(ALERTS_DEFAULTS["absence_seconds"])
+        self.min_motion_pct    = float(ALERTS_DEFAULTS["min_motion_pct"])
+        self.enabled           = False
+        self.on_absent         = None    # callable(label, jpg_bytes_or_None)
+        self.on_present        = None    # callable(label)
+        self._sample_period    = 1.0 / 5.0
+        self._mog              = None
+        self._absent_since     = None
+        self._absent_alerted   = False
+        self._last_sample_at   = 0.0
+        self._last_snapshot    = None
+        self._warmup_until     = 0.0     # MOG2 needs ~1 s to learn the background
+
+    def reset(self):
+        self._mog            = None
+        self._absent_since   = None
+        self._absent_alerted = False
+        self._last_sample_at = 0.0
+        self._warmup_until   = time.monotonic() + 1.5
+
+    def configure(self, *, enabled=None, absence_seconds=None, min_motion_pct=None):
+        if enabled is not None:
+            new_enabled = bool(enabled)
+            if new_enabled and not self.enabled: self.reset()
+            self.enabled = new_enabled
+        if absence_seconds is not None:
+            self.absence_seconds = max(2.0, float(absence_seconds))
+        if min_motion_pct is not None:
+            self.min_motion_pct = max(0.01, float(min_motion_pct))
+
+    def is_absent(self) -> bool: return bool(self._absent_alerted)
+
+    def process(self, frame_bgr):
+        if not self.enabled or frame_bgr is None: return
+        now = time.monotonic()
+        if now - self._last_sample_at < self._sample_period: return
+        self._last_sample_at = now
+        self._last_snapshot  = frame_bgr
+        h, w = frame_bgr.shape[:2]
+        if w > 320:
+            scale = 320.0 / w
+            small = cv2.resize(frame_bgr, (320, max(1, int(h * scale))),
+                               interpolation=cv2.INTER_AREA)
+        else:
+            small = frame_bgr
+        if self._mog is None:
+            self._mog = cv2.createBackgroundSubtractorMOG2(
+                history=500, varThreshold=24, detectShadows=False)
+            self._warmup_until = now + 1.5
+        # Low learning rate so a stationary mouse still registers as
+        # foreground for many minutes, not seconds.
+        mask = self._mog.apply(small, learningRate=0.0008)
+        if now < self._warmup_until: return
+        fg_fraction_pct = float((mask > 127).sum()) * 100.0 / float(mask.size)
+        if fg_fraction_pct < self.min_motion_pct:
+            if self._absent_since is None:
+                self._absent_since = now
+            elif (not self._absent_alerted and
+                  now - self._absent_since >= self.absence_seconds):
+                self._absent_alerted = True
+                self._fire_absent()
+        else:
+            recovered = self._absent_alerted
+            self._absent_since   = None
+            self._absent_alerted = False
+            if recovered and self.on_present:
+                try: self.on_present(self.label)
+                except Exception: pass
+
+    def _fire_absent(self):
+        if not self.on_absent: return
+        snapshot_jpg = None
+        if self._last_snapshot is not None:
+            try:
+                ok, buf = cv2.imencode(".jpg", self._last_snapshot,
+                                       [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                if ok: snapshot_jpg = bytes(buf)
+            except Exception:
+                snapshot_jpg = None
+        try: self.on_absent(self.label, snapshot_jpg)
+        except Exception: pass
+
+
 # ── Recorder ───────────────────────────────────────────────────────────────────
+# Sentinel prefix on a start() error string meaning "the target file already
+# exists" (vs an FFmpeg launch failure). The UI detects this to show a friendly
+# "filename already taken" dialog instead of an FFmpeg error.
+FILE_EXISTS_TAG = "FILE_EXISTS"
+
+
 class Recorder:
     """
     Dual-mode recorder.
@@ -1952,7 +2250,8 @@ class Recorder:
         """Bind to a CameraThread before start() so Phase 1 can use inline mode."""
         self._cam_thread = cam_thread
 
-    def _resolve_path(self, out_dir, suffix_fmt, phase_tag="", phase_position="prefix"):
+    def _resolve_path(self, out_dir, suffix_fmt, phase_tag="", phase_position="prefix",
+                      phase_create_folder=True):
         now = datetime.now()
         try:
             ts = now.strftime(suffix_fmt) if suffix_fmt else ""
@@ -1961,7 +2260,7 @@ class Recorder:
         # Group recordings by day so a `recordings/` folder doesn't grow into
         # one giant flat list. The day folder is created on demand by start().
         day_dir = out_dir / now.strftime("%Y-%m-%d")
-        target_dir = day_dir / phase_tag if phase_tag else day_dir
+        target_dir = day_dir / phase_tag if (phase_tag and phase_create_folder) else day_dir
         if phase_tag and phase_position == "suffix":
             stem = f"{self.label}{ts}_{phase_tag}"
         elif phase_tag:
@@ -1972,9 +2271,18 @@ class Recorder:
 
     def start(self, out_dir, width=DEFAULT_W, height=DEFAULT_H,
               fps=DEFAULT_FPS, bitrate_mbps=8, suffix_fmt="_%Y%m%d_%H%M%S",
-              metadata=None, phase_tag="", phase_position="prefix"):
+              metadata=None, phase_tag="", phase_position="prefix",
+              phase_create_folder=True):
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
-        self.path, ts = self._resolve_path(out_dir, suffix_fmt, phase_tag, phase_position)
+        self.path, ts = self._resolve_path(out_dir, suffix_fmt, phase_tag,
+                                            phase_position, phase_create_folder)
+        # Refuse to record over an existing file. Without this, Phase 2's `-y`
+        # would silently overwrite and Phase 1's muxer would stall on the
+        # overwrite prompt. This is the authoritative guard (checks the exact
+        # path about to be written); the UI also pre-flights for a cleaner
+        # message, but this catches any path that slipped past it.
+        if self.path.exists():
+            return False, f"{FILE_EXISTS_TAG}:{self.path}"
         # _resolve_path returns a path inside a YYYY-MM-DD subfolder; make
         # sure that subfolder exists before FFmpeg tries to write into it.
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -2002,9 +2310,11 @@ class Recorder:
         # ── Phase 2: legacy subprocess (OpenCV fallback only) ────────────────
         self._inline = False
         log_path = LOGS_DIR / f"{self.label}_{ts}_ffmpeg.log"
-        # See Phase-1 record branch in CameraThread._open_ffmpeg_capture for
-        # why `+use_metadata_tags` is gated on metadata presence.
-        movflags = "+faststart+use_metadata_tags" if meta else "+faststart"
+        # Fragmented mp4 (see Phase-1 branch for rationale): kill-resilient
+        # container where every keyframe ends a self-contained moof+mdat
+        # fragment, so an ungraceful exit can't lose the recording.
+        movflags = ("+frag_keyframe+empty_moov+default_base_moof"
+                    + ("+use_metadata_tags" if meta else ""))
         common   = ["-pix_fmt", "yuv420p", "-profile:v", "main",
                     "-movflags", movflags]
         meta_args = []
@@ -3051,6 +3361,18 @@ class CameraPanel(QWidget):
         self._working_distance_mm = None
         self._calib_ref_length_mm = None
         self._calib_ref_pixels    = None
+        # Mouse-absence alerts. Notifier is injected by MainWindow so it can
+        # be a single shared instance (one webhook URL + one cooldown table).
+        # Per-cam toggle persists in profile; global config (threshold,
+        # absence-seconds, etc.) lives in alerts_config.json.
+        self._alert_enabled = True
+        self._monitor = MouseAbsenceMonitor(label)
+        self._monitor.on_absent  = self._on_mouse_absent
+        self._monitor.on_present = self._on_mouse_present
+        self._notifier = None         # set by MainWindow.set_notifier_for(panel)
+        self._alerts_active = False   # reflects (global enable AND per-cam) AND live
+        self._while_recording_only = bool(ALERTS_DEFAULTS["while_recording_only"])
+        self._send_recovery        = bool(ALERTS_DEFAULTS["send_recovery"])
         self._load_pin()
         self._build()
 
@@ -3067,6 +3389,14 @@ class CameraPanel(QWidget):
         # Header
         hdr = QHBoxLayout()
         self.dot = QLabel("●"); self.dot.setStyleSheet(f"color:{TEXT_DIM};font-size:11px;")
+        # Mouse-absence alert indicator. Tooltip explains state; click toggles
+        # this camera's per-cam enable. Hidden when alerts are globally off.
+        self.alert_dot = QLabel("◉")
+        self.alert_dot.setStyleSheet(f"color:{TEXT_DIM};font-size:10px;")
+        self.alert_dot.setToolTip("Mouse-absence alerts: off")
+        self.alert_dot.setCursor(QCursor(Qt.PointingHandCursor))
+        self.alert_dot.mousePressEvent = lambda ev: self._toggle_alert_enabled()
+        self.alert_dot.setVisible(False)
         self.title_lbl = QLabel(self.label)
         self.title_lbl.setStyleSheet(f"color:{TEXT_HI};font:bold 13px {FONT};letter-spacing:2px;")
         self.rec_lbl = QLabel("● REC")
@@ -3119,7 +3449,8 @@ class CameraPanel(QWidget):
             border:none;font:bold 9px {FONT};letter-spacing:1px;}}
             QPushButton:hover{{color:{ACCENT2};}}""")
         self.cal_btn.clicked.connect(self._open_calibration_dialog)
-        hdr.addWidget(self.dot); hdr.addSpacing(4)
+        hdr.addWidget(self.dot); hdr.addSpacing(2)
+        hdr.addWidget(self.alert_dot); hdr.addSpacing(4)
         hdr.addWidget(self.title_lbl); hdr.addStretch()
         hdr.addWidget(self.timer_lbl); hdr.addSpacing(6)
         hdr.addWidget(self.rec_lbl); hdr.addSpacing(8)
@@ -3279,7 +3610,17 @@ class CameraPanel(QWidget):
             QPushButton:hover{{border-color:{ACCENT2};color:{TEXT_HI};}}""")
         self.dir_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.dir_btn.clicked.connect(self._choose_dir)
+        # One-shot "sync all cameras to this folder" — copies this camera's
+        # folder to every camera. Cameras stay independently changeable after.
+        self.sync_dirs_btn = QPushButton("⇲ all")
+        self.sync_dirs_btn.setToolTip("Set all cameras to save to this camera's folder.")
+        self.sync_dirs_btn.setFixedWidth(52)
+        self.sync_dirs_btn.setStyleSheet(f"""QPushButton{{color:{TEXT_MED};background:#0C0C1E;
+            border:1px solid {BORDER};border-radius:3px;padding:3px 6px;font:10px {FONT};}}
+            QPushButton:hover{{border-color:{ACCENT2};color:{TEXT_HI};}}""")
+        self.sync_dirs_btn.clicked.connect(self._sync_all_to_my_dir)
         save_row.addWidget(save_lbl); save_row.addWidget(self.dir_btn)
+        save_row.addWidget(self.sync_dirs_btn)
         root.addLayout(save_row)
 
         # Filename row
@@ -3312,12 +3653,6 @@ class CameraPanel(QWidget):
         self.suffix_preview = QLabel()
         self.suffix_preview.setStyleSheet(f"color:{TEXT_DIM};font:9px {FONT};")
 
-        def _update_suffix_preview():
-            try: s = datetime.now().strftime(self._suffix_fmt)
-            except: s = "(invalid)"
-            name = self.name_edit.text().strip() or self.label.replace(" ","_")
-            self.suffix_preview.setText(f"{name}{s}.mp4")
-
         def _on_suffix_combo(idx):
             fmt = self.suffix_combo.itemData(idx)
             if fmt is None:
@@ -3326,15 +3661,15 @@ class CameraPanel(QWidget):
             else:
                 self.suffix_edit.setVisible(False)
                 self._suffix_fmt = fmt
-            _update_suffix_preview()
+            self._update_path_preview()
 
         self.suffix_combo.currentIndexChanged.connect(_on_suffix_combo)
-        self.suffix_edit.textChanged.connect(lambda t: (setattr(self,"_suffix_fmt",t), _update_suffix_preview()))
+        self.suffix_edit.textChanged.connect(lambda t: (setattr(self,"_suffix_fmt",t), self._update_path_preview()))
         self.name_edit.textChanged.connect(lambda t: (
             setattr(self,"_filename", t.strip() or self.label.replace(" ","_")),
-            _update_suffix_preview()
+            self._update_path_preview()
         ))
-        _update_suffix_preview()
+        self._update_path_preview()
 
         name_row.addWidget(name_lbl); name_row.addWidget(self.name_edit)
         name_row.addWidget(self.suffix_combo); name_row.addWidget(self.suffix_edit)
@@ -3428,6 +3763,21 @@ class CameraPanel(QWidget):
             self.dir_btn.setText("📁  " + _short_path(self._out_dir))
             self.dir_btn.setToolTip(folder)
 
+    def set_out_dir(self, path):
+        """Set the output folder programmatically. Reused by the per-camera
+        '⇲ all' sync. Updates the button label/tooltip + path preview."""
+        self._out_dir = Path(path)
+        self.dir_btn.setText("📁  " + _short_path(self._out_dir))
+        self.dir_btn.setToolTip(str(self._out_dir))
+        if hasattr(self, "_update_path_preview"):
+            self._update_path_preview()
+
+    def _sync_all_to_my_dir(self):
+        """Push this camera's folder to every camera (one-shot)."""
+        win = self.window()
+        if hasattr(win, "_sync_all_to_folder"):
+            win._sync_all_to_folder(self._out_dir)
+
     def _open_preview(self):
         if not self._live: return
         if self._preview_win is None or not self._preview_win.isVisible():
@@ -3516,11 +3866,11 @@ class CameraPanel(QWidget):
 
     def _selected_cam_index(self):
         d = self.dev_combo.currentData()
-        return d[0] if d else self.cam_index
+        return d[0] if isinstance(d, (tuple, list)) else self.cam_index
 
     def _selected_device_id(self):
         d = self.dev_combo.currentData()
-        return d[1] if d else None
+        return d[1] if isinstance(d, (tuple, list)) else None
 
     # ── Probe / Diagnose ───────────────────────────────────────────────────────
     def _run_diagnose(self):
@@ -3610,9 +3960,16 @@ class CameraPanel(QWidget):
             1 for i in range(sel_pos)
             if _re.sub(r'^\[\d+\]\s*', '', self.dev_combo.itemText(i)).split(' [')[0].strip() == sel_base
         )
+        # dev_id is the device's unique dshow 'Alternative name' path (set by
+        # enumerate_cameras for USB cameras). Hand it to the thread so FFmpeg
+        # opens this exact camera by path — not by name + index, which can
+        # resolve to a different physical camera when identical models are
+        # present. ff_instance is retained only as a legacy fallback.
+        dshow_path = dev_id if (dev_id and ("@device" in dev_id or "usb#" in dev_id.lower())) else ""
         self.thread = CameraThread(idx, props, auto_modes,
                                    width=self._cap_w, height=self._cap_h, fps=self._cap_fps,
-                                   device_name=sel_base, ff_instance=ff_instance)
+                                   device_name=sel_base, ff_instance=ff_instance,
+                                   dshow_path=dshow_path)
         self.thread.recorder_ref = None  # set when recording starts
         self.thread.frame_ready.connect(self._on_frame)
         self.thread.camera_error.connect(self._on_error)
@@ -3643,6 +4000,7 @@ class CameraPanel(QWidget):
         self.sync_btn.setEnabled(True)
         self.sync_btn.setToolTip("Read actual current values from camera hardware")
         QTimer.singleShot(300, self._update_stream_format_tip)
+        self._refresh_alerts_active()
 
     def _update_stream_format_tip(self):
         if not (self.thread and self._live): return
@@ -3680,6 +4038,7 @@ class CameraPanel(QWidget):
         self.cam_rec_btn.setText("⏺  RECORD THIS CAM")
         self.cam_rec_btn.setStyleSheet(self._rec_btn_style(False))
         self.sync_btn.setEnabled(False)
+        self._refresh_alerts_active()
 
     def _on_error(self, msg):
         self._live = False; self.canvas.setText(f"ERROR\n{msg}")
@@ -3687,6 +4046,86 @@ class CameraPanel(QWidget):
         self.conn_btn.setStyleSheet(self._btn(ACCENT2,"#0D2040"))
         self.dev_combo.setEnabled(True); self.refresh_btn.setEnabled(True)
         self.cam_rec_btn.setEnabled(False)
+
+    # ── Mouse-absence alerts ──────────────────────────────────────────────────
+    def set_notifier(self, notifier):
+        """Wire the shared DiscordNotifier to this panel."""
+        self._notifier = notifier
+
+    def apply_alert_global(self, cfg: dict):
+        """Apply current global alert config: thresholds, master enable, and
+        whether the monitor should run only during RECORD ALL."""
+        self._monitor.configure(
+            absence_seconds = cfg.get("absence_seconds"),
+            min_motion_pct  = cfg.get("min_motion_pct"),
+        )
+        self._while_recording_only = bool(cfg.get("while_recording_only"))
+        self._send_recovery        = bool(cfg.get("send_recovery", True))
+        # Master enable lives on MainWindow; refresh active flag now.
+        self._refresh_alerts_active()
+
+    def _global_alerts_on(self) -> bool:
+        w = self.window()
+        return bool(getattr(w, "_alerts_global_enabled", False))
+
+    def _is_recording_global(self) -> bool:
+        w = self.window()
+        return bool(getattr(w, "is_recording", False))
+
+    def _refresh_alerts_active(self):
+        """Recompute whether the absence monitor should be running. Called from
+        connect/disconnect, global toggles, recording start/stop."""
+        active = (self._global_alerts_on() and self._alert_enabled and self._live)
+        if self._while_recording_only:
+            active = active and self._is_recording_global()
+        self._alerts_active = active
+        self._monitor.configure(enabled=active)
+        self._update_alert_dot()
+
+    def _toggle_alert_enabled(self):
+        self._alert_enabled = not self._alert_enabled
+        self._refresh_alerts_active()
+        w = self.window()
+        if hasattr(w, "_update_alerts_status"):
+            w._update_alerts_status()
+
+    def _update_alert_dot(self):
+        if not hasattr(self, "alert_dot"): return
+        # Hide the dot when alerts are globally off — no signal to convey.
+        if not self._global_alerts_on():
+            self.alert_dot.setVisible(False); return
+        self.alert_dot.setVisible(True)
+        if not self._alert_enabled:
+            color, tip, glyph = TEXT_DIM, "Alerts disabled for this camera (click to enable)", "○"
+        elif not self._live:
+            color, tip, glyph = TEXT_DIM, "Camera not connected — alerts idle", "◌"
+        elif self._while_recording_only and not self._is_recording_global():
+            color, tip, glyph = TEXT_DIM, "Alerts armed (waiting for RECORD ALL)", "◌"
+        elif self._monitor.is_absent():
+            color, tip, glyph = DANGER, "MOUSE ABSENT", "●"
+        else:
+            color, tip, glyph = SUCCESS, "Mouse present — monitoring", "●"
+        self.alert_dot.setText(glyph)
+        self.alert_dot.setStyleSheet(f"color:{color};font-size:10px;")
+        self.alert_dot.setToolTip(tip + "  (click to toggle this camera)")
+
+    def _on_mouse_absent(self, label, snapshot_jpg):
+        self._update_alert_dot()
+        if self._notifier is None: return
+        ts = datetime.now().strftime("%H:%M:%S")
+        secs = int(self._monitor.absence_seconds)
+        msg = (f"⚠  **{label}** — no mouse detected for {secs}s "
+               f"(min motion {self._monitor.min_motion_pct:.2f}% not seen)\n"
+               f"`{ts}`")
+        self._notifier.notify(msg, image_jpg=snapshot_jpg,
+                              cooldown_key=f"absent:{label}")
+
+    def _on_mouse_present(self, label):
+        self._update_alert_dot()
+        if not self._send_recovery or self._notifier is None: return
+        ts = datetime.now().strftime("%H:%M:%S")
+        msg = f"✅  **{label}** — mouse back  `{ts}`"
+        self._notifier.notify(msg, cooldown_key=f"present:{label}")
 
     # ── Frame handling ─────────────────────────────────────────────────────────
     def _on_frame(self, frame):
@@ -3697,6 +4136,8 @@ class CameraPanel(QWidget):
         if self._preview_win and self._preview_win.isVisible():
             self._preview_win.update_frame(display)
         self._paint_canvas(self.canvas, display)
+        if self._alerts_active and self._monitor is not None:
+            self._monitor.process(display)
 
     def _fit_frame(self, frame, cw, ch):
         fh, fw = frame.shape[:2]
@@ -3750,7 +4191,7 @@ class CameraPanel(QWidget):
 
     def _toggle_flip(self):
         self._flip_h = self.flip_btn.isChecked()
-        self.flip_btn.setText("⇆ FLIP ●" if self._flip_h else "⇆ FLIP")
+        self.flip_btn.setText("⇆ FLIP ● (preview)" if self._flip_h else "⇆ FLIP")
         self._push_transforms_to_thread()
 
     def _cycle_rotation(self):
@@ -3859,6 +4300,29 @@ class CameraPanel(QWidget):
                 md["pixelpaws_ref_pixels"] = f"{self._calib_ref_pixels:.2f}"
         return md
 
+    def _update_path_preview(self):
+        """Render the per-camera path preview line based on the current
+        filename, suffix, and the global phase tag/position/folder toggle.
+        Falls back to the no-phase format when the panel isn't yet parented
+        to MainWindow (e.g., during initial _build)."""
+        try:
+            ts = datetime.now().strftime(self._suffix_fmt) if self._suffix_fmt else ""
+        except Exception:
+            ts = "(invalid)"
+        name = (self.name_edit.text().strip() if hasattr(self, "name_edit")
+                else self._filename) or self.label.replace(" ", "_")
+        win = self.window()
+        tag    = win.current_phase_tag()           if hasattr(win, "current_phase_tag")           else ""
+        pos    = win.current_phase_position()      if hasattr(win, "current_phase_position")      else "prefix"
+        create = (win.current_phase_create_folder() if hasattr(win, "current_phase_create_folder")
+                  else True)
+        if tag:
+            stem = f"{name}{ts}_{tag}" if pos == "suffix" else f"{tag}_{name}{ts}"
+            preview = f"{tag}/{stem}.mp4" if create else f"{stem}.mp4"
+        else:
+            preview = f"{name}{ts}.mp4"
+        self.suffix_preview.setText(preview)
+
     def _push_transforms_to_thread(self):
         """Forward current panel transform state to the capture thread.
         Triggers an FFmpeg respawn (~0.5 s preview gap) if anything changed."""
@@ -3956,11 +4420,40 @@ class CameraPanel(QWidget):
             self.cam_rec_btn.setEnabled(True)
             self._do_start_rec()
 
+    def _peek_record_target(self):
+        """Resolve the path start_rec() would write to, with no side effects.
+        Used for the filename-collision pre-flight. Returns a Path, or None
+        when the panel can't record (not live / no recorder yet)."""
+        if not self._live or not self.recorder:
+            return None
+        win = self.window()
+        tag    = win.current_phase_tag()           if hasattr(win, "current_phase_tag")           else ""
+        pos    = win.current_phase_position()      if hasattr(win, "current_phase_position")      else "prefix"
+        create = win.current_phase_create_folder() if hasattr(win, "current_phase_create_folder") else True
+        self.recorder.label = self._filename or self.label.replace(" ", "_")
+        path, _ = self.recorder._resolve_path(self._out_dir, self._suffix_fmt,
+                                              tag, pos, create)
+        return path
+
     def _do_start_rec(self):
+        # Pre-flight: refuse a filename that's already taken, with a clear
+        # message (rather than letting it surface as an FFmpeg failure).
+        target = self._peek_record_target()
+        if target is not None and target.exists():
+            self._warn_file_exists(str(target))
+            return
         ok, err = self.start_rec()
         if not ok:
-            QMessageBox.critical(self, "Record Failed",
-                f"FFmpeg could not start ({_GPU_CODEC}).\n\n{err}\n\nCheck logs in:\n{LOGS_DIR}")
+            if err.startswith(FILE_EXISTS_TAG + ":"):
+                self._warn_file_exists(err.split(":", 1)[1])
+            else:
+                QMessageBox.critical(self, "Record Failed",
+                    f"FFmpeg could not start ({_GPU_CODEC}).\n\n{err}\n\nCheck logs in:\n{LOGS_DIR}")
+
+    def _warn_file_exists(self, path):
+        QMessageBox.warning(self, "Filename Already Taken",
+            f"A recording already exists at:\n\n{path}\n\n"
+            "Change the File name, the suffix, or the phase tag and try again.")
 
     def start_rec(self):
         if not self._live: return False, ""
@@ -3990,11 +4483,14 @@ class CameraPanel(QWidget):
         win = self.window()
         phase_tag = win.current_phase_tag() if hasattr(win, "current_phase_tag") else ""
         phase_pos = win.current_phase_position() if hasattr(win, "current_phase_position") else "prefix"
+        phase_create = (win.current_phase_create_folder()
+                        if hasattr(win, "current_phase_create_folder") else True)
         ok, err = self.recorder.start(self._out_dir, width=self._cap_w, height=self._cap_h,
                                       fps=rec_fps, bitrate_mbps=self._cap_bitrate,
                                       suffix_fmt=self._suffix_fmt,
                                       metadata=self._calibration_metadata(),
-                                      phase_tag=phase_tag, phase_position=phase_pos)
+                                      phase_tag=phase_tag, phase_position=phase_pos,
+                                      phase_create_folder=phase_create)
         if ok:
             # recorder_ref is still set so the Phase-2 capture loop can write()
             # frames to the recorder's own subprocess.  In Phase 1 the recorder
@@ -4061,6 +4557,7 @@ class CameraPanel(QWidget):
         data["_working_distance_mm"] = self._working_distance_mm
         data["_calib_ref_length_mm"] = self._calib_ref_length_mm
         data["_calib_ref_pixels"]    = self._calib_ref_pixels
+        data["_alert_enabled"]       = bool(self._alert_enabled)
         data["_pawcapture_version"]  = PAWCAPTURE_VERSION
         return data
 
@@ -4078,9 +4575,11 @@ class CameraPanel(QWidget):
         #   3. Leave combo untouched, don't poison camera_slots.json.
         matched = False
         if saved_dev_id:
+            # itemData is normally an (idx, dev_id) tuple, but a not-yet-enumerated
+            # panel carries an int placeholder — guard so we never subscript an int.
             candidates = [i for i in range(self.dev_combo.count())
-                          if (self.dev_combo.itemData(i) and
-                              self.dev_combo.itemData(i)[1] == saved_dev_id)]
+                          if (isinstance(self.dev_combo.itemData(i), (tuple, list))
+                              and self.dev_combo.itemData(i)[1] == saved_dev_id)]
             if len(candidates) == 1:
                 self.dev_combo.setCurrentIndex(candidates[0]); matched = True
             # len > 1 → ambiguous, intentionally skip and use name-slot below
@@ -4127,7 +4626,7 @@ class CameraPanel(QWidget):
         if "_flip_h" in data:
             self._flip_h = bool(data["_flip_h"])
             self.flip_btn.setChecked(self._flip_h)
-            self.flip_btn.setText("⇆ FLIP ●" if self._flip_h else "⇆ FLIP")
+            self.flip_btn.setText("⇆ FLIP ● (preview)" if self._flip_h else "⇆ FLIP")
         if "_crop_rect" in data:
             cr = data["_crop_rect"]
             if cr and len(cr) == 4 and all(int(v) >= 0 for v in cr) and int(cr[2]) > 0 and int(cr[3]) > 0:
@@ -4157,6 +4656,9 @@ class CameraPanel(QWidget):
             if v != "_skip":
                 setattr(self, _k, v)
         self._update_calib_btn_label()
+        if "_alert_enabled" in data:
+            self._alert_enabled = bool(data["_alert_enabled"])
+            self._refresh_alerts_active()
         auto_modes = data.get("_auto_modes", {})
         for name, val in data.items():
             if name.startswith("_"): continue
@@ -4228,7 +4730,7 @@ _HELP_HTML = """
 
 <h2>Camera panel buttons (header row)</h2>
 <table>
-  <tr><td><b>⇆ FLIP</b></td><td>Horizontal mirror. Toggle.</td></tr>
+  <tr><td><b>⇆ FLIP</b></td><td>Horizontal mirror, <i>preview only</i>. Recording is unaffected.</td></tr>
   <tr><td><b>✂ CROP</b></td><td>Drag a rectangle on the source frame. Recording uses cropped pixels.</td></tr>
   <tr><td><b>📏 CAL</b></td><td>Calibrate mm-per-pixel against a known-length object. See below.</td></tr>
   <tr><td><b>↻ 0°</b></td><td>Rotate preview 90° clockwise per click.</td></tr>
@@ -4464,6 +4966,248 @@ class _OfrsConfigDialog(QDialog):
         }
 
 
+class _AlertsConfigDialog(QDialog):
+    """Configure Discord mouse-absence alerts. Webhook URL is saved to its
+    own file (DISCORD_WEBHOOK_FILE). Thresholds + master enable persist to
+    ALERTS_CONFIG_FILE. Per-camera enable is on the panel itself (profile).
+    """
+
+    def __init__(self, parent, cfg, webhook_url, panels):
+        super().__init__(parent)
+        from PyQt5.QtWidgets import QCheckBox
+        self.setWindowTitle("Mouse-absence alerts")
+        self.resize(620, 460)
+        self._cfg = dict(cfg or {})
+        self._panels = list(panels or [])
+        self.setStyleSheet(f"QDialog{{background:{BG_DEEP};color:{TEXT_HI};}}"
+                           f"QLabel{{color:{TEXT_HI};font:11px {FONT};}}")
+
+        v = QVBoxLayout(self); v.setContentsMargins(14, 12, 14, 12); v.setSpacing(8)
+        title = QLabel("Discord notification when a mouse leaves the frame")
+        title.setStyleSheet(f"color:{ACCENT};font:bold 12px {FONT};letter-spacing:1px;")
+        v.addWidget(title)
+
+        # Webhook row
+        wh_row = QHBoxLayout(); wh_row.setSpacing(6)
+        wh_row.addWidget(QLabel("Webhook URL:"))
+        self.url_edit = QLineEdit(webhook_url or "")
+        self.url_edit.setPlaceholderText("https://discord.com/api/webhooks/...")
+        self.url_edit.setStyleSheet(f"""QLineEdit{{background:#0C0C1E;color:{TEXT_MED};
+            border:1px solid {BORDER};border-radius:3px;padding:4px 8px;font:10px {FONT};}}
+            QLineEdit:focus{{border-color:{ACCENT};color:{TEXT_HI};}}""")
+        wh_row.addWidget(self.url_edit)
+        test_btn = QPushButton("Test"); test_btn.setFixedHeight(26)
+        test_btn.setToolTip("Send a one-off test ping to the webhook")
+        test_btn.setStyleSheet(f"""QPushButton{{color:{TEXT_HI};background:{BG_MID};
+            border:1px solid {BORDER};border-radius:3px;padding:2px 12px;font:10px {FONT};}}
+            QPushButton:hover{{border-color:{ACCENT};}}""")
+        test_btn.clicked.connect(self._send_test)
+        wh_row.addWidget(test_btn)
+        v.addLayout(wh_row)
+        self.test_status_lbl = QLabel("")
+        self.test_status_lbl.setStyleSheet(f"color:{TEXT_DIM};font:9px {FONT};")
+        v.addWidget(self.test_status_lbl)
+
+        # Master enable
+        self.enable_cb = QCheckBox("Enable mouse-absence alerts")
+        self.enable_cb.setChecked(bool(self._cfg.get("enabled", True)))
+        self.enable_cb.setStyleSheet(f"QCheckBox{{color:{TEXT_HI};font:11px {FONT};}}")
+        v.addWidget(self.enable_cb)
+
+        # Threshold grid
+        grid = QGridLayout(); grid.setContentsMargins(0, 4, 0, 4); grid.setSpacing(8)
+        def _spin(value, mn, mx, dec=0, suffix=""):
+            if dec > 0:
+                s = QDoubleSpinBox()
+                s.setDecimals(dec)
+                s.setSingleStep(0.1 if dec >= 1 else 1.0)
+            else:
+                s = QSpinBox()
+            s.setRange(mn, mx); s.setValue(value)
+            s.setFixedWidth(120)
+            if suffix: s.setSuffix(suffix)
+            s.setStyleSheet(f"""QSpinBox,QDoubleSpinBox{{background:#0C0C1E;color:{TEXT_HI};
+                border:1px solid {BORDER};border-radius:3px;padding:2px 6px;font:10px {FONT};}}""")
+            return s
+        grid.addWidget(QLabel("Absence threshold:"),  0, 0)
+        self.absence_spin = _spin(int(self._cfg.get("absence_seconds", 15)), 2, 600, suffix=" s")
+        grid.addWidget(self.absence_spin, 0, 1)
+        grid.addWidget(QLabel("Min motion to count as 'present':"), 1, 0)
+        self.motion_spin = _spin(float(self._cfg.get("min_motion_pct", 0.5)), 0.05, 20.0,
+                                 dec=2, suffix=" %")
+        grid.addWidget(self.motion_spin, 1, 1)
+        grid.addWidget(QLabel("Cooldown between Discord posts:"), 2, 0)
+        self.cooldown_spin = _spin(int(self._cfg.get("cooldown_seconds", 60)), 5, 3600, suffix=" s")
+        grid.addWidget(self.cooldown_spin, 2, 1)
+        grid.setColumnStretch(2, 1)
+        v.addLayout(grid)
+
+        self.recovery_cb = QCheckBox("Send a 'mouse back' message on recovery")
+        self.recovery_cb.setChecked(bool(self._cfg.get("send_recovery", True)))
+        self.recovery_cb.setStyleSheet(f"QCheckBox{{color:{TEXT_HI};font:11px {FONT};}}")
+        v.addWidget(self.recovery_cb)
+
+        self.while_rec_cb = QCheckBox("Only monitor while RECORD ALL is active")
+        self.while_rec_cb.setChecked(bool(self._cfg.get("while_recording_only", False)))
+        self.while_rec_cb.setStyleSheet(f"QCheckBox{{color:{TEXT_HI};font:11px {FONT};}}")
+        v.addWidget(self.while_rec_cb)
+
+        # Recording-lifecycle notifications. Independent of mouse-absence
+        # monitoring — these fire at session start/stop and on a periodic
+        # cadence regardless of motion.
+        v.addSpacing(4)
+        rec_title = QLabel("Recording session pings")
+        rec_title.setStyleSheet(f"color:{ACCENT};font:bold 11px {FONT};letter-spacing:1px;")
+        v.addWidget(rec_title)
+        self.notify_start_cb = QCheckBox("Notify when RECORD ALL starts")
+        self.notify_start_cb.setChecked(bool(self._cfg.get("notify_on_record_start", True)))
+        self.notify_start_cb.setStyleSheet(f"QCheckBox{{color:{TEXT_HI};font:11px {FONT};}}")
+        v.addWidget(self.notify_start_cb)
+        self.notify_stop_cb = QCheckBox("Notify when RECORD ALL stops")
+        self.notify_stop_cb.setChecked(bool(self._cfg.get("notify_on_record_stop", True)))
+        self.notify_stop_cb.setStyleSheet(f"QCheckBox{{color:{TEXT_HI};font:11px {FONT};}}")
+        v.addWidget(self.notify_stop_cb)
+        per_row = QHBoxLayout(); per_row.setSpacing(8)
+        per_row.addWidget(QLabel("Periodic ping during recording every:"))
+        self.periodic_spin = _spin(int(self._cfg.get("periodic_minutes", 0)),
+                                   0, 1440, suffix=" min")
+        self.periodic_spin.setToolTip("0 = off. Useful for long unattended sessions.")
+        per_row.addWidget(self.periodic_spin)
+        per_row.addWidget(QLabel("(0 = off)"))
+        per_row.addStretch()
+        v.addLayout(per_row)
+
+        # Per-camera enable
+        v.addSpacing(4)
+        v.addWidget(QLabel("Per-camera enable:"))
+        per_cam = QHBoxLayout(); per_cam.setSpacing(14)
+        self._panel_cbs = []
+        for p in self._panels:
+            cb = QCheckBox(p.label)
+            cb.setChecked(bool(p._alert_enabled))
+            cb.setStyleSheet(f"QCheckBox{{color:{TEXT_MED};font:10px {FONT};}}")
+            per_cam.addWidget(cb)
+            self._panel_cbs.append((p, cb))
+        per_cam.addStretch()
+        v.addLayout(per_cam)
+
+        desc = QLabel(
+            "Detection: low foreground motion in the preview for the full "
+            "absence threshold triggers a Discord post (with snapshot). "
+            "Cooldown stops a flapping signal from spamming. The webhook URL "
+            "is stored in ~/PawCapture/discord_webhook.txt — keep it private."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"color:{TEXT_MED};font:10px {FONT};")
+        v.addWidget(desc)
+        v.addStretch()
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+
+    def _send_test(self):
+        url = self.url_edit.text().strip()
+        if not url.startswith("https://"):
+            self.test_status_lbl.setText("Webhook URL must start with https://")
+            self.test_status_lbl.setStyleSheet(f"color:{DANGER};font:9px {FONT};")
+            return
+        # Don't mutate the live notifier's URL until the dialog is accepted —
+        # use a transient notifier and assign the URL directly so set_url's
+        # disk write doesn't fire before the user clicks OK.
+        n = DiscordNotifier()
+        n._url = url
+        ok = n.notify("PawCapture test ping ✅", force=True)
+        if ok:
+            self.test_status_lbl.setText("Test ping sent — check Discord.")
+            self.test_status_lbl.setStyleSheet(f"color:{SUCCESS};font:9px {FONT};")
+        else:
+            self.test_status_lbl.setText("Could not send (URL not configured?)")
+            self.test_status_lbl.setStyleSheet(f"color:{DANGER};font:9px {FONT};")
+
+    def chosen(self):
+        cfg = {
+            "enabled":              self.enable_cb.isChecked(),
+            "absence_seconds":      int(self.absence_spin.value()),
+            "min_motion_pct":       float(self.motion_spin.value()),
+            "cooldown_seconds":     int(self.cooldown_spin.value()),
+            "send_recovery":        self.recovery_cb.isChecked(),
+            "while_recording_only": self.while_rec_cb.isChecked(),
+            "notify_on_record_start": self.notify_start_cb.isChecked(),
+            "notify_on_record_stop":  self.notify_stop_cb.isChecked(),
+            "periodic_minutes":       int(self.periodic_spin.value()),
+        }
+        per_cam = [(p, cb.isChecked()) for p, cb in self._panel_cbs]
+        return self.url_edit.text().strip(), cfg, per_cam
+
+
+# ── GPU usage poller ───────────────────────────────────────────────────────────
+class _GpuPollThread(QThread):
+    """Polls system-wide GPU utilization (sum across all GPU engines) on a
+    background thread and emits the percentage every ~3 s.
+
+    Why on a thread: the only Windows-portable way that covers Intel/QSV +
+    AMD + NVIDIA is `Get-Counter '\\GPU Engine(*)\\Utilization Percentage'`,
+    which spawns powershell.exe and takes ~1 s/call. Calling that on the
+    GUI thread would cause visible hitches. nvidia-smi is faster but only
+    sees the discrete card — useless on this rig (encoding goes through
+    Intel QSV which lives on the iGPU). So we always use Get-Counter.
+
+    Emits gpu_pct = -1 when the call fails or no GPU counter is available."""
+
+    gpu_pct = pyqtSignal(float)
+
+    _PS_CMD = (
+        "$s = (Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -EA 0)"
+        ".CounterSamples | Where-Object CookedValue -gt 0 | "
+        "Measure-Object CookedValue -Sum | Select-Object -ExpandProperty Sum; "
+        "if ($s -eq $null) { 0 } else { [math]::Round($s,1) }"
+    )
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._running = True
+        self._available = None   # tri-state: None=unknown, True/False after first call
+
+    def stop(self):
+        self._running = False
+
+    def _poll_once(self) -> float:
+        try:
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", self._PS_CMD],
+                capture_output=True, text=True, timeout=8,
+                creationflags=0x08000000 if sys.platform == "win32" else 0,
+            )
+            if r.returncode != 0:
+                return -1.0
+            v = (r.stdout or "").strip()
+            if not v:
+                return -1.0
+            # Cap at 100 — sum across engines can briefly exceed (rare).
+            return min(100.0, float(v))
+        except Exception:
+            return -1.0
+
+    def run(self):
+        # First poll determines availability. If it fails, signal once and
+        # idle (so the GUI knows to hide the GPU label).
+        first = self._poll_once()
+        self._available = first >= 0
+        self.gpu_pct.emit(first)
+        if not self._available:
+            return
+        # 3 s cadence — enough resolution for a status indicator without
+        # spawning powershell.exe too often.
+        while self._running:
+            for _ in range(30):  # 3 s in 100 ms increments for clean shutdown
+                if not self._running: return
+                self.msleep(100)
+            v = self._poll_once()
+            if not self._running: return
+            self.gpu_pct.emit(v)
+
+
 # ── Main Window ────────────────────────────────────────────────────────────────
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -4487,6 +5231,13 @@ class MainWindow(QMainWindow):
         self._ofrs_cfg          = _load_ofrs_config()
         self._ofrs_pre_snapshot = set()
         self._ofrs_session_info = []  # populated at stop, used by manifest writer
+        # Mouse-absence alerts. Notifier is shared across all panels so the
+        # cooldown table is global. Global config (thresholds, master switch)
+        # is loaded once; per-cam enable lives in the profile.
+        self._alerts_cfg            = _load_alerts_config()
+        self._alerts_global_enabled = bool(self._alerts_cfg.get("enabled", True))
+        self.notifier = DiscordNotifier()
+        self.notifier.set_cooldown(self._alerts_cfg.get("cooldown_seconds", 60))
         PROFILES_DIR.mkdir(parents=True, exist_ok=True)
         RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -4644,16 +5395,31 @@ class MainWindow(QMainWindow):
                 selection-background-color:{BORDER};}}""")
         self.phase_pos_combo.addItem("Prefix", userData="prefix")
         self.phase_pos_combo.addItem("Suffix", userData="suffix")
+        # Whether the phase tag should also create a subfolder under the day
+        # folder. When off, the tag still appears in the filename but recordings
+        # all land in `recordings/YYYY-MM-DD/` directly. Default on (matches
+        # legacy behavior).
+        from PyQt5.QtWidgets import QCheckBox as _QCheckBox
+        self.phase_folder_cb = _QCheckBox("Folder")
+        self.phase_folder_cb.setChecked(True)
+        self.phase_folder_cb.setToolTip(
+            "On: phase tag becomes a subfolder under the day folder.\n"
+            "Off: phase tag only appears in the filename; everything stays in the day folder.")
+        self.phase_folder_cb.setStyleSheet(
+            f"QCheckBox{{color:{TEXT_MED};font:10px {FONT};}}"
+            f"QCheckBox:hover{{color:{ACCENT};}}")
         self.phase_preview_lbl = QLabel("")
         self.phase_preview_lbl.setStyleSheet(f"color:{TEXT_DIM};font:9px {FONT};")
 
         self.phase_combo.currentIndexChanged.connect(self._on_phase_changed)
         self.phase_pos_combo.currentIndexChanged.connect(self._update_phase_preview)
         self.phase_custom_edit.textChanged.connect(self._update_phase_preview)
+        self.phase_folder_cb.toggled.connect(self._update_phase_preview)
 
         lrow.addWidget(phase_lbl); lrow.addWidget(self.phase_combo)
         lrow.addWidget(self.phase_custom_edit)
         lrow.addSpacing(6); lrow.addWidget(self.phase_pos_combo)
+        lrow.addSpacing(6); lrow.addWidget(self.phase_folder_cb)
         lrow.addSpacing(8); lrow.addWidget(self.phase_preview_lbl)
         lrow.addStretch()
 
@@ -4669,6 +5435,18 @@ class MainWindow(QMainWindow):
         self.ofrs_status_lbl = QLabel("")
         self.ofrs_status_lbl.setStyleSheet(f"color:{TEXT_DIM};font:9px {FONT};")
         lrow.addWidget(self.ofrs_btn); lrow.addSpacing(4); lrow.addWidget(self.ofrs_status_lbl)
+        lrow.addSpacing(12)
+
+        # Mouse-absence alerts — opens a dialog with webhook URL + thresholds.
+        self.alerts_btn = QPushButton("ALERTS…"); self.alerts_btn.setFixedHeight(22)
+        self.alerts_btn.setToolTip("Configure mouse-absence Discord alerts")
+        self.alerts_btn.setStyleSheet(f"""QPushButton{{color:{TEXT_MED};background:{BG_DEEP};
+            border:1px solid {BORDER};border-radius:3px;padding:1px 8px;font:bold 9px {FONT};letter-spacing:1px;}}
+            QPushButton:hover{{color:{ACCENT};border-color:{ACCENT};}}""")
+        self.alerts_btn.clicked.connect(self._open_alerts_dialog)
+        self.alerts_status_lbl = QLabel("")
+        self.alerts_status_lbl.setStyleSheet(f"color:{TEXT_DIM};font:9px {FONT};")
+        lrow.addWidget(self.alerts_btn); lrow.addSpacing(4); lrow.addWidget(self.alerts_status_lbl)
         lrow.addSpacing(20)
 
         for color, text in [(ACCENT,"● Auto — camera controls value"),(ACCENT2,"● Manual — slider sets value directly")]:
@@ -4677,6 +5455,7 @@ class MainWindow(QMainWindow):
         vbox.addWidget(legend)
         self._update_phase_preview()
         self._update_ofrs_status()
+        self._update_alerts_status()
 
         # Camera panels
         self.scroll = QScrollArea(); self.scroll.setWidgetResizable(True)
@@ -4696,12 +5475,40 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.sb)
         self.sb.showMessage(f"Recordings → {RECORDINGS_DIR}  |  FFmpeg logs → {LOGS_DIR}")
 
+        # OBS-style system stats at bottom-right: CPU · RAM · GPU · Disk.
+        # CPU/RAM/disk are cheap and refresh on a 1 s QTimer in the GUI
+        # thread; GPU needs a worker thread (PowerShell Get-Counter takes
+        # ~1 s and would hitch the UI). psutil is optional — without it
+        # CPU/RAM show as "—" but disk + GPU still work.
+        try:
+            import psutil as _psutil
+            self._psutil = _psutil
+            # Prime cpu_percent so the first measurement isn't 0.0.
+            self._psutil.cpu_percent(interval=None)
+        except ImportError:
+            self._psutil = None
+        self.stats_lbl = QLabel("")
+        self.stats_lbl.setStyleSheet(f"color:{TEXT_MED};font:10px {FONT};padding:0 10px;")
+        self.stats_lbl.setToolTip("System load — CPU, RAM, GPU (all engines), free disk on the recordings drive")
+        self.sb.addPermanentWidget(self.stats_lbl)
+        self._gpu_pct = -1.0
+        self._stats_tick = QTimer()
+        self._stats_tick.timeout.connect(self._update_stats)
+        self._stats_tick.start(1000)
+        self._gpu_thread = _GpuPollThread(self)
+        self._gpu_thread.gpu_pct.connect(self._on_gpu_pct)
+        self._gpu_thread.start()
+        self._update_stats()
+
         self._global_tick = QTimer()
         self._global_tick.timeout.connect(self._update_global_timer)
 
     def _insert_panel(self, panel):
         self.panels_row.insertWidget(self.panels_row.count() - 1, panel)
         self.panels.append(panel); self._update_remove_btn()
+        panel.set_notifier(self.notifier)
+        panel.apply_alert_global(self._alerts_cfg)
+        self._update_alerts_status()
 
     def _add_camera(self):
         n = len(self.panels)
@@ -4744,6 +5551,22 @@ class MainWindow(QMainWindow):
             return "prefix"
         return self.phase_pos_combo.currentData() or "prefix"
 
+    def current_phase_create_folder(self):
+        """Whether the current phase tag should create a subfolder. Always
+        True when the checkbox isn't built yet (defensive)."""
+        if not hasattr(self, "phase_folder_cb"):
+            return True
+        return bool(self.phase_folder_cb.isChecked())
+
+    # ── Sync all cameras to one folder ──────────────────────────────────────
+    def _sync_all_to_folder(self, path):
+        """Set every camera's output folder to `path`. Triggered by a camera's
+        '⇲ all' button — a one-shot copy; each camera can still be changed
+        individually afterward."""
+        for p in self.panels:
+            p.set_out_dir(path)
+        self.sb.showMessage(f"All cameras → {path}")
+
     def _on_phase_changed(self, idx):
         is_custom = (self.phase_combo.itemData(idx) == "__custom__")
         self.phase_custom_edit.setVisible(is_custom)
@@ -4753,10 +5576,19 @@ class MainWindow(QMainWindow):
         tag = self.current_phase_tag()
         if not tag:
             self.phase_preview_lbl.setText("→ recordings/YYYY-MM-DD/CAM_N.mp4")
-            return
-        pos = self.current_phase_position()
-        sample = f"{tag}_CAM_N" if pos == "prefix" else f"CAM_N_{tag}"
-        self.phase_preview_lbl.setText(f"→ recordings/YYYY-MM-DD/{tag}/{sample}.mp4")
+        else:
+            pos    = self.current_phase_position()
+            create = self.current_phase_create_folder()
+            sample = f"{tag}_CAM_N" if pos == "prefix" else f"CAM_N_{tag}"
+            if create:
+                self.phase_preview_lbl.setText(f"→ recordings/YYYY-MM-DD/{tag}/{sample}.mp4")
+            else:
+                self.phase_preview_lbl.setText(f"→ recordings/YYYY-MM-DD/{sample}.mp4")
+        # Cascade to per-camera path previews. `panels` may not exist yet on
+        # the very first call from _build (legend is built before panels).
+        for p in getattr(self, "panels", []):
+            if hasattr(p, "_update_path_preview"):
+                p._update_path_preview()
 
     # ── RWD OFRS pairing ──────────────────────────────────────────────────────
     def _update_ofrs_status(self):
@@ -4785,6 +5617,112 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "OFRS config",
                                     f"Couldn't save {OFRS_CONFIG_FILE}:\n{e}")
             self._update_ofrs_status()
+
+    # ── Recording lifecycle notifications ─────────────────────────────────────
+    @staticmethod
+    def _format_duration(seconds: int) -> str:
+        h, r = divmod(int(seconds), 3600); m, s = divmod(r, 60)
+        if h: return f"{h}h {m}m {s}s"
+        if m: return f"{m}m {s}s"
+        return f"{s}s"
+
+    def _send_recording_start_notification(self, started_panels):
+        if not bool(self._alerts_cfg.get("notify_on_record_start", True)): return
+        if not self.notifier.configured(): return
+        cam_names = ", ".join(p.label for p in started_panels) or "(none)"
+        phase = self.current_phase_tag()
+        ts = (self._rec_start or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+        lines = [
+            f"🔴  **PawCapture — recording started**  `{ts}`",
+            f"Cameras: {cam_names}",
+        ]
+        if phase: lines.append(f"Phase: `{phase}`")
+        per_min = int(self._alerts_cfg.get("periodic_minutes", 0) or 0)
+        if per_min > 0:
+            lines.append(f"Periodic ping: every {per_min} min")
+        self.notifier.notify("\n".join(lines))
+
+    def _send_recording_stop_notification(self, rec_start, end_time,
+                                          session_panels, file_paths):
+        if not bool(self._alerts_cfg.get("notify_on_record_stop", True)): return
+        if not self.notifier.configured(): return
+        if rec_start is None: return
+        dur = self._format_duration((end_time - rec_start).total_seconds())
+        n_files = len([p for p in (file_paths or []) if p and str(p) != "None"])
+        n_cams  = len(session_panels or [])
+        ts = end_time.strftime("%Y-%m-%d %H:%M:%S")
+        lines = [
+            f"⏹  **PawCapture — recording stopped**  `{ts}`",
+            f"Duration: **{dur}**",
+            f"Cameras: {n_cams} · files saved: {n_files}",
+        ]
+        self.notifier.notify("\n".join(lines))
+
+    def _send_periodic_recording_notification(self, elapsed_min: int):
+        if not self.notifier.configured(): return
+        n_cams = len(self._session_panels or [])
+        ts = datetime.now().strftime("%H:%M:%S")
+        # Light enough to spam-resist: just elapsed + cam count + a couple
+        # of vitals so the user can confirm the rig is still alive.
+        cpu_str = ram_str = "—"
+        if self._psutil is not None:
+            try:
+                cpu_str = f"{self._psutil.cpu_percent(interval=None):.0f}%"
+                ram_str = f"{self._psutil.virtual_memory().percent:.0f}%"
+            except Exception: pass
+        gpu_str = f"{self._gpu_pct:.0f}%" if self._gpu_pct >= 0 else "—"
+        try:
+            gb = shutil.disk_usage(str(RECORDINGS_DIR)).free / (1024 ** 3)
+            disk_str = f"{gb:.1f} GB"
+        except Exception:
+            disk_str = "—"
+        msg = (
+            f"⏱  **PawCapture — still recording**  `{ts}`\n"
+            f"Elapsed: **{elapsed_min} min** · cameras: {n_cams}\n"
+            f"CPU {cpu_str} · RAM {ram_str} · GPU {gpu_str} · Disk {disk_str}"
+        )
+        self.notifier.notify(msg)
+
+    # ── Mouse-absence alerts ──────────────────────────────────────────────────
+    def _update_alerts_status(self):
+        if not hasattr(self, "alerts_status_lbl"): return
+        # Legend (and thus this status label) is built before self.panels
+        # is initialized, so guard against the bootstrap call from _build.
+        panels = getattr(self, "panels", []) or []
+        configured = self.notifier.configured()
+        master_on  = self._alerts_global_enabled
+        if not configured:
+            txt, color = "no webhook", TEXT_DIM
+        elif not master_on:
+            txt, color = "off", TEXT_DIM
+        else:
+            secs = int(self._alerts_cfg.get("absence_seconds", 15))
+            n_on = sum(1 for p in panels if p._alert_enabled)
+            txt = f"on  ({n_on}/{len(panels)} cams · {secs}s)"
+            color = SUCCESS
+        self.alerts_status_lbl.setText(txt)
+        self.alerts_status_lbl.setStyleSheet(f"color:{color};font:9px {FONT};")
+
+    def _open_alerts_dialog(self):
+        dlg = _AlertsConfigDialog(self, self._alerts_cfg, self.notifier.url(),
+                                  self.panels)
+        if dlg.exec_() != QDialog.Accepted: return
+        url, cfg, per_cam = dlg.chosen()
+        self.notifier.set_url(url)
+        self.notifier.set_cooldown(cfg.get("cooldown_seconds", 60))
+        self._alerts_cfg            = cfg
+        self._alerts_global_enabled = bool(cfg.get("enabled", True))
+        try:
+            _save_alerts_config(cfg)
+        except OSError as e:
+            QMessageBox.warning(self, "Alerts config",
+                                f"Couldn't save {ALERTS_CONFIG_FILE}:\n{e}")
+        for p, enabled in per_cam:
+            p._alert_enabled = bool(enabled)
+            p.apply_alert_global(cfg)
+        # Panels added later still need the new config; apply_alert_global
+        # also handles refreshing the active flag on each existing panel.
+        self._update_alerts_status()
 
     def _ofrs_should_pair(self):
         cfg = self._ofrs_cfg or {}
@@ -4849,6 +5787,9 @@ class MainWindow(QMainWindow):
 
     def _stop_recording_session(self):
         end_time = datetime.now()
+        # Snapshot session metadata for the stop ping before we reset state.
+        rec_start_for_ping = self._rec_start
+        panels_for_ping    = list(self._session_panels)
         # Snapshot pre-state we'll need for the manifest *before* clearing.
         cam_records = []
         paths = []
@@ -4872,6 +5813,9 @@ class MainWindow(QMainWindow):
         self._session_panels = []
         self._session_marks  = []
         self._ofrs_session_info = []
+        for p in self.panels: p._refresh_alerts_active()
+        self._send_recording_stop_notification(rec_start_for_ping, end_time,
+                                               panels_for_ping, paths)
         self.rec_btn.setText("⏺  RECORD ALL"); self.rec_btn.setStyleSheet(self._rec_style(False))
         if hasattr(self, "mark_btn"): self.mark_btn.setEnabled(False)
         msg = f"Saved: {' | '.join(paths) if paths else 'no files'}"
@@ -4919,6 +5863,19 @@ class MainWindow(QMainWindow):
             if QMessageBox.question(self, "Low Disk Space",
                     f"{msg}\n\nProceed anyway?") != QMessageBox.Yes:
                 return
+        # Pre-flight: refuse to start the session if any camera's target file
+        # already exists, so we never half-start (start cam 1, fail on cam 2).
+        collisions = []
+        for p in live:
+            t = p._peek_record_target()
+            if t is not None and t.exists():
+                collisions.append(f"{p.label}:  {t.name}")
+        if collisions:
+            QMessageBox.warning(self, "Filename Already Taken",
+                "These cameras would overwrite an existing recording:\n\n"
+                + "\n".join(collisions)
+                + "\n\nChange the File name, the suffix, or the phase tag and try again.")
+            return
         errors = []; started = []
         for p in live:
             ok, err = p.start_rec()
@@ -4926,13 +5883,23 @@ class MainWindow(QMainWindow):
             else: errors.append(f"{p.label}: {err}")
         if errors:
             for p in started: p.stop_rec()
-            QMessageBox.critical(self, "Record Error",
-                f"FFmpeg failed:\n\n" + "\n".join(errors) + f"\n\nCheck logs:\n{LOGS_DIR}")
+            # A FILE_EXISTS error here is a rare race (file appeared after the
+            # pre-flight); still report it as a filename clash, not FFmpeg.
+            if any(FILE_EXISTS_TAG + ":" in e for e in errors):
+                QMessageBox.warning(self, "Filename Already Taken",
+                    "A target file already exists:\n\n" + "\n".join(errors)
+                    + "\n\nChange the File name, the suffix, or the phase tag and try again.")
+            else:
+                QMessageBox.critical(self, "Record Error",
+                    f"FFmpeg failed:\n\n" + "\n".join(errors) + f"\n\nCheck logs:\n{LOGS_DIR}")
             return
         self.is_recording = True; self._rec_start = datetime.now()
         self._session_id     = self._rec_start.strftime("%Y%m%d_%H%M%S")
         self._session_marks  = []
         self._session_panels = list(started)
+        self._last_periodic_min = 0   # last minute mark we already pinged
+        for p in self.panels: p._refresh_alerts_active()
+        self._send_recording_start_notification(started)
         self._ofrs_session_info = []
         self._ofrs_take_snapshot()
         if hasattr(self, "mark_btn"): self.mark_btn.setEnabled(True)
@@ -4956,6 +5923,68 @@ class MainWindow(QMainWindow):
             secs = int((datetime.now() - self._rec_start).total_seconds())
             h, r = divmod(secs, 3600); m, s = divmod(r, 60)
             self.global_timer_lbl.setText(f"{h:02d}:{m:02d}:{s:02d}")
+            # Periodic Discord ping during long sessions. The 1 s tick is
+            # frequent enough that we'll always catch the minute boundary;
+            # _last_periodic_min guards against firing twice for the same
+            # mark if the timer happens to fire repeatedly within a second.
+            n = int(self._alerts_cfg.get("periodic_minutes", 0) or 0)
+            if n > 0:
+                elapsed_min = secs // 60
+                last_min = getattr(self, "_last_periodic_min", 0)
+                if elapsed_min > 0 and elapsed_min % n == 0 and elapsed_min != last_min:
+                    self._last_periodic_min = elapsed_min
+                    self._send_periodic_recording_notification(elapsed_min)
+
+    # ── System stats footer ───────────────────────────────────────────────────
+    def _on_gpu_pct(self, pct: float):
+        self._gpu_pct = float(pct)
+        self._update_stats()
+
+    @staticmethod
+    def _color_for(pct: float, warn: float, crit: float) -> str:
+        if pct >= crit: return DANGER
+        if pct >= warn: return WARN
+        return TEXT_MED
+
+    @staticmethod
+    def _disk_color(gb_free: float) -> str:
+        if gb_free < 5:  return DANGER
+        if gb_free < 20: return WARN
+        return TEXT_MED
+
+    def _update_stats(self):
+        cpu_html = "CPU —"
+        ram_html = "RAM —"
+        if self._psutil is not None:
+            try:
+                cpu = self._psutil.cpu_percent(interval=None)
+                c   = self._color_for(cpu, 80, 95)
+                cpu_html = f"CPU <span style='color:{c}'>{cpu:.0f}%</span>"
+            except Exception: pass
+            try:
+                ram = self._psutil.virtual_memory().percent
+                c   = self._color_for(ram, 80, 95)
+                ram_html = f"RAM <span style='color:{c}'>{ram:.0f}%</span>"
+            except Exception: pass
+        if self._gpu_pct >= 0:
+            c = self._color_for(self._gpu_pct, 80, 95)
+            gpu_html = f"GPU <span style='color:{c}'>{self._gpu_pct:.0f}%</span>"
+        else:
+            gpu_html = "GPU —"
+        try:
+            du = shutil.disk_usage(str(RECORDINGS_DIR))
+            gb = du.free / (1024 ** 3)
+            if   gb >= 100: dstr = f"{gb:.0f} GB"
+            elif gb >=  10: dstr = f"{gb:.1f} GB"
+            else:           dstr = f"{gb:.2f} GB"
+            c = self._disk_color(gb)
+            disk_html = f"Disk <span style='color:{c}'>{dstr}</span>"
+        except Exception:
+            disk_html = "Disk —"
+        # QLabel renders rich text when content looks like HTML; the spans
+        # above let us color-code only the values without restyling the
+        # whole label.
+        self.stats_lbl.setText("  ·  ".join([cpu_html, ram_html, gpu_html, disk_html]))
 
     def _panel_session_record(self, panel):
         """Snapshot the per-panel info that goes into the session manifest."""
@@ -5125,6 +6154,25 @@ class MainWindow(QMainWindow):
         if not path.exists(): return
         data = json.loads(path.read_text())
         cam_list = data.get("cameras", [])
+        # A profile can hold more cameras than the window currently shows — e.g.
+        # a 4-camera profile loaded into the default 3-panel layout. Spawn extra
+        # panels so every saved camera has a home; otherwise the surplus entries
+        # were silently dropped by the `i < len(self.panels)` guard below and the
+        # 4th camera never loaded.
+        grow_start = len(self.panels)
+        while len(self.panels) < len(cam_list):
+            self._add_camera()
+        # A freshly-spawned panel enumerates devices asynchronously, so its combo
+        # still holds only the int-userData placeholder from CameraPanel.__init__
+        # when we apply settings below — which made apply_settings crash on
+        # `itemData(i)[1]` and left the new panel with no device selected. Populate
+        # the new panels synchronously now (one shared enumeration) so their combos
+        # carry real (idx, dev_id) entries before anything reads them.
+        new_panels = self.panels[grow_start:]
+        if new_panels:
+            devs = enumerate_cameras()
+            for p in new_panels:
+                p._on_devices_found(list(devs))
         for p in self.panels:
             if p._live: p._disconnect()
         for i, cam_data in enumerate(cam_list):
@@ -5280,10 +6328,35 @@ class MainWindow(QMainWindow):
         if self.is_recording:
             for p in self.panels: p.stop_rec()
         for p in self.panels: p._disconnect()
+        # Stop the GPU poller cleanly so a stray powershell.exe doesn't
+        # outlive the app.
+        if hasattr(self, "_gpu_thread") and self._gpu_thread is not None:
+            self._gpu_thread.stop()
+            self._gpu_thread.wait(2000)
         super().closeEvent(e)
 
 
+def _install_crash_logger():
+    """Persist any unhandled exception to logs/crash.log. The desktop shortcut
+    runs us under pythonw.exe, which has no console — without this, a crash
+    vanishes with no traceback. PyQt5 routes unhandled exceptions in slots
+    through sys.excepthook, so this captures GUI-thread crashes too."""
+    import traceback as _tb
+    _prev = sys.excepthook
+    def _hook(exc_type, exc, tb):
+        try:
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().isoformat(timespec="seconds")
+            with open(LOGS_DIR / "crash.log", "a", encoding="utf-8") as f:
+                f.write(f"\n===== CRASH {stamp} =====\n")
+                _tb.print_exception(exc_type, exc, tb, file=f)
+        except Exception:
+            pass
+        _prev(exc_type, exc, tb)
+    sys.excepthook = _hook
+
 def main():
+    _install_crash_logger()
     app = QApplication(sys.argv); app.setStyle("Fusion")
     pal = QPalette()
     pal.setColor(QPalette.Window,        QColor(BG_DEEP))
