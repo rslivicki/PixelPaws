@@ -42,6 +42,9 @@ PixelPaws_project.json
 # ── Claude Code local config ─────────────────────────────────────────────────
 .claude/
 
+# ── Syncthing conflict artifacts (never commit) ──────────────────────────────
+*.sync-conflict-*
+
 # ── OS / IDE ─────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db

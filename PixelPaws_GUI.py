@@ -10658,9 +10658,20 @@ Median: {feature_data.median():.6f}
                     print(traceback.format_exc())
                     continue
 
-            y_proba = np.array(all_proba)
-            human_labels = np.array(all_labels)
-            
+            y_proba = np.array(all_proba, dtype=float)
+            human_labels = np.asarray(all_labels, dtype=float)
+            # Unobserved frames are stored as NaN in the labels CSV — they are
+            # not ground truth, so drop them (and the matching predictions)
+            # before scoring. Without this, f1_score raises "y_true contains NaN".
+            _obs = ~np.isnan(human_labels)
+            if not _obs.all():
+                results_text.insert(tk.END,
+                    f"  ⚠ Excluding {int((~_obs).sum()):,} unobserved (NaN) frames "
+                    f"from evaluation; {int(_obs.sum()):,} labeled frames remain.\n")
+                y_proba = y_proba[_obs]
+                human_labels = human_labels[_obs]
+            human_labels = human_labels.astype(int)
+
             # Validate we have data
             if len(y_proba) == 0 or len(human_labels) == 0:
                 messagebox.showerror("No Data", 
@@ -11083,9 +11094,19 @@ Median: {feature_data.median():.6f}
                     results_text.insert(tk.END, f"  ✓ Loaded {min_len} frames\n")
                 
                 # Convert to numpy arrays
-                y_proba = np.array(all_proba)
-                human_labels = np.array(all_labels)
-                
+                y_proba = np.array(all_proba, dtype=float)
+                human_labels = np.asarray(all_labels, dtype=float)
+                # Drop unobserved frames (NaN labels) before scoring — otherwise
+                # f1_score raises "y_true contains NaN".
+                _obs = ~np.isnan(human_labels)
+                if not _obs.all():
+                    results_text.insert(tk.END,
+                        f"  ⚠ Excluding {int((~_obs).sum()):,} unobserved (NaN) frames "
+                        f"from evaluation; {int(_obs.sum()):,} labeled frames remain.\n")
+                    y_proba = y_proba[_obs]
+                    human_labels = human_labels[_obs]
+                human_labels = human_labels.astype(int)
+
                 results_text.insert(tk.END, f"\nTotal test frames: {len(y_proba)}\n\n")
                 results_text.insert(tk.END, "="*80 + "\n")
                 results_text.insert(tk.END, "TESTING PARAMETERS\n")
