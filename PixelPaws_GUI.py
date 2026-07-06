@@ -1849,6 +1849,7 @@ class PixelPawsGUI:
             gf.columnconfigure(1, weight=1)
 
         _add_section(tools_sf, "Video Tools", [
+            ("🐾 Analyze Videos (Pose Tracking)", self.open_pose_extraction),
             ("🎥 Video Preview with Predictions", self.open_video_preview),
             ("🎬 Review Labels on Video", self.review_labels_on_video),
             ("🦴 Skeleton Video Renderer", self.open_skeleton_renderer),
@@ -8620,6 +8621,55 @@ class PixelPawsGUI:
             pass
         c = _glob.glob(os.path.join(proj, 'features', f'{session_name}_features_*.pkl'))
         return c[0] if c else None
+
+    def open_pose_extraction(self):
+        """Tools > Analyze Videos (Pose Tracking).
+
+        Runs the bundled SlivickiR_WangH DLC network on the current project's videos
+        via dlc_run_dialog (which shells out to a DLC-capable Python), then optionally
+        chains into behaviour predictions and/or the Extract Problem Frames tool."""
+        proj = self.current_project_folder.get()
+        if not proj or not os.path.isdir(proj):
+            messagebox.showwarning("No project", "Load a project folder first.")
+            return
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        # First run: seed the default model bundle into the per-user bundles dir.
+        try:
+            from dlc_inference import (install_default_bundle, list_bundles,
+                                       set_active_bundle, active_bundle_id)
+            default_dir = os.path.join(here, 'default_bundle', 'pixelpaws_v1')
+            if os.path.isdir(default_dir) and not list_bundles():
+                bid = install_default_bundle(default_dir)
+                if active_bundle_id() is None:
+                    set_active_bundle(bid)
+        except Exception as e:
+            messagebox.showerror(
+                "Pose tracking unavailable",
+                f"Could not load the DLC inference engine / model bundle:\n{e}")
+            return
+        try:
+            from dlc_run_dialog import run_dlc_flow
+        except Exception as e:
+            messagebox.showerror("Pose tracking unavailable",
+                                 f"Could not load dlc_run_dialog:\n{e}")
+            return
+
+        def _predict():
+            try:
+                self.notebook.select("🎬 Predict")
+            except Exception:
+                pass
+
+        def _frames():
+            try:
+                self.extract_problem_frames()
+            except Exception as e:
+                messagebox.showerror("Extract Problem Frames", str(e))
+
+        run_dlc_flow(self.root, proj, on_predictions_done=_predict,
+                     on_select_frames=_frames)
 
     def extract_problem_frames(self):
         """Surface frames where DLC tracking is unreliable and/or the classifier is

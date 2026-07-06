@@ -5,6 +5,57 @@ Entries are grouped by date (most recent first).
 
 ## 2026-07-06
 
+### Added — In-GUI pose extraction + restored auto-installer (SlivickiR_WangH network)
+
+Brought the distribution-fork's integrated pose-estimation experience (branch
+`distribution-fork-2026-05-11`, commit `2a79c3f`) forward onto `pixelpaws-working`, pointed at
+the **most recent SlivickiR_WangH network** (`D:\PixelPaws_Active\PixelPaws_SlivickiR_WangH`,
+task `pixelpaws`/date `Jul26`, iteration-0 / shuffle 1 / `snapshot-best-930`). Previously the
+working branch could only *consume* pre-existing DLC `.h5` files; now videos can be pose-tracked
+from the GUI.
+
+- **`dlc_inference/`** (8 modules, ported) — bundle-based fast PyTorch inference engine
+  (`run_dlc_on_video` builds a runner from `snapshot.pt` + `pytorch_config.yaml`, no DLC project
+  tree needed; GPU preprocessing + decode prefetch). Self-contained; targets DLC 3.0.0rc13, which
+  is exactly the installed `DEEPLABCUT` env version.
+- **`default_bundle/pixelpaws_v1/`** — the new network packaged as a versioned bundle (`manifest.json`
+  + `snapshot.pt` + `pytorch_config.yaml`), built by **`scripts/distribution/prepare_bundle.py`**
+  (repointed to the new project/shuffle/snapshot; UTF-8 manifest write). 96 MB weight tracked via
+  **git-LFS** (`.gitattributes`: `default_bundle/**/*.pt`). Ships with **no classifiers** — the old
+  5 were trained on the previous network; `dlc_inference/compatibility.py` would flag the mismatch,
+  so retraining them is a follow-up.
+- **`pipeline/dlc_analyze.py`** — backend run under a DLC-capable Python. `--probe` prints device/VRAM
+  JSON; analyze mode loops videos through `run_dlc_on_video` emitting stdout progress markers
+  (`VIDEO_START` / `FRAMES` / `VIDEO_DONE` / `ALL_DONE`), with a `deeplabcut.analyze_videos` fallback
+  against `POSE_DLC_CONFIG`.
+- **`pipeline/pp_config.py`** — `POSE_DLC_CONFIG/POSE_SHUFFLE/POSE_DLC_BATCH/POSE_MODEL_NAME` +
+  **`resolve_pose_python()`**: uses `sys.executable` when it can import deeplabcut (installer's single
+  combined env) else `DLC_PYTHON` (dev machine). One code path, both deployment shapes.
+- **`dlc_run_dialog.py`** — ported settings + live-progress dialogs; the worker shells out to
+  `dlc_analyze.py` (GUI Python has no torch) and parses markers. Added a **"Select more frames to
+  label"** checkbox that chains into the existing **Extract Problem Frames** tool.
+- **`PixelPaws_GUI.py`** — Tools → Video Tools → **🐾 Analyze Videos (Pose Tracking)**
+  (`open_pose_extraction`): first-run installs the default bundle, runs the flow, then chains into
+  the **🎬 Predict** tab and/or **🚩 Extract Problem Frames**.
+- **`installer/` + `INSTALL.txt`** (restored from the fork) — one-click Windows installer:
+  Miniforge bootstrap → single conda env **`pixelpaws`** (Python 3.11) with the GUI **and**
+  `deeplabcut>=3.0.0rc13` + torch cu118 in one env, seeds the model bundle, desktop shortcut;
+  `run.bat` launches the GUI from that env. This preserves the "single install, DLC included"
+  distribution.
+
+**Decisions:** keep the fork's dialog UX but back it with a runtime-resolved DLC interpreter
+(shell-out on the dev machine's two-env setup, in-process in the installer's combined env) instead
+of the fork's hardcoded in-process import. Everything routes through a bundle so dev and shipped
+builds share one inference path. Snapshot selected by DLC's `best` (930); **report/gate on the
+paws** (2.55 px @ pcutoff — better than the old model's 3.58 px), not the headline RMSE (15.7 px),
+which is dominated by `tailtip` (54 px).
+
+**Verified:** bundle builds/loads/sha-verifies; real inference on a 30-frame clip under the
+DEEPLABCUT env → correctly-named DLC `.h5` (3-level `(scorer,bodyparts,coords)` MultiIndex, all 9
+keypoints, ~53 fps, readable by the repo loader); cross-env device probe from the GUI Python returns
+the RTX 3080 Ti; dialog imports cleanly without torch. **Pending (needs a hands-on session):**
+interactive dialog click-through and a live `install.bat` conda build.
+
 ### Added — Problem-frame active learning (extract → label → retrain)
 
 Branch `feature/problem-frame-active-learning` (fork of `active-learning-redesign`).

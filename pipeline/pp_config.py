@@ -21,6 +21,10 @@ WEBHOOK = PROCESSING_WEBHOOK
 
 # --- Feature extraction (canonical 8aed1c22) --------------------------------
 FEATURE_HASH = "8aed1c22"
+# Opt-in pose-FILTERED variant (same FEATURE_CFG/635 cols, but the DLC pose is run through
+# pose_filter.filter_pose first to remove teleports). Distinct hash so filtered feature caches
+# (<stem>_features_8aed1c22f.pkl) sit beside the unfiltered ones without overwriting them.
+FILTERED_FEATURE_HASH = "8aed1c22f"
 FEATURE_CFG = dict(
     bp_pixbrt_list=["hrpaw", "hlpaw", "snout"],
     square_size=[40, 40, 40],
@@ -38,6 +42,44 @@ DLC_PYTHON = r"C:\ProgramData\Anaconda3\envs\DEEPLABCUT\python.exe"
 # snapshot best-460 — the most recent model. (Prior comment said "iteration-1 best-260"; that was stale.)
 SHUFFLE = 1
 DLC_BATCH = 64
+
+# --- In-GUI pose extraction (Tools > Analyze Videos) ------------------------
+# The DLC project whose network the GUI's pose-tracking tool runs. Distinct from
+# DLC_CONFIG above (the older research/pipeline network). Points at the most recent
+# SlivickiR_WangH network (task pixelpaws / date Jul26), iteration-0 / shuffle 1,
+# snapshotindex:best -> snapshot-best-930. Paws eval ~2.55 px @ pcutoff 0.6.
+POSE_DLC_CONFIG = r"D:\PixelPaws_Active\PixelPaws_SlivickiR_WangH\config.yaml"
+POSE_SHUFFLE = 1
+POSE_DLC_BATCH = 24
+POSE_MODEL_NAME = "pixelpawsJul26 (SlivickiR_WangH)"
+
+
+def resolve_pose_python() -> str:
+    """Return the Python interpreter to run DLC pose inference under.
+
+    Handles both deployment shapes (see the [[dlc-env-split]] note):
+      - the installer's single combined `pixelpaws` conda env, where the GUI's own
+        interpreter can already import deeplabcut  -> use sys.executable (in-process);
+      - the dev machine, where the GUI runs in a Python without DLC but a separate
+        DEEPLABCUT env exists                       -> use DLC_PYTHON.
+
+    Order: PP_POSE_PYTHON env override -> current interpreter if deeplabcut importable
+    -> DLC_PYTHON if it exists on disk -> current interpreter as a last resort.
+    """
+    import sys as _sys
+    import importlib.util as _ilu
+
+    override = _os.environ.get("PP_POSE_PYTHON")
+    if override:
+        return override
+    try:
+        if _ilu.find_spec("deeplabcut") is not None:
+            return _sys.executable
+    except Exception:
+        pass
+    if _os.path.isfile(DLC_PYTHON):
+        return DLC_PYTHON
+    return _sys.executable
 
 # --- Transcode --------------------------------------------------------------
 CODEC = "libx265"

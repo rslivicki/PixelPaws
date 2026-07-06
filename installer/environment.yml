@@ -1,0 +1,71 @@
+# Conda env spec for the PixelPaws end-user distribution build.
+#
+# Bundles PixelPaws + DLC PyTorch inference into a single env named
+# `pixelpaws`. The DLC PyTorch engine ships its own bundled CUDA runtime
+# via the `torch` wheel — end users do NOT need to install the CUDA Toolkit.
+#
+# Prerequisites for end users:
+#   - Windows 10/11 (64-bit)
+#   - For GPU mode: NVIDIA driver >= 525 (driver, NOT toolkit)
+#   - ~6 GB free disk space (torch+CUDA + DLC + PixelPaws deps)
+
+name: pixelpaws
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      # ---------------------------------------------------------------
+      # PyTorch with bundled CUDA 11.8 runtime.
+      #
+      # The default `pip install torch` on Windows pulls the CPU-only
+      # wheel — GPU support requires PyTorch's dedicated wheel index.
+      # cu118 is chosen because:
+      #   * the torch wheel ships the CUDA 11.8 runtime DLLs (no
+      #     separate CUDA Toolkit install needed)
+      #   * driver requirement is NVIDIA >= 450 (broader compatibility
+      #     than cu121 which needs >= 525)
+      #   * matches the version DLC 3.0.0rc13 has been tested against.
+      # ---------------------------------------------------------------
+      - --extra-index-url https://download.pytorch.org/whl/cu118
+      - torch>=2.7.0,<3.0
+      - torchvision
+
+      # Core scientific
+      - numpy>=2.0.0,<3
+      - pandas>=2.0.0
+      - scipy>=1.11.0
+      - scikit-learn>=1.3.0
+      - xgboost>=3.0.0
+      - shap>=0.43.0
+      - statsmodels>=0.14.0
+      - optuna>=3.0.0
+      - umap-learn>=0.5.3
+      - hdbscan>=0.8.33
+
+      # Computer vision
+      - opencv-python>=4.8.0
+      - Pillow>=10.0.0
+
+      # Visualization
+      - matplotlib>=3.7.0
+      - seaborn>=0.12.0
+      - networkx>=3.0
+
+      # DLC .h5 support
+      - h5py>=3.8.0
+      - tables>=3.8.0
+
+      # GUI
+      - ttkbootstrap>=1.10.0
+
+      # Utilities
+      - tqdm>=4.65.0
+      - PyYAML>=6.0
+      - openpyxl>=3.1.0
+
+      # DLC PyTorch inference engine (pinned to the version PixelPaws
+      # was tested against; pip will accept the pre-release because the
+      # specifier explicitly mentions rc13).
+      - deeplabcut>=3.0.0rc13,<3.1

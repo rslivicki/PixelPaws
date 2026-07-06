@@ -1,0 +1,56 @@
+{
+  "bundle_id": "pixelpaws_v1",
+  "display_name": "PixelPaws - SlivickiR_WangH (Jul26)",
+  "bundle_version": "1.1.0",
+  "release_date": "2026-07-06",
+  "pixelpaws_min_version": "1.0.0",
+  "inference_backend": "dlc_pytorch",
+  "dlc": {
+    "source_project": "PixelPaws_SlivickiR_WangH",
+    "task": "pixelpaws",
+    "scorer": "SlivickiR_WangH",
+    "date": "Jul26",
+    "model_name": "pixelpawsJul26",
+    "engine": "pytorch",
+    "shuffle": 1,
+    "training_fraction": 0.95,
+    "snapshot": "snapshot-best-930",
+    "snapshot_epoch": 930,
+    "snapshot_file": "snapshot.pt",
+    "snapshot_sha256": "1d2421477c39ba5fdcfe9f5e9d789c428566c71cfb1a47710787fcad4fc00103",
+    "pytorch_config_file": "pytorch_config.yaml",
+    "pytorch_config_sha256": "669bb11fa3b8182f2747dee01a5da7fe3ddab0533caf2f35b512bd7acd0fa8e4",
+    "net_type": "resnet_50",
+    "backbone": "resnet50_gn",
+    "deeplabcut_version_min": "3.0.0rc13",
+    "keypoints": [
+      "tailtip",
+      "tailbase",
+      "centroid",
+      "neck",
+      "snout",
+      "hlpaw",
+      "hrpaw",
+      "flpaw",
+      "frpaw"
+    ],
+    "dlc_h5_scorer_string": "DLC_Resnet50_pixelpawsJul26shuffle1_snapshot_best-930",
+    "eval_note": "test paws 6.64 px raw / 2.55 px @ pcutoff 0.6; headline RMSE 15.7 px is dominated by tailtip (54 px)."
+  },
+  "features": {
+    "config_hash": "8aed1c22",
+    "bp_pixbrt_list": ["hrpaw", "hlpaw", "snout"],
+    "square_size": [40, 40, 40],
+    "pix_threshold": 0.3,
+    "include_optical_flow": true,
+    "bp_optflow_list": ["hrpaw", "hlpaw", "snout"]
+  },
+  "classifiers": {},
+  "group_analysis_defaults": {
+    "exclude_noise": true,
+    "collapse_self_transitions": true,
+    "fps": 60,
+    "assign_mode": "argmax",
+    "smooth_ms": 100
+  }
+}

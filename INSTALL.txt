@@ -1,0 +1,49 @@
+PixelPaws — Quick Install (Windows)
+====================================
+
+PREREQUISITES
+  - Windows 10 or 11, 64-bit
+  - NVIDIA GPU recommended (driver >= 525). Works on CPU but ~25x slower.
+    You do NOT need to install the CUDA Toolkit — just have a recent driver.
+  - ~6 GB free disk space
+  - Internet connection (for first-time install of dependencies)
+
+INSTALL
+  1. Unzip this folder anywhere (e.g. Desktop, Documents).
+  2. Right-click `installer\install.bat` and choose "Run as administrator"
+     is NOT required — a normal double-click works.
+     The script will:
+       - Download and silently install Miniforge3 (~80 MB) if you don't
+         already have conda/mamba
+       - Create a self-contained conda env called `pixelpaws`
+       - Install PixelPaws, DeepLabCut, PyTorch (with CUDA), and all
+         supporting libraries
+       - Copy the bundled DLC model into %LOCALAPPDATA%\PixelPaws\bundles\
+       - Create a PixelPaws shortcut on your Desktop
+  3. First install takes ~10-20 minutes depending on internet speed.
+
+LAUNCH
+  Double-click the new PixelPaws desktop shortcut, OR run
+  `installer\run.bat` from inside this folder.
+
+  On first launch you'll be asked to pick or create a project folder.
+  Then the splash screen will offer:
+    - Analyze new videos      (run pose tracking + classifiers on raw .mp4)
+    - Run predictions only    (videos already have DLC .h5 files)
+    - View previous results
+
+TROUBLESHOOTING
+  - "Cannot find conda/mamba" after running install.bat:
+       Re-run `installer\install.bat`. It is idempotent and resumes
+       cleanly.
+  - The Miniforge download is blocked by your AV:
+       Whitelist `Miniforge3-Windows-x86_64.exe` and re-run.
+  - GPU not detected, but I have an NVIDIA card:
+       Check that your NVIDIA driver is >= 525. Update it from
+       https://www.nvidia.com/Download/index.aspx
+  - The classifiers complain about feature hash mismatch:
+       That bundle was trained against the DLC model that ships with
+       it. Don't swap the snapshot for a different one without also
+       updating the classifiers.
+
+For more details see docs\distribution\README.md inside the unzipped folder.
