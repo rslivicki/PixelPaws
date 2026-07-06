@@ -8719,10 +8719,6 @@ class PixelPawsGUI:
                             clf_data = joblib.load(clf_path)
                         except Exception:
                             import pickle; clf_data = pickle.load(open(clf_path, 'rb'))
-                        try:
-                            state_thr = float(clf_data.get('best_thresh', 0.5))
-                        except Exception:
-                            state_thr = 0.5
                     sess_objs = [pf.Session(
                         name=(s.get('session_name') or os.path.splitext(os.path.basename(s['video']))[0]),
                         video=s['video'], dlc=s['dlc'],
@@ -8878,7 +8874,7 @@ class PixelPawsGUI:
             threading.Thread(target=_worker, daemon=True).start()
 
         def _worker():
-            import json, subprocess, tempfile, sys as _sys, time, cv2
+            import json, subprocess, tempfile, cv2
             here = os.path.dirname(os.path.abspath(__file__))
             # sessions.json: new candidate folders that exist as labeled-data with the marker gone
             sess_json = {}
@@ -8942,6 +8938,11 @@ class PixelPawsGUI:
                     if not len(df):
                         continue
                     def col(sub):
+                        # prefer an exact-suffix match so 'test.rmse' doesn't grab
+                        # 'test.rmse_pcutoff' (both contain 'test.rmse')
+                        for c in df.columns:
+                            if c.endswith(sub):
+                                return c
                         for c in df.columns:
                             if sub in c:
                                 return c
@@ -8959,9 +8960,10 @@ class PixelPawsGUI:
                     mAP = last.get(col('mAP'), float('nan')) if col('mAP') else float('nan')
                     lr = last.get(col('lr'), None) if col('lr') else None
                     tl = last.get(lc, float('nan')) if lc else float('nan')
+                    lr_s = f"   lr {lr:.2g}" if isinstance(lr, (int, float)) else ""
                     msg = (f"epoch {step} ({done}/{target_ep})   "
                            f"train loss {tl:.4f}   test RMSE {rmse:.2f}px   "
-                           f"@cutoff {rmc:.2f}px   mAP {mAP:.1f}   best @cutoff {bestr:.2f}px")
+                           f"@cutoff {rmc:.2f}px   mAP {mAP:.1f}   best @cutoff {bestr:.2f}px{lr_s}")
                     self.root.after(0, lambda m=msg, fr=frac: (prog.configure(value=fr),
                                                               stat.configure(text=m)))
                 except Exception:

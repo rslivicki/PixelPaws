@@ -158,16 +158,26 @@ def rank_tracking(df, cfg: ExtractConfig):
 
 
 # ----------------------------------------------------------------------------- classifier bucket
+def _load_features(path):
+    """Robustly load a feature cache: canonical 8aed1c22 caches are joblib+LZ4, but
+    pp_pipeline writes plain pickle — try joblib first, fall back to pickle."""
+    try:
+        import joblib
+        return joblib.load(path)
+    except Exception:
+        import pickle
+        with open(path, "rb") as f:
+            return pickle.load(f)
+
+
 def classifier_probs(features_pkl, dlc_path, clf_data):
     """Per-frame P(positive) via the standard prediction path. Lazy-imports the pipeline."""
-    import pickle
     repo = str(Path(__file__).resolve().parent.parent)
     if repo not in sys.path:
         sys.path.insert(0, repo)
     from prediction_pipeline import predict_with_xgboost, augment_features_post_cache
     model = clf_data["clf_model"]
-    with open(features_pkl, "rb") as f:
-        X = pickle.load(f)
+    X = _load_features(features_pkl)
     Xa = augment_features_post_cache(X.copy(), clf_data, model, dlc_path)
     proba = np.asarray(predict_with_xgboost(model, Xa, calibrator=clf_data.get("prob_calibrator"),
                                             fold_models=clf_data.get("fold_models")))

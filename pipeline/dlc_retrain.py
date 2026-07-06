@@ -53,7 +53,15 @@ def main(argv=None):
     expected = set()
     vids = {}
     for name, meta in sessions.items():
-        vp = meta.get("video") or os.path.join(a.project_dir, "videos", name + ".mp4")
+        # create_training_dataset matches a labeled-data folder ONLY by a video_sets
+        # entry's basename STEM. The candidate folder is named `name`, so the video_sets
+        # key stem must equal `name`. Use the real video path only when its stem already
+        # matches; otherwise a nominal <project>/videos/<name>.mp4 (never decoded here).
+        real = meta.get("video")
+        if real and os.path.splitext(os.path.basename(real))[0] == name:
+            vp = real
+        else:
+            vp = os.path.join(a.project_dir, "videos", name + ".mp4")
         vids[vp] = meta.get("crop", "0, 1280, 0, 720")
         expected |= lm.frames_in_folder(ldir, a.scorer, name)
     backup = None
