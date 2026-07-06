@@ -112,9 +112,14 @@ def install_default_bundle(source_dir: Path) -> str:
     return bundle_id
 
 
-def import_bundle_zip(zip_path: Path) -> str:
+def import_bundle_zip(zip_path: Path, overwrite: bool = False) -> str:
     """Extract a bundle .zip into bundles_root(). The zip's top-level dir
     must contain a manifest.json. Returns the installed bundle id.
+
+    If `overwrite` is True and a bundle with the same id is already installed,
+    the existing directory is removed first (used to update a model to a newer
+    snapshot shipped under the same bundle_id). Otherwise a duplicate id raises
+    FileExistsError.
     """
     zp = Path(zip_path)
     with zipfile.ZipFile(zp) as zf:
@@ -134,10 +139,25 @@ def import_bundle_zip(zip_path: Path) -> str:
         bundle_id = m["bundle_id"]
         dest = bundles_root() / bundle_id
         if dest.is_dir():
-            raise FileExistsError(
-                f"Bundle {bundle_id!r} already installed at {dest}. "
-                "Delete it first or use a different version."
-            )
+            if not overwrite:
+                raise FileExistsError(
+                    f"Bundle {bundle_id!r} already installed at {dest}. "
+                    "Delete it first or use a different version."
+                )
+            shutil.rmtree(dest)
         dest.mkdir(parents=True)
         zf.extractall(dest.parent if manifest_member.count("/") == 1 else dest)
     return bundle_id
+
+
+def delete_bundle(bundle_id: str) -> None:
+    """Remove an installed bundle directory. If it was the active bundle, clear
+    the active pointer so nothing references a missing bundle (active_bundle_id()
+    then auto-selects when a single bundle remains).
+    """
+    dest = bundles_root() / bundle_id
+    if not dest.is_dir():
+        raise FileNotFoundError(f"No bundle named {bundle_id!r} installed.")
+    if active_bundle_id() == bundle_id:
+        _active_pointer_path().unlink(missing_ok=True)
+    shutil.rmtree(dest)

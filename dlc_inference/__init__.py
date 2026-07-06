@@ -20,6 +20,7 @@ from .bundle_manager import (
     set_active_bundle,
     import_bundle_zip,
     install_default_bundle,
+    delete_bundle,
 )
 from .dlc_runner import run_dlc_on_video, InferenceStats
 from .provider_probe import probe_providers, ProviderInfo
@@ -35,6 +36,8 @@ __all__ = [
     "set_active_bundle",
     "import_bundle_zip",
     "install_default_bundle",
+    "delete_bundle",
+    "load_active_bundle",
     "run_dlc_on_video",
     "InferenceStats",
     "probe_providers",

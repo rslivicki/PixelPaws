@@ -547,6 +547,7 @@ class PixelPawsGUI:
         
         # Main container with sidebar navigation
         self.notebook = SidebarNav(self.root, width=280, groups={
+            "Pose & Features": ["🦴 Pose Estimation", "⚙️ Feature Extraction"],
             "Train & Label": ["🎓 Train Classifier", "🧠 Active Learning"],
             "Predict & Evaluate": ["🎬 Predict", "📊 Evaluate", "📦 Batch"],
             "Analyze": ["📈 Analysis", "🔀 Transitions"],
@@ -603,6 +604,12 @@ class PixelPawsGUI:
             self.body_contact_tab.pack(fill='both', expand=True)
 
         self.create_tools_tab()  # New tab for enhanced tools
+
+        # Pose Estimation + Feature Extraction (top sidebar group). Added last so
+        # Train Classifier stays the startup page — the sidebar order that puts these
+        # at the top comes from the groups dict above, not from .add() order.
+        self.create_pose_estimation_tab()
+        self.create_feature_extraction_tab()
 
         # Hide sidebar items for unavailable modules
         if not ANALYSIS_TAB_AVAILABLE:
@@ -1849,7 +1856,7 @@ class PixelPawsGUI:
             gf.columnconfigure(1, weight=1)
 
         _add_section(tools_sf, "Video Tools", [
-            ("🐾 Analyze Videos (Pose Tracking)", self.open_pose_extraction),
+            ("🐾 Analyze Videos (Pose Tracking)", lambda: self.notebook.select("🦴 Pose Estimation")),
             ("🎥 Video Preview with Predictions", self.open_video_preview),
             ("🎬 Review Labels on Video", self.review_labels_on_video),
             ("🦴 Skeleton Video Renderer", self.open_skeleton_renderer),
@@ -1872,7 +1879,7 @@ class PixelPawsGUI:
         _add_section(tools_sf, "Configuration", [
             ("🔧 Correct Crop Offset (Single)", self.correct_crop_offset_single),
             ("🔧 Correct Crop Offset (Batch)", self.correct_crop_offset_batch),
-            ("⚙️ Feature Extraction", self.open_feature_extraction),
+            ("⚙️ Feature Extraction", lambda: self.notebook.select("⚙️ Feature Extraction")),
         ])
 
         tools_canvas.pack(side='left', fill='both', expand=True)
@@ -8569,10 +8576,21 @@ class PixelPawsGUI:
         self._launch_label_viewer(video_path, labels_csv, behavior, dlc_path)
 
     # ============================ Problem-frame active learning ============================
-    def _pf_read_dlc_meta(self, proj):
-        """Return (dlc_config_path, scorer, bps, skeleton, ldir) for the active project's
-        DLC config, or None. Read-only (yaml.safe_load)."""
+    def _pf_meta_from_config(self, cfg_path):
+        """Parse a DLC project config.yaml into the problem-frame meta dict
+        (config/scorer/bps/skeleton/ldir); ldir is <config_dir>/labeled-data."""
         import yaml
+        with open(cfg_path) as f:
+            c = yaml.safe_load(f) or {}
+        scorer = c.get('scorer', 'AlexZ')
+        bps = list(c.get('bodyparts') or [])
+        skel = [tuple(e) for e in (c.get('skeleton') or [])]
+        ldir = os.path.join(os.path.dirname(cfg_path), 'labeled-data')
+        return dict(config=cfg_path, scorer=scorer, bps=bps, skeleton=skel, ldir=ldir)
+
+    def _pf_read_dlc_meta(self, proj):
+        """Return the problem-frame meta dict for the active project's DLC config, or None.
+        Read-only. Checks ProjectConfig.dlc_config, then <proj>/config.yaml|config_local.yaml."""
         cfg_path = None
         try:
             from project_config import ProjectConfig
@@ -8588,13 +8606,70 @@ class PixelPawsGUI:
                     cfg_path = cand; break
         if not cfg_path or not os.path.isfile(cfg_path):
             return None
-        with open(cfg_path) as f:
-            c = yaml.safe_load(f)
-        scorer = c.get('scorer', 'AlexZ')
-        bps = list(c.get('bodyparts') or [])
-        skel = [tuple(e) for e in (c.get('skeleton') or [])]
-        ldir = os.path.join(os.path.dirname(cfg_path), 'labeled-data')
-        return dict(config=cfg_path, scorer=scorer, bps=bps, skeleton=skel, ldir=ldir)
+        return self._pf_meta_from_config(cfg_path)
+
+    def _find_config_yaml_under(self, root_dir, max_depth=2):
+        """Pure, depth-limited search for a DLC 'config.yaml' at/under root_dir (and its
+        immediate parent). Returns the first match, or None. No dialogs / no side effects."""
+        if not root_dir or not os.path.isdir(root_dir):
+            return None
+        for path in (os.path.join(root_dir, 'config.yaml'),
+                     os.path.join(os.path.dirname(root_dir), 'config.yaml')):
+            if os.path.isfile(path):
+                return path
+        base_depth = root_dir.count(os.sep)
+        for cur, dirs, files in os.walk(root_dir):
+            if 'config.yaml' in files:
+                return os.path.join(cur, 'config.yaml')
+            if cur.count(os.sep) - base_depth >= max_depth:
+                dirs[:] = []  # stop descending past max_depth
+        return None
+
+    def _pf_resolve_dlc_meta(self, proj):
+        """Resolve DLC scorer/bodyparts/skeleton + a labeled-data destination for problem-frame
+        extraction, degrading gracefully so it works with or without a full DLC project:
+          1) the project's configured/adjacent config.yaml   (retrain-capable),
+          2) an auto-found config.yaml under proj or proj/videos  (retrain-capable),
+          3) the active model bundle (scorer + keypoints) + a chosen labeled-data dir
+             (extraction + labeling only; config=None disables retrain),
+          4) a manual config.yaml picker  (retrain-capable).
+        Returns the meta dict, or None if the user backs out of every option."""
+        meta = self._pf_read_dlc_meta(proj)
+        if meta:
+            return meta
+        for root in (proj, os.path.join(proj, 'videos')):
+            cfg = self._find_config_yaml_under(root)
+            if cfg:
+                return self._pf_meta_from_config(cfg)
+        # bundle fallback: scorer + keypoints come from the installed model
+        try:
+            from dlc_inference import load_active_bundle
+            b = load_active_bundle()
+        except Exception:
+            b = None
+        if b is not None:
+            scorer = (b.manifest_raw.get('dlc', {}) or {}).get('scorer', 'AlexZ')
+            bps = list(getattr(b.dlc, 'keypoints', []) or [])
+            if bps and messagebox.askyesno(
+                    "Use installed model?",
+                    f"No DLC project config.yaml was found for this project.\n\n"
+                    f"Use the installed model “{b.display_name}” (scorer {scorer}, {len(bps)} keypoints) "
+                    f"to extract and label frames?\n\nYou'll pick where to save the candidate frames. "
+                    f"Retraining needs a full DLC project and stays disabled in this mode."):
+                dest = filedialog.askdirectory(
+                    title="Choose a labeled-data destination folder for candidate frames")
+                if not dest:
+                    return None
+                ldir = dest if os.path.basename(os.path.normpath(dest)) == 'labeled-data' \
+                    else os.path.join(dest, 'labeled-data')
+                return dict(config=None, scorer=scorer, bps=bps, skeleton=[], ldir=ldir)
+        # manual picker backstop
+        picked = filedialog.askopenfilename(
+            title="Select this project's DLC config.yaml",
+            filetypes=[("YAML files", "*.yaml *.yml"), ("All files", "*.*")])
+        if picked and os.path.isfile(picked):
+            return self._pf_meta_from_config(picked)
+        return None
 
     def _pf_list_classifiers(self, proj):
         """{display -> pkl path} of project + encyclopedia classifiers."""
@@ -8622,6 +8697,199 @@ class PixelPawsGUI:
         c = _glob.glob(os.path.join(proj, 'features', f'{session_name}_features_*.pkl'))
         return c[0] if c else None
 
+    # ============================ Pose Estimation tab + model manager ============================
+    def create_pose_estimation_tab(self):
+        """🦴 Pose Estimation tab: run the bundled DLC network + manage installed models."""
+        frame = ttk.Frame(self.notebook)
+        self.notebook.add(frame, text="🦴 Pose Estimation")
+        # Seed the shipped default model on first view so the model list isn't empty.
+        try:
+            self._ensure_default_bundle_seeded(show_error=False)
+        except Exception:
+            pass
+
+        ttk.Label(frame, text="Pose Estimation",
+                  font=(FONT_FAMILY, 14, 'bold')).pack(pady=(12, 2))
+        ttk.Label(frame, text="Run the bundled DLC network on your videos, and manage installed pose models.",
+                  foreground='gray').pack(pady=(0, 8))
+
+        run_lf = ttk.LabelFrame(frame, text="Run pose tracking", padding=10)
+        run_lf.pack(fill='x', padx=15, pady=6)
+        ttk.Label(run_lf, text="Analyze the current project's videos with the active model. "
+                  "Detected keypoints are written next to each video as DLC .h5 files.",
+                  foreground='#555', wraplength=620, justify='left').pack(anchor='w', pady=(0, 6))
+        ttk.Button(run_lf, text="🐾 Analyze Videos (Pose Tracking)…",
+                   command=self.open_pose_extraction, style='Accent.TButton').pack(anchor='w')
+
+        self._build_pose_model_manager(frame)
+
+    def _build_pose_model_manager(self, parent):
+        """Panel listing installed DLC model bundles with import/activate/delete/details.
+        All bundle_manager calls are torch-free, so this runs in the GUI Python."""
+        lf = ttk.LabelFrame(parent, text="Installed pose models", padding=10)
+        lf.pack(fill='both', expand=True, padx=15, pady=6)
+        ttk.Label(lf, text="The active model is used for pose tracking and as the scorer/keypoints "
+                  "source for Extract Problem Frames. Import newer models as .zip bundles.",
+                  foreground='#555', wraplength=620, justify='left').pack(anchor='w', pady=(0, 6))
+
+        tree = ttk.Treeview(lf, columns=('display', 'version', 'date', 'active'),
+                            show='headings', height=5, selectmode='browse')
+        for c, txt, w, anchor in (('display', 'Model', 260, 'w'), ('version', 'Version', 90, 'center'),
+                                  ('date', 'Released', 110, 'center'), ('active', 'Active', 70, 'center')):
+            tree.heading(c, text=txt)
+            tree.column(c, width=w, anchor=anchor)
+        tree.pack(fill='x', side='top')
+        self._pose_bundle_tree = tree
+
+        btns = ttk.Frame(lf); btns.pack(fill='x', pady=(6, 4))
+        ttk.Button(btns, text="Import model (.zip)…", command=self._pose_import_bundle).pack(side='left', padx=3)
+        ttk.Button(btns, text="Set active", command=self._pose_set_active).pack(side='left', padx=3)
+        ttk.Button(btns, text="Delete", command=self._pose_delete_bundle).pack(side='left', padx=3)
+        ttk.Button(btns, text="Details", command=self._pose_show_details).pack(side='left', padx=3)
+        ttk.Button(btns, text="Refresh", command=self._pose_refresh_bundles).pack(side='left', padx=3)
+
+        self._pose_details = scrolledtext.ScrolledText(lf, height=8, font=('Consolas', 9), wrap='word')
+        self._pose_details.pack(fill='both', expand=True, pady=(4, 0))
+        self._pose_details.configure(state='disabled')
+        self._pose_refresh_bundles()
+
+    def _pose_set_details(self, text):
+        box = getattr(self, '_pose_details', None)
+        if box is None:
+            return
+        box.configure(state='normal'); box.delete('1.0', tk.END)
+        box.insert(tk.END, text); box.configure(state='disabled')
+
+    def _pose_selected_id(self):
+        tree = getattr(self, '_pose_bundle_tree', None)
+        sel = tree.selection() if tree is not None else ()
+        return sel[0] if sel else None
+
+    def _pose_refresh_bundles(self):
+        tree = getattr(self, '_pose_bundle_tree', None)
+        if tree is None:
+            return
+        tree.delete(*tree.get_children())
+        try:
+            from dlc_inference import list_bundles, active_bundle_id
+            bundles = list_bundles()
+            active = active_bundle_id()
+        except Exception as e:
+            self._pose_set_details(f"Could not list models:\n{e}")
+            return
+        for b in bundles:
+            tree.insert('', 'end', iid=b.bundle_id,
+                        values=(b.display_name, b.bundle_version, b.release_date,
+                                '✓' if b.bundle_id == active else ''))
+        if not bundles:
+            self._pose_set_details("No models installed yet. Use “Import model (.zip)…”, or run pose "
+                                   "tracking once to seed the shipped default model.")
+
+    def _pose_import_bundle(self):
+        path = filedialog.askopenfilename(title="Select model bundle (.zip)",
+                                          filetypes=[("Bundle zip", "*.zip"), ("All files", "*.*")])
+        if not path:
+            return
+        from pathlib import Path as _Path
+        try:
+            from dlc_inference import import_bundle_zip
+            try:
+                bid = import_bundle_zip(_Path(path))
+            except FileExistsError:
+                if not messagebox.askyesno("Already installed",
+                        "A model with this id is already installed.\n\nReplace it with this one?"):
+                    return
+                bid = import_bundle_zip(_Path(path), overwrite=True)
+        except Exception as e:
+            messagebox.showerror("Import failed", f"Could not import model bundle:\n{e}")
+            return
+        self._pose_refresh_bundles()
+        messagebox.showinfo("Model imported", f"Installed model: {bid}")
+
+    def _pose_set_active(self):
+        bid = self._pose_selected_id()
+        if not bid:
+            messagebox.showinfo("Select a model", "Select a model in the list first."); return
+        try:
+            from dlc_inference import set_active_bundle
+            set_active_bundle(bid)
+        except Exception as e:
+            messagebox.showerror("Set active failed", str(e)); return
+        self._pose_refresh_bundles()
+
+    def _pose_delete_bundle(self):
+        bid = self._pose_selected_id()
+        if not bid:
+            messagebox.showinfo("Select a model", "Select a model in the list first."); return
+        if not messagebox.askyesno("Delete model", f"Permanently delete the model “{bid}”?"):
+            return
+        try:
+            from dlc_inference import delete_bundle
+            delete_bundle(bid)
+        except Exception as e:
+            messagebox.showerror("Delete failed", str(e)); return
+        self._pose_refresh_bundles()
+
+    def _pose_show_details(self):
+        bid = self._pose_selected_id()
+        if not bid:
+            messagebox.showinfo("Select a model", "Select a model in the list first."); return
+        try:
+            from dlc_inference import load_bundle
+            b = load_bundle(bid)
+            dlc = b.dlc
+            scorer = (b.manifest_raw.get('dlc', {}) or {}).get('scorer', '?')
+            kps = list(getattr(dlc, 'keypoints', []) or [])
+            lines = [
+                f"Model id:   {b.bundle_id}",
+                f"Display:    {b.display_name}",
+                f"Version:    {b.bundle_version}",
+                f"Released:   {b.release_date}",
+                f"Backend:    {b.inference_backend}",
+                f"Scorer:     {scorer}",
+                f"Keypoints:  {len(kps)}  ({', '.join(kps)})" if kps else "Keypoints:  (unknown)",
+                f"Snapshot:   {getattr(dlc, 'snapshot', '?')}",
+                f"Net type:   {getattr(dlc, 'net_type', '?')}",
+            ]
+            self._pose_set_details("\n".join(lines))
+        except Exception as e:
+            # Model binaries may be absent (e.g. LFS placeholder) -> manifest-only view.
+            try:
+                from dlc_inference import list_bundles
+                b = next((x for x in list_bundles() if x.bundle_id == bid), None)
+                if b is not None:
+                    self._pose_set_details(
+                        f"Model id:  {bid}\nDisplay:   {b.display_name}\n"
+                        f"Version:   {b.bundle_version}\nReleased:  {b.release_date}\n\n"
+                        f"(Full details unavailable — model files not fully present:\n{e})")
+                    return
+            except Exception:
+                pass
+            messagebox.showerror("Details failed", str(e))
+
+    def _ensure_default_bundle_seeded(self, show_error=True):
+        """First-run: copy the shipped default model bundle into the per-user bundles dir and
+        mark it active if nothing is installed yet. Returns True if the DLC inference engine
+        imported cleanly, else False (optionally showing an error dialog)."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        try:
+            from dlc_inference import (install_default_bundle, list_bundles,
+                                       set_active_bundle, active_bundle_id)
+            default_dir = os.path.join(here, 'default_bundle', 'pixelpaws_v1')
+            if os.path.isdir(default_dir) and not list_bundles():
+                bid = install_default_bundle(default_dir)
+                if active_bundle_id() is None:
+                    set_active_bundle(bid)
+            return True
+        except Exception as e:
+            if show_error:
+                messagebox.showerror(
+                    "Pose tracking unavailable",
+                    f"Could not load the DLC inference engine / model bundle:\n{e}")
+            return False
+
     def open_pose_extraction(self):
         """Tools > Analyze Videos (Pose Tracking).
 
@@ -8632,22 +8900,7 @@ class PixelPawsGUI:
         if not proj or not os.path.isdir(proj):
             messagebox.showwarning("No project", "Load a project folder first.")
             return
-        here = os.path.dirname(os.path.abspath(__file__))
-        if here not in sys.path:
-            sys.path.insert(0, here)
-        # First run: seed the default model bundle into the per-user bundles dir.
-        try:
-            from dlc_inference import (install_default_bundle, list_bundles,
-                                       set_active_bundle, active_bundle_id)
-            default_dir = os.path.join(here, 'default_bundle', 'pixelpaws_v1')
-            if os.path.isdir(default_dir) and not list_bundles():
-                bid = install_default_bundle(default_dir)
-                if active_bundle_id() is None:
-                    set_active_bundle(bid)
-        except Exception as e:
-            messagebox.showerror(
-                "Pose tracking unavailable",
-                f"Could not load the DLC inference engine / model bundle:\n{e}")
+        if not self._ensure_default_bundle_seeded():
             return
         try:
             from dlc_run_dialog import run_dlc_flow
@@ -8679,10 +8932,8 @@ class PixelPawsGUI:
         proj = self.current_project_folder.get()
         if not proj or not os.path.isdir(proj):
             messagebox.showwarning("No project", "Load a project folder first."); return
-        meta = self._pf_read_dlc_meta(proj)
+        meta = self._pf_resolve_dlc_meta(proj)
         if not meta:
-            messagebox.showwarning("No DLC config",
-                                   "Could not find this project's DLC config.yaml (scorer/bodyparts).")
             return
         try:
             from evaluation_tab import find_session_triplets
@@ -8813,9 +9064,14 @@ class PixelPawsGUI:
                                    f"Queued {n} frames across {len(folders)} session(s).\n\n"
                                    "Open the keypoint labeler now to correct them?", parent=dlg):
                 self._pf_launch_labeler(meta)
-            retrain_btn.configure(state='normal')
+            if meta.get('config'):
+                retrain_btn.configure(state='normal')
 
         def _retrain():
+            if not meta.get('config'):
+                messagebox.showinfo("Retrain unavailable",
+                                    "Bundle-only mode: extract + label frames here, then retrain inside a "
+                                    "full DLC project (one with a config.yaml).", parent=dlg); return
             if not state.get('result'):
                 messagebox.showinfo("Extract first", "Extract + label some frames before retraining.",
                                     parent=dlg); return
@@ -8827,6 +9083,10 @@ class PixelPawsGUI:
         retrain_btn = ttk.Button(bar, text="🧠 Retrain DLC (add iteration)…", command=_retrain, state='disabled')
         retrain_btn.pack(side='left', padx=4)
         ttk.Button(bar, text="Close", command=dlg.destroy).pack(side='right', padx=4)
+        if not meta.get('config'):
+            ttk.Label(dlg, text="Bundle-only mode: retraining is disabled (no DLC project config.yaml). "
+                      "You can still extract and label candidate frames.",
+                      foreground='#a60', wraplength=w-40, justify='left').pack(padx=14, pady=(0, 6))
 
     def _pf_launch_labeler(self, meta):
         """Write _labeler_config.json for the active project + scorer, then launch the
@@ -10574,8 +10834,14 @@ Median: {feature_data.median():.6f}
     
     # === FEATURE EXTRACTION TOOL ===
 
+    def create_feature_extraction_tab(self):
+        """⚙️ Feature Extraction as a first-class tab (same body as the Tools dialog)."""
+        frame = ttk.Frame(self.notebook)
+        self.notebook.add(frame, text="⚙️ Feature Extraction")
+        self._build_feature_extraction_body(frame)
+
     def open_feature_extraction(self):
-        """Open the standalone Feature Extraction tool window."""
+        """Open the standalone Feature Extraction tool window (Tools entry point)."""
         win = tk.Toplevel(self.root)
         win.title("Feature Extraction")
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
@@ -10583,16 +10849,21 @@ Median: {feature_data.median():.6f}
         win.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
         win.resizable(True, True)
         win.transient(self.root)
+        self._build_feature_extraction_body(win, show_close=True)
 
+    def _build_feature_extraction_body(self, container, show_close=False):
+        """Build the Feature Extraction UI into `container` — a Toplevel (Tools dialog)
+        or a tab Frame. All widgets parent to `container`; the Close button appears only
+        on the standalone-window path (show_close=True)."""
         # ── Header ────────────────────────────────────────────────────────
-        ttk.Label(win, text="Feature Extraction",
+        ttk.Label(container, text="Feature Extraction",
                   font=(FONT_FAMILY, 14, 'bold')).pack(pady=(12, 2))
-        ttk.Label(win,
+        ttk.Label(container,
                   text="Extract pose + brightness (+ optional optical flow) features.",
                   foreground='gray').pack()
 
         # ── Mode selector ─────────────────────────────────────────────────
-        mode_frame = ttk.Frame(win)
+        mode_frame = ttk.Frame(container)
         mode_frame.pack(fill='x', padx=12, pady=(8, 0))
         fe_mode = tk.StringVar(value='batch')
         ttk.Radiobutton(mode_frame, text="Batch / Project Folder",
@@ -10603,7 +10874,7 @@ Median: {feature_data.median():.6f}
                         command=lambda: _switch_mode()).pack(side='left')
 
         # ── Source panel (swapped by mode) ────────────────────────────────
-        source_outer = ttk.Frame(win)
+        source_outer = ttk.Frame(container)
         source_outer.pack(fill='x', padx=12, pady=4)
 
         # -- Batch panel --
@@ -10683,7 +10954,7 @@ Median: {feature_data.median():.6f}
         batch_panel.pack(fill='x')
 
         # ── Feature settings ──────────────────────────────────────────────
-        settings = ttk.LabelFrame(win, text="Feature Settings", padding=10)
+        settings = ttk.LabelFrame(container, text="Feature Settings", padding=10)
         settings.pack(fill='x', padx=12, pady=4)
         settings.columnconfigure(1, weight=1)
 
@@ -10739,7 +11010,7 @@ Median: {feature_data.median():.6f}
                    ).grid(row=6, column=2, padx=2)
 
         # ── Progress log ──────────────────────────────────────────────────
-        log_frame = ttk.LabelFrame(win, text="Progress", padding=6)
+        log_frame = ttk.LabelFrame(container, text="Progress", padding=6)
         log_frame.pack(fill='both', expand=True, padx=12, pady=4)
 
         log_text = scrolledtext.ScrolledText(log_frame, height=10, wrap='word',
@@ -10747,7 +11018,7 @@ Median: {feature_data.median():.6f}
         log_text.pack(fill='both', expand=True)
 
         # ── Buttons ───────────────────────────────────────────────────────
-        btn_frame = ttk.Frame(win)
+        btn_frame = ttk.Frame(container)
         btn_frame.pack(fill='x', padx=12, pady=8)
 
         stop_event = threading.Event()
@@ -10758,12 +11029,14 @@ Median: {feature_data.median():.6f}
                               command=lambda: stop_event.set(),
                               state='disabled')
         stop_btn.pack(side='left', padx=4)
-        ttk.Button(btn_frame, text="Close", command=win.destroy).pack(side='right', padx=4)
+        if show_close:
+            ttk.Button(btn_frame, text="Close",
+                       command=container.winfo_toplevel().destroy).pack(side='right', padx=4)
 
         def log(msg):
             log_text.insert(tk.END, msg + "\n")
             log_text.see(tk.END)
-            win.update_idletasks()
+            container.winfo_toplevel().update_idletasks()
 
         def _build_cfg():
             return {
@@ -10786,7 +11059,7 @@ Median: {feature_data.median():.6f}
                 if not dlc or not vid:
                     messagebox.showwarning("Missing files",
                                            "Please select both a DLC file and a video file.",
-                                           parent=win)
+                                           parent=container.winfo_toplevel())
                     return
                 out = fe_out_single.get().strip() or os.path.join(
                     os.path.dirname(vid), 'features')
@@ -10800,7 +11073,7 @@ Median: {feature_data.median():.6f}
                 project = fe_project.get().strip()
                 if not project:
                     messagebox.showwarning("No folder",
-                                           "Please select a project folder.", parent=win)
+                                           "Please select a project folder.", parent=container.winfo_toplevel())
                     return
                 sessions = None   # thread will scan
                 cache_root = os.path.join(project, 'features')
@@ -12713,36 +12986,17 @@ Left/Right  - Previous/Next frame
         messagebox.showinfo("Found", f"Found DLC file:\n{os.path.basename(self.pred_dlc_path.get())}")
     
     def auto_find_dlc_config(self):
-        """Automatically find DLC config.yaml file"""
+        """Automatically find DLC config.yaml file (Predict tab)."""
         video_path = self.pred_video_path.get()
         if not video_path:
             messagebox.showwarning("No Video", "Please select a video file first.")
             return
-        
-        video_folder = os.path.dirname(video_path)
-        
-        # Search locations
-        search_paths = [
-            os.path.join(video_folder, 'config.yaml'),
-            os.path.join(os.path.dirname(video_folder), 'config.yaml'),
-        ]
-        
-        # Also search subdirectories
-        for root, dirs, files in os.walk(video_folder):
-            if 'config.yaml' in files:
-                search_paths.append(os.path.join(root, 'config.yaml'))
-            # Limit depth
-            if root.count(os.sep) - video_folder.count(os.sep) > 2:
-                break
-        
-        # Find first existing config
-        for path in search_paths:
-            if os.path.isfile(path):
-                self.pred_dlc_config_path.set(path)
-                messagebox.showinfo("Found", f"Found config.yaml:\n{path}")
-                return
-        
-        messagebox.showwarning("Not Found", 
+        cfg = self._find_config_yaml_under(os.path.dirname(video_path))
+        if cfg:
+            self.pred_dlc_config_path.set(cfg)
+            messagebox.showinfo("Found", f"Found config.yaml:\n{cfg}")
+            return
+        messagebox.showwarning("Not Found",
                              "No config.yaml found in video directory or parent directories.")
     
     def preview_pred_video(self):
