@@ -3,6 +3,54 @@
 Running log of non-trivial edits and the decisions behind them.
 Entries are grouped by date (most recent first).
 
+## 2026-07-06
+
+### Added — Problem-frame active learning (extract → label → retrain)
+
+Branch `feature/problem-frame-active-learning` (fork of `active-learning-redesign`).
+Closes the loop that fixes phantom scratch/lick calls: surface the frames where DLC
+tracking is unreliable and/or the classifier is uncertain, correct their keypoints in the
+existing labeler, then optionally retrain — all from the GUI.
+
+- **`pipeline/problem_frames.py`** — reusable extractor. Two INDEPENDENT budget buckets:
+  (A) *tracking* reuses `pose_filter.filter_pose()`'s per-frame `flagged_mask`
+  (likelihood<0.3 / SimBA location-teleport / velocity-jump — hindpaws excluded from the
+  velocity gate by design so real scratching isn't over-flagged) plus the AOW
+  present-but-hindpaw-uncertain / lowest-likelihood buckets, empty-cage gated; (B)
+  *classifier* selects near-threshold frames (`|p-0.5|*2 < 0.30`) from
+  `predict_with_xgboost`, or (mode `positive`) tracking-flagged frames co-located with a
+  confident call (teleport→phantom). Gap-spaced (300) + burden-proportional cross-session
+  budget. Writes the standard candidate-folder contract (prefilled `CollectedData_<scorer>`
+  with the current model's keypoints, flat index, `_scratch_to_label.txt` marker) —
+  scorer/project-parameterized. Pure pandas/numpy/cv2 core; classifier bucket lazy-imports
+  the pipeline. CLI + importable. **Key reuse:** `pose_filter`'s `flagged_mask` was
+  previously computed and discarded in `pp_pipeline.stage_features`.
+- **`pixelpaws_labeler.py`** — the proven Tkinter keypoint labeler, now shipped in the repo
+  and made project/scorer-aware via an optional `_labeler_config.json` sidecar
+  (`PIXELPAWS_LABELER_CONFIG` env). Absent → the original AlexZ/2511 defaults, so a bare
+  double-click is unchanged. The 2511 copy + `.cmd` are left untouched.
+- **`pipeline/label_merge.py`** + **`pipeline/dlc_retrain.py`** — scorer-parameterized
+  generalizations of `merge_iter*`/`prep_iter*`: fold candidate folders, add videos +
+  bump iteration (ruamel, backup, restore-on-fail), `create_training_dataset`, verify
+  frames landed, then `train_network` warm-start from the current best snapshot. The GUI
+  shells to `dlc_retrain.py` in the DEEPLABCUT env and tails `learning_stats.csv`.
+- **`PixelPaws_GUI.py`** — Tools tab → **🚩 Extract Problem Frames** dialog (sessions,
+  bucket toggles, classifier + mode, budget split) → worker-thread extraction → launch
+  labeler; **🧠 Retrain DLC (add iteration)** dialog with a live progress bar + per-epoch
+  stats and a **plain-language legend** explaining train loss / test RMSE / RMSE@cutoff /
+  mAP-mAR / learning rate / epoch, plus a soft GPU-busy guard.
+
+**Decisions:** two independent buckets (not just tracking∩classifier); GUI-surfaced with a
+reusable module behind it; retraining is user-triggered and explained. Also ignored
+Syncthing `*.sync-conflict-*` artifacts in `.gitignore`.
+
+**Verified:** extractor end-to-end on real sessions (contract exact: scorer, 18 cols, flat
+index, prefill, marker; classifier bucket picks maximally-uncertain frames); labeler sidecar
+config + fallback; merge/config-edit helpers; GUI compiles and its non-Tk helpers resolve
+scorer/bodyparts/classifiers/best-snapshot/feature-cache against real projects. **Pending
+(needs a hands-on session + free GPU):** interactive dialog click-through and a live retrain
+run.
+
 ## 2026-05-24
 
 ### Added — Global Classifier Encyclopedia v1.0.0-rc1 (Tier 1 shipped)
