@@ -1858,6 +1858,7 @@ class PixelPawsGUI:
 
         _add_section(tools_sf, "Analysis Tools", [
             ("🤖 Auto-Label Assistant", self.open_auto_labeler),
+            ("🚩 Extract Problem Frames", self.extract_problem_frames),
             ("🔍 Data Quality Checker", self.open_quality_checker),
             ("💡 Brightness Diagnostics", self.run_brightness_diagnostics),
             ("📋 Feature File Inspector", self.inspect_features_file),
@@ -8565,6 +8566,430 @@ class PixelPawsGUI:
                 dlc_path = (filt or h5)[0]
                 break
         self._launch_label_viewer(video_path, labels_csv, behavior, dlc_path)
+
+    # ============================ Problem-frame active learning ============================
+    def _pf_read_dlc_meta(self, proj):
+        """Return (dlc_config_path, scorer, bps, skeleton, ldir) for the active project's
+        DLC config, or None. Read-only (yaml.safe_load)."""
+        import yaml
+        cfg_path = None
+        try:
+            from project_config import ProjectConfig
+            pc = ProjectConfig.load(proj)
+            cfg_path = getattr(pc, 'dlc_config', None) or (pc.get('dlc_config') if isinstance(pc, dict) else None)
+        except Exception:
+            cfg_path = None
+        if not cfg_path or not os.path.isfile(cfg_path):
+            # fall back: a config.yaml next to a project or in the project dir
+            for cand in (os.path.join(proj, 'config.yaml'),
+                         os.path.join(proj, 'config_local.yaml')):
+                if os.path.isfile(cand):
+                    cfg_path = cand; break
+        if not cfg_path or not os.path.isfile(cfg_path):
+            return None
+        with open(cfg_path) as f:
+            c = yaml.safe_load(f)
+        scorer = c.get('scorer', 'AlexZ')
+        bps = list(c.get('bodyparts') or [])
+        skel = [tuple(e) for e in (c.get('skeleton') or [])]
+        ldir = os.path.join(os.path.dirname(cfg_path), 'labeled-data')
+        return dict(config=cfg_path, scorer=scorer, bps=bps, skeleton=skel, ldir=ldir)
+
+    def _pf_list_classifiers(self, proj):
+        """{display -> pkl path} of project + encyclopedia classifiers."""
+        import glob as _glob
+        out = {}
+        for root, tag in ((os.path.join(proj, 'classifiers'), ''),
+                          (os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        'pixelpaws_global_classifier_encyclopedia', 'classifiers'), ' (encyclopedia)')):
+            for p in sorted(_glob.glob(os.path.join(root, 'classifier_*.pkl'))):
+                name = os.path.basename(p)[len('classifier_'):-len('.pkl')]
+                out[f"{name}{tag}"] = p
+        return out
+
+    def _pf_find_feature_cache(self, proj, session_name):
+        import glob as _glob
+        try:
+            from feature_cache import FeatureCacheManager
+            p = FeatureCacheManager.find_cache(session_name, '8aed1c22',
+                                               os.path.join(proj, 'features'),
+                                               os.path.join(proj, 'videos'), project_root=proj)
+            if p and os.path.isfile(p):
+                return p
+        except Exception:
+            pass
+        c = _glob.glob(os.path.join(proj, 'features', f'{session_name}_features_*.pkl'))
+        return c[0] if c else None
+
+    def extract_problem_frames(self):
+        """Surface frames where DLC tracking is unreliable and/or the classifier is
+        uncertain, prefill them with the current model's keypoints, and queue them into
+        the labeled-data candidate folders the keypoint labeler consumes. Two independent
+        budget buckets (tracking / classifier). Optionally launch the labeler + retrain."""
+        proj = self.current_project_folder.get()
+        if not proj or not os.path.isdir(proj):
+            messagebox.showwarning("No project", "Load a project folder first."); return
+        meta = self._pf_read_dlc_meta(proj)
+        if not meta:
+            messagebox.showwarning("No DLC config",
+                                   "Could not find this project's DLC config.yaml (scorer/bodyparts).")
+            return
+        try:
+            from evaluation_tab import find_session_triplets
+            sessions = find_session_triplets(proj, prefer_filtered=True, require_labels=False, recursive=True)
+        except Exception as e:
+            messagebox.showerror("Scan failed", f"Could not scan sessions:\n{e}"); return
+        sessions = [s for s in sessions if s.get('video') and s.get('dlc')]
+        if not sessions:
+            messagebox.showinfo("No sessions", "No video+DLC-h5 sessions found in this project."); return
+        names = [s.get('session_name') or os.path.splitext(os.path.basename(s['video']))[0] for s in sessions]
+
+        dlg = tk.Toplevel(self.root); dlg.title("Extract Problem Frames")
+        sw, sh = dlg.winfo_screenwidth(), dlg.winfo_screenheight()
+        w, h = max(620, int(sw * 0.40)), max(560, int(sh * 0.66))
+        dlg.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}"); dlg.transient(self.root)
+
+        ttk.Label(dlg, text="Extract problem-tracking / classifier-uncertain frames",
+                  font=(FONT_FAMILY, 13, 'bold')).pack(pady=(10, 2))
+        ttk.Label(dlg, text=f"Scorer: {meta['scorer']}   ·   bodyparts: {len(meta['bps'])}   ·   "
+                            f"→ {meta['ldir']}", foreground='#555').pack(pady=(0, 6))
+
+        # sessions
+        sfr = ttk.LabelFrame(dlg, text="Sessions (Ctrl/Shift to multi-select; none = all)", padding=6)
+        sfr.pack(fill='both', expand=True, padx=14, pady=4)
+        lb = tk.Listbox(sfr, selectmode='extended', height=8)
+        for n in names:
+            lb.insert('end', n)
+        lb.pack(side='left', fill='both', expand=True)
+        ttk.Scrollbar(sfr, orient='vertical', command=lb.yview).pack(side='right', fill='y')
+
+        # buckets
+        bfr = ttk.LabelFrame(dlg, text="Buckets", padding=8); bfr.pack(fill='x', padx=14, pady=4)
+        track_on = tk.BooleanVar(value=True); clf_on = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bfr, text="Tracking problems (low likelihood / teleports / jumps)",
+                        variable=track_on).grid(row=0, column=0, columnspan=3, sticky='w')
+        ttk.Checkbutton(bfr, text="Classifier frames", variable=clf_on).grid(row=1, column=0, sticky='w')
+        clfs = self._pf_list_classifiers(proj)
+        clf_var = tk.StringVar(value=(next(iter(clfs)) if clfs else ''))
+        ttk.Combobox(bfr, textvariable=clf_var, values=list(clfs.keys()), state='readonly',
+                     width=30).grid(row=1, column=1, padx=6, sticky='w')
+        mode_var = tk.StringVar(value='uncertain')
+        ttk.Combobox(bfr, textvariable=mode_var, values=['uncertain', 'positive'], state='readonly',
+                     width=12).grid(row=1, column=2, padx=6, sticky='w')
+
+        # numbers
+        nfr = ttk.LabelFrame(dlg, text="Budget", padding=8); nfr.pack(fill='x', padx=14, pady=4)
+        budget = tk.IntVar(value=40); tfrac = tk.DoubleVar(value=0.5)
+        maxper = tk.IntVar(value=12); gapv = tk.IntVar(value=300)
+        for col, (lab, var, lo, hi) in enumerate((
+                ("Total frames", budget, 1, 500), ("Tracking fraction", tfrac, 0.0, 1.0),
+                ("Max/video", maxper, 1, 100), ("Min gap (frames)", gapv, 30, 3000))):
+            ttk.Label(nfr, text=lab).grid(row=0, column=col*2, padx=(6, 1), sticky='e')
+            ttk.Spinbox(nfr, from_=lo, to=hi, textvariable=var, width=7,
+                        increment=(0.1 if isinstance(var, tk.DoubleVar) else 1)).grid(row=0, column=col*2+1, padx=(0, 8))
+
+        logtxt = scrolledtext.ScrolledText(dlg, height=7, font=('Consolas', 9))
+        logtxt.pack(fill='both', expand=False, padx=14, pady=6)
+        prog = ttk.Progressbar(dlg, mode='determinate', maximum=1.0)
+        prog.pack(fill='x', padx=14, pady=(0, 4))
+
+        def _log(m):
+            self.root.after(0, lambda: (logtxt.insert('end', m + "\n"), logtxt.see('end')))
+
+        state = {'result': None, 'running': False}
+
+        def _run():
+            if state['running']:
+                return
+            sel = [i for i in lb.curselection()]
+            chosen = [sessions[i] for i in sel] if sel else sessions
+            clf_path = clfs.get(clf_var.get()) if clf_on.get() else None
+            state['running'] = True
+            run_btn.configure(state='disabled')
+
+            def worker():
+                try:
+                    import sys as _sys
+                    _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pipeline'))
+                    import problem_frames as pf
+                    clf_data = None
+                    if clf_path:
+                        import joblib
+                        try:
+                            clf_data = joblib.load(clf_path)
+                        except Exception:
+                            import pickle; clf_data = pickle.load(open(clf_path, 'rb'))
+                        try:
+                            state_thr = float(clf_data.get('best_thresh', 0.5))
+                        except Exception:
+                            state_thr = 0.5
+                    sess_objs = [pf.Session(
+                        name=(s.get('session_name') or os.path.splitext(os.path.basename(s['video']))[0]),
+                        video=s['video'], dlc=s['dlc'],
+                        features=self._pf_find_feature_cache(proj, s.get('session_name') or
+                                 os.path.splitext(os.path.basename(s['video']))[0]))
+                        for s in chosen]
+                    cfg = pf.ExtractConfig(
+                        scorer=meta['scorer'], ldir=meta['ldir'], bps=meta['bps'] or None,
+                        use_tracking=track_on.get(), use_classifier=bool(clf_path),
+                        classifier_mode=mode_var.get(), behavior=clf_var.get(),
+                        budget=int(budget.get()), tracking_frac=float(tfrac.get()),
+                        max_per_video=int(maxper.get()), gap=int(gapv.get()))
+                    if cfg.bps is None:
+                        cfg.bps = list(pf.BPS_DEFAULT)
+                    res = pf.extract_problem_frames(sess_objs, cfg, clf_data=clf_data,
+                                                    progress=lambda m, fr=None: (
+                                                        _log(m),
+                                                        self.root.after(0, lambda: prog.configure(
+                                                            value=(fr if fr is not None else prog['value'])))))
+                    state['result'] = dict(res=res, meta=meta, sessions=sess_objs)
+                    self.root.after(0, _finish)
+                except Exception as e:
+                    import traceback; _log("ERROR: " + traceback.format_exc())
+                    self.root.after(0, lambda: (run_btn.configure(state='normal'),))
+                    state['running'] = False
+
+            import threading
+            threading.Thread(target=worker, daemon=True).start()
+
+        def _finish():
+            state['running'] = False
+            run_btn.configure(state='normal')
+            res = state['result']['res']
+            n = res['total']; folders = res['folders']
+            _log(f"\nQueued {n} frames across {len(folders)} folder(s).")
+            if n == 0:
+                messagebox.showinfo("Nothing queued",
+                                    "No frames were queued (folders may already be in the labeling "
+                                    "queue — finish or clear them first).", parent=dlg)
+                return
+            if messagebox.askyesno("Extraction done",
+                                   f"Queued {n} frames across {len(folders)} session(s).\n\n"
+                                   "Open the keypoint labeler now to correct them?", parent=dlg):
+                self._pf_launch_labeler(meta)
+            retrain_btn.configure(state='normal')
+
+        def _retrain():
+            if not state.get('result'):
+                messagebox.showinfo("Extract first", "Extract + label some frames before retraining.",
+                                    parent=dlg); return
+            self._pf_retrain_dialog(proj, state['result']['meta'], state['result']['sessions'])
+
+        bar = ttk.Frame(dlg); bar.pack(fill='x', padx=14, pady=8)
+        run_btn = ttk.Button(bar, text="🚩 Extract", command=_run); run_btn.pack(side='left', padx=4)
+        ttk.Button(bar, text="✎ Open Labeler", command=lambda: self._pf_launch_labeler(meta)).pack(side='left', padx=4)
+        retrain_btn = ttk.Button(bar, text="🧠 Retrain DLC (add iteration)…", command=_retrain, state='disabled')
+        retrain_btn.pack(side='left', padx=4)
+        ttk.Button(bar, text="Close", command=dlg.destroy).pack(side='right', padx=4)
+
+    def _pf_launch_labeler(self, meta):
+        """Write _labeler_config.json for the active project + scorer, then launch the
+        repo's project-aware keypoint labeler (Python310 process, non-blocking)."""
+        import json, subprocess, sys as _sys
+        here = os.path.dirname(os.path.abspath(__file__))
+        labeler = os.path.join(here, 'pixelpaws_labeler.py')
+        sidecar = os.path.join(here, '_labeler_config.json')
+        try:
+            json.dump(dict(ldir=meta['ldir'], scorer=meta['scorer'],
+                           bps=meta['bps'], skeleton=[list(e) for e in meta['skeleton']]),
+                      open(sidecar, 'w'), indent=1)
+        except Exception as e:
+            messagebox.showerror("Labeler", f"Could not write labeler config:\n{e}"); return
+        try:
+            subprocess.Popen([_sys.executable, labeler],
+                             env={**os.environ, 'PIXELPAWS_LABELER_CONFIG': sidecar})
+        except Exception as e:
+            messagebox.showerror("Labeler", f"Could not launch labeler:\n{e}")
+
+    # --- retrain (adds a DLC iteration, warm-starts, shows explained live progress) ---
+    _PF_STAT_LEGEND = [
+        ("epoch", "one full pass over your labeled frames; DLC keeps the best snapshot automatically"),
+        ("train loss", "how well it fits your labeled frames — lower is better (near 0 is good)"),
+        ("test RMSE (px)", "average keypoint error on held-out frames it never trained on"),
+        ("test RMSE @cutoff (px)", "error counting only confident keypoints — the number that matters (≈<4 px is excellent)"),
+        ("mAP / mAR (%)", "keypoint detection precision / recall — higher is better (~90+ is good)"),
+        ("learning rate", "step size; it automatically decreases as training settles"),
+    ]
+
+    def _pf_best_snapshot(self, project_dir):
+        """Highest-iteration, highest snapshot-best-N.pt in the project (warm-start source)."""
+        import glob as _glob, re as _re
+        cands = _glob.glob(os.path.join(project_dir, 'dlc-models-pytorch', 'iteration-*',
+                                        '*trainset*shuffle1', 'train', 'snapshot-*.pt'))
+        def key(p):
+            it = _re.search(r'iteration-(\d+)', p); bn = _re.search(r'snapshot-best-(\d+)', p)
+            sn = _re.search(r'snapshot-(\d+)', p)
+            return (int(it.group(1)) if it else -1,
+                    int(bn.group(1)) if bn else (int(sn.group(1)) if sn else -1),
+                    1 if bn else 0)
+        return max(cands, key=key) if cands else ''
+
+    def _pf_retrain_dialog(self, proj, meta, sessions):
+        """Confirm + configure a retraining iteration, then run dlc_retrain.py in the
+        DEEPLABCUT env and stream explained live progress from learning_stats.csv."""
+        import yaml
+        with open(meta['config']) as f:
+            cur_iter = int((yaml.safe_load(f) or {}).get('iteration', 0))
+        new_iter = cur_iter + 1
+        snap = self._pf_best_snapshot(proj)
+
+        dlg = tk.Toplevel(self.root); dlg.title("Retrain DLC — add an iteration")
+        sw, sh = dlg.winfo_screenwidth(), dlg.winfo_screenheight()
+        w, h = max(680, int(sw * 0.46)), max(600, int(sh * 0.72))
+        dlg.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}"); dlg.transient(self.root)
+
+        ttk.Label(dlg, text=f"Retrain — new iteration {new_iter}", font=(FONT_FAMILY, 13, 'bold')).pack(pady=(10, 2))
+        ttk.Label(dlg, text=("This rebuilds the training set with your corrected frames and warm-starts "
+                             "from the current best model."), justify='center', foreground='#555').pack(pady=(0, 6))
+
+        pf = ttk.LabelFrame(dlg, text="Settings", padding=8); pf.pack(fill='x', padx=14, pady=4)
+        epochs = tk.IntVar(value=200); batch = tk.IntVar(value=24); savee = tk.IntVar(value=25)
+        for col, (lab, var) in enumerate((("Epochs", epochs), ("Batch", batch), ("Save every", savee))):
+            ttk.Label(pf, text=lab).grid(row=0, column=col*2, padx=(6, 1), sticky='e')
+            ttk.Spinbox(pf, from_=1, to=2000, textvariable=var, width=7).grid(row=0, column=col*2+1, padx=(0, 8))
+        ttk.Label(pf, text=f"Warm-start: {os.path.basename(snap) or '(none — from scratch)'}",
+                  foreground='#555').grid(row=1, column=0, columnspan=6, sticky='w', pady=(6, 0))
+
+        leg = ttk.LabelFrame(dlg, text="What the numbers mean", padding=8); leg.pack(fill='x', padx=14, pady=4)
+        for k, v in self._PF_STAT_LEGEND:
+            row = ttk.Frame(leg); row.pack(fill='x', anchor='w')
+            ttk.Label(row, text=f"{k}:", width=22, font=(FONT_FAMILY, 9, 'bold')).pack(side='left')
+            ttk.Label(row, text=v, foreground='#444', wraplength=w-220, justify='left').pack(side='left')
+
+        stat = ttk.Label(dlg, text="idle", font=(FONT_FAMILY, 10, 'bold')); stat.pack(pady=(6, 0))
+        prog = ttk.Progressbar(dlg, mode='determinate', maximum=1.0); prog.pack(fill='x', padx=14, pady=4)
+        logtxt = scrolledtext.ScrolledText(dlg, height=9, font=('Consolas', 9))
+        logtxt.pack(fill='both', expand=True, padx=14, pady=6)
+
+        def _log(m):
+            self.root.after(0, lambda: (logtxt.insert('end', m + "\n"), logtxt.see('end')))
+
+        run = {'proc': None, 'stop': False}
+
+        def _start():
+            start_btn.configure(state='disabled')
+            # GPU-busy guard (soft): warn if another process holds significant VRAM.
+            busy = self._pf_gpu_busy_mb()
+            if busy and busy > 1500 and not messagebox.askyesno(
+                    "GPU busy", f"The GPU already has ~{busy} MB in use (another training?).\n"
+                    "Running now will contend for VRAM and may fail. Continue anyway?", parent=dlg):
+                start_btn.configure(state='normal'); return
+            import threading
+            threading.Thread(target=_worker, daemon=True).start()
+
+        def _worker():
+            import json, subprocess, tempfile, sys as _sys, time, cv2
+            here = os.path.dirname(os.path.abspath(__file__))
+            # sessions.json: new candidate folders that exist as labeled-data with the marker gone
+            sess_json = {}
+            for s in sessions:
+                fold = os.path.join(meta['ldir'], s.name)
+                if not os.path.isdir(fold):
+                    continue
+                crop = "0, 1280, 0, 720"
+                try:
+                    cap = cv2.VideoCapture(s.video); wv = int(cap.get(3)); hv = int(cap.get(4)); cap.release()
+                    if wv and hv:
+                        crop = f"0, {wv}, 0, {hv}"
+                except Exception:
+                    pass
+                sess_json[s.name] = dict(video=s.video, crop=crop)
+            sj = os.path.join(tempfile.gettempdir(), f"pf_retrain_{new_iter}.json")
+            json.dump(sess_json, open(sj, 'w'))
+            try:
+                from pp_config import DLC_PYTHON
+            except Exception:
+                DLC_PYTHON = r"C:\ProgramData\Anaconda3\envs\DEEPLABCUT\python.exe"
+            cmd = [DLC_PYTHON, os.path.join(here, 'pipeline', 'dlc_retrain.py'),
+                   '--config', meta['config'], '--scorer', meta['scorer'], '--project-dir', proj,
+                   '--iteration', str(new_iter), '--snapshot', snap,
+                   '--epochs', str(int(epochs.get())), '--batch', str(int(batch.get())),
+                   '--save-epochs', str(int(savee.get())), '--sessions', sj, '--ldir', meta['ldir']]
+            _log("launching: " + " ".join(os.path.basename(c) if c.endswith('.py') or c.endswith('.exe') else c
+                                          for c in cmd))
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 text=True, bufsize=1, env={**os.environ, 'PYTHONIOENCODING': 'utf-8'})
+            run['proc'] = p
+            traindir = None
+            self.root.after(0, lambda: stat.configure(text="building dataset…"))
+            for line in p.stdout:
+                line = line.rstrip()
+                if line.startswith('TRAINDIR='):
+                    traindir = line.split('=', 1)[1]
+                    import threading; threading.Thread(target=_poll_stats, args=(traindir,), daemon=True).start()
+                    self.root.after(0, lambda: stat.configure(text="training…"))
+                if any(t in line for t in ('===', 'MISSING', 'TRAIN DONE', 'Error', 'RuntimeError',
+                                           'merged training set', 'warm-start', 'from scratch')):
+                    _log(line)
+            code = p.wait()
+            run['stop'] = True
+            self.root.after(0, lambda: (stat.configure(text=("✓ done" if code == 0 else f"✗ exited {code}")),
+                                        start_btn.configure(state='normal')))
+            _log(f"\nretrain process exited ({code}).")
+
+        def _poll_stats(traindir):
+            import time
+            import pandas as pd
+            stats_csv = os.path.join(traindir, 'learning_stats.csv')
+            target_ep = int(epochs.get())
+            base = None
+            while not run['stop']:
+                time.sleep(5)
+                try:
+                    if not os.path.isfile(stats_csv):
+                        continue
+                    df = pd.read_csv(stats_csv)
+                    if not len(df):
+                        continue
+                    def col(sub):
+                        for c in df.columns:
+                            if sub in c:
+                                return c
+                        return None
+                    step = int(df['step'].iloc[-1]) if 'step' in df.columns else len(df)
+                    if base is None:
+                        base = step - 1
+                    done = max(0, step - base); frac = min(1.0, done / max(1, target_ep))
+                    last = df.iloc[-1]
+                    lc = col('train.total_loss') or col('total_loss') or col('loss')
+                    ev = df.dropna(subset=[col('rmse_pcutoff')]) if col('rmse_pcutoff') else df.iloc[0:0]
+                    bestr = (ev[col('rmse_pcutoff')].min() if len(ev) else float('nan'))
+                    rmse = last.get(col('test.rmse'), float('nan')) if col('test.rmse') else float('nan')
+                    rmc = last.get(col('rmse_pcutoff'), float('nan')) if col('rmse_pcutoff') else float('nan')
+                    mAP = last.get(col('mAP'), float('nan')) if col('mAP') else float('nan')
+                    lr = last.get(col('lr'), None) if col('lr') else None
+                    tl = last.get(lc, float('nan')) if lc else float('nan')
+                    msg = (f"epoch {step} ({done}/{target_ep})   "
+                           f"train loss {tl:.4f}   test RMSE {rmse:.2f}px   "
+                           f"@cutoff {rmc:.2f}px   mAP {mAP:.1f}   best @cutoff {bestr:.2f}px")
+                    self.root.after(0, lambda m=msg, fr=frac: (prog.configure(value=fr),
+                                                              stat.configure(text=m)))
+                except Exception:
+                    continue
+
+        def _stop():
+            run['stop'] = True
+            if run.get('proc') and run['proc'].poll() is None:
+                try:
+                    run['proc'].terminate()
+                except Exception:
+                    pass
+            _log("stop requested.")
+
+        bar = ttk.Frame(dlg); bar.pack(fill='x', padx=14, pady=8)
+        start_btn = ttk.Button(bar, text="🧠 Start retraining", command=_start); start_btn.pack(side='left', padx=4)
+        ttk.Button(bar, text="Stop", command=_stop).pack(side='left', padx=4)
+        ttk.Button(bar, text="Close", command=dlg.destroy).pack(side='right', padx=4)
+
+    def _pf_gpu_busy_mb(self):
+        """Best-effort: MB of GPU memory already in use (0 if nvidia-smi unavailable)."""
+        import subprocess
+        try:
+            out = subprocess.run(['nvidia-smi', '--query-gpu=memory.used', '--format=csv,noheader,nounits'],
+                                 capture_output=True, text=True, timeout=8)
+            return int(out.stdout.strip().splitlines()[0])
+        except Exception:
+            return 0
 
     def import_boris_project_native(self):
         """Tool: import a native .boris project → per-frame <session>_labels.csv.
