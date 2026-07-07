@@ -169,6 +169,14 @@ Cropped videos are saved alongside the originals with a `_cropped` suffix. Run D
 
 ## Tab-by-Tab Guide
 
+### Pose Estimation Tab
+
+Runs the bundled DeepLabCut network on your project's videos and manages installed pose models. **Analyze Videos (Pose Tracking)** runs the active model — detected keypoints are written next to each video as DLC `.h5` files, and the flow can chain into Predict and Extract Problem Frames. The **Installed pose models** panel lists bundled models with their version / scorer / release date; use **Import model (.zip)…** to add a newer network, **Set active** to choose which model is used for tracking (and as the scorer/keypoints source for Extract Problem Frames), **Delete** to remove one, and **Details** to inspect scorer / keypoints / snapshot. On first run the shipped default model is seeded automatically.
+
+### Feature Extraction Tab
+
+Extracts pose + brightness (+ optional optical flow) features from DLC tracking, in **Batch** (scan a project folder) or **Single Video** mode. This is the same tool previously reached from the Tools tab; it writes the cached feature files that training, prediction, and evaluation consume.
+
 ### Train Tab
 
 The Train tab is where you build a classifier for a single behavior.

@@ -5,6 +5,66 @@ Entries are grouped by date (most recent first).
 
 ## 2026-07-06
 
+### Added — Pose Estimation & Feature Extraction tabs + in-app model manager
+
+Promoted pose estimation and feature extraction from buried Tools-tab dialogs to first-class
+tabs at the top of the sidebar (new **"Pose & Features"** group above Train Classifier; Train
+Classifier stays the startup page), and finished the model-bundle management UI whose backend
+already existed but had no front end.
+
+- **`PixelPaws_GUI.py`** — `create_pose_estimation_tab` (🦴 Pose Estimation: runs the bundled
+  DLC network via the existing `open_pose_extraction`, plus a **model manager** — list installed
+  bundles, Import `.zip`, Set active, Delete, Details) and `create_feature_extraction_tab`
+  (⚙️ Feature Extraction). The feature-extraction body was factored into
+  `_build_feature_extraction_body(container, show_close=)` so it renders in either the tab or the
+  old Toplevel; the Tools buttons now jump to the tabs.
+- **`dlc_inference/bundle_manager.py`** — `delete_bundle()` (clears the active pointer when it
+  removes the active bundle) and an `overwrite=` path on `import_bundle_zip` (update a model in
+  place); exported `delete_bundle`/`load_active_bundle`.
+- **`PixelPaws_GUI.py` — Extract Problem Frames** now resolves its DLC config gracefully instead
+  of dead-ending: project config → recursive auto-find → **installed model bundle**
+  (scorer/keypoints) with a chosen labeled-data folder → manual picker; retrain is gated off in
+  bundle-only mode.
+
+**Verified:** all files compile; bundle backend unit-tested (import / duplicate-raises / overwrite /
+set-active / delete-clears-pointer); `load_bundle` validated against the real `pixelpaws_v1` bundle.
+GUI rendering to be confirmed on next launch.
+
+### Added — Formalin gait preset (default) + contour-area contact + importance report
+
+- **`gait_limb_tab.py`** — new **"Formalin (contour/brightness)"** quick-setup preset, now the
+  on-load default: contour ROI 50 (hind), DLC-likelihood gate on @0.6, 5-min bins, and a new
+  **"Contour area"** contact method (a hind paw is in contact when its contour area exceeds the
+  px² threshold, both hind paws gated) — reproduces the formalin `contact_intensity_ratio_hind`
+  gate. `GAIT_PRESETS`/`_apply_gait_preset` extended to carry ROI/likelihood/bin/contact knobs;
+  other presets reset the contact method to Height. Built after contour extraction so the
+  height/speed/combined paths are untouched.
+- **`shap_importance_report.py`** (now in the manuscript folder) — sweeps project + encyclopedia
+  classifiers, aggregates per-feature and per-family importance (SHAP via `pred_contribs` when a
+  `*_train_set.pkl` exists, else XGBoost gain), writes CSVs + a stacked-bar figure.
+
+### Changed — Repo split: manuscript/figures moved out; app repo relocated out of Syncthing
+
+Made the git repo just the installable codebase. Moved the manuscript/figure research
+(`scripts/research/` — 233 scripts, `paper_figures/` — 356 MB, `_research_artifacts/`,
+`analysis_output/`, `encyclopedia_runs/`, backups, stray sample pkl) to a standalone
+**`E:\PixelPaws_manuscript\`**, and relocated the app repo out of the Syncthing tree to
+**`E:\Code\PixelPaws\`** (Syncthing was spawning `*.sync-conflict-*` duplicates on the code).
+
+- Moved scripts stay runnable via a `research/_paths.py` indirection (`PIXELPAWS_APP_ROOT`,
+  default `E:\Code\PixelPaws`; figures write to `FIG_ROOT`). Repointing done by a one-shot codemod
+  (64 files / 99 rewrites) + 6 scripts whose relative `parents[2]` app-root became `_paths.APP_ROOT`.
+  Data paths (`Blackbox`, `PixelPaws_Active`, `_Archived`) left untouched.
+- `pixelpaws_global_classifier_encyclopedia/` **stays** (Extract Problem Frames reads it).
+- Syncthing conflict-copies + `__pycache__` quarantined to `PixelPaws_manuscript/junk_20260706/`.
+
+**Decisions:** the app imports nothing from `scripts/research`, so the split can't break the GUI.
+The app resolves its own paths from `__file__`, so relocating the folder needs no code change.
+
+**Verified:** the 169 tracked research files removed from HEAD; all 227 moved scripts compile;
+`shap_importance_report.py` runs from the new location. See `PixelPaws_manuscript/README.md` for
+the per-figure build index.
+
 ### Added — In-GUI pose extraction + restored auto-installer (SlivickiR_WangH network)
 
 Brought the distribution-fork's integrated pose-estimation experience (branch
