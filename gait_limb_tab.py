@@ -172,6 +172,28 @@ class GaitLimbTab(ttk.Frame):
     }
     ROLE_DEFAULTS = {'HL': 'hlpaw', 'HR': 'hrpaw', 'FL': 'flpaw', 'FR': 'frpaw'}
 
+    # Quick-setup presets — each maps to the interdependent toggle vars so the
+    # user never has to know that contour needs brightness needs video. Applied
+    # only when the user picks one; the on-load defaults (set in __init__) are
+    # left untouched. Keys are shown in the "Quick setup" combobox in order.
+    GAIT_PRESETS = {
+        # Default profile — reproduces the formalin contour/brightness analysis:
+        # contour ROI 50 (hind), DLC-likelihood gate on @0.6, 5-min bins, and a
+        # contour-area contact gate (both hind paws, area > 20 px^2).
+        'Formalin (contour/brightness)': dict(
+            brightness=True, contour=True, fore=False, contour_roi=50,
+            likelihood=True, likelihood_thresh=0.6, bin_seconds=5, bin_unit='minutes',
+            contact_method='contour_area', contour_area_threshold=20),
+        'Hindpaw gait (minimal)':        dict(brightness=False, contour=False, fore=False,
+                                              contact_method='height'),
+        'Gait + forepaws':               dict(brightness=False, contour=False, fore=True,
+                                              contact_method='height'),
+        'Gait + brightness':             dict(brightness=True,  contour=False, fore=False,
+                                              contact_method='height'),
+        'Gait + brightness + contour':   dict(brightness=True,  contour=True,  fore=False,
+                                              contact_method='height'),
+    }
+
     def __init__(self, parent, main_gui):
         super().__init__(parent)
         self.app = main_gui
@@ -197,6 +219,7 @@ class GaitLimbTab(ttk.Frame):
         self._loco_thresh_var    = tk.DoubleVar(value=20.0)
         self._paw_contour_var    = tk.BooleanVar(value=True)
         self._contour_forelimbs_var = tk.BooleanVar(value=False)
+        self._contour_area_thresh_var = tk.IntVar(value=20)  # px^2 gate for contour-area contact
         self._min_stance_ms_var  = tk.IntVar(value=100)
         self._fit_thread: threading.Thread = None
         self._cancel_flag = threading.Event()
@@ -206,6 +229,11 @@ class GaitLimbTab(ttk.Frame):
         self._pawlike_thresholds = {'solidity': 1.00, 'aspect_ratio': 1.6, 'circularity': 0.10}
 
         self._build_ui()
+        # Open in the default analysis profile (formalin contour/brightness).
+        try:
+            self._apply_gait_preset()
+        except Exception:
+            pass
 
     # ═══════════════════════════════════════════════════════════════════════
     # UI construction
@@ -213,9 +241,12 @@ class GaitLimbTab(ttk.Frame):
 
     def _build_ui(self):
         hdr = ttk.Frame(self)
-        hdr.pack(fill='x', padx=10, pady=(8, 2))
+        hdr.pack(fill='x', padx=10, pady=(8, 0))
         ttk.Label(hdr, text="🐾  Gait & Limb Use Analysis",
                   font=(FONT_FAMILY, 13, 'bold')).pack(side='left')
+        ttk.Label(hdr,
+                  text="   Pick sessions → check setup → run.  Advanced options are optional.",
+                  foreground='grey', font=(FONT_FAMILY, 9)).pack(side='left')
 
         paned = ttk.PanedWindow(self, orient='horizontal')
         paned.pack(fill='both', expand=True, padx=6, pady=4)
@@ -232,12 +263,15 @@ class GaitLimbTab(ttk.Frame):
         self._build_settings_panel(mid)
         self._build_results_panel(right)
 
+        # Initial readiness state (all widgets now exist)
+        self._update_readiness()
+
     # ── Left: Sessions ──────────────────────────────────────────────────────
 
     def _build_sessions_panel(self, parent):
         self._override_folder_var = tk.StringVar(value='')
 
-        lf = ttk.LabelFrame(parent, text="Sessions", padding=5)
+        lf = ttk.LabelFrame(parent, text="① Sessions", padding=5)
         lf.pack(fill='both', expand=True, padx=4, pady=4)
 
         btn_row = ttk.Frame(lf)
@@ -265,6 +299,7 @@ class GaitLimbTab(ttk.Frame):
         self._sess_tree.config(yscrollcommand=sb.set)
         self._sess_tree.pack(side='left', fill='both', expand=True)
         sb.pack(side='right', fill='y')
+        self._sess_tree.bind('<<TreeviewSelect>>', self._update_readiness)
 
         self._sess_lbl = ttk.Label(parent, text='', foreground='grey')
         self._sess_lbl.pack(anchor='w', padx=6, pady=(2, 0))
@@ -292,24 +327,73 @@ class GaitLimbTab(ttk.Frame):
         return inner
 
     def _build_settings_panel(self, parent):
-        # ── Run / Cancel / Progress (always visible at top) ───────────────
-        run_frame = ttk.Frame(parent)
-        run_frame.pack(fill='x', padx=2, pady=(4, 2))
+        # ── Parameter vars (declared up front so any tab can build them) ──
+        self._contact_thresh_var = tk.IntVar(value=15)
+        self._height_window_var  = tk.IntVar(value=500)
+        self._bin_seconds_var    = tk.IntVar(value=1)
+        self._bin_unit_var       = tk.StringVar(value='minutes')
+        self._fallback_fps_var   = tk.DoubleVar(value=60.0)
+        self._use_brightness_var = tk.BooleanVar(value=True)
+        self._brt_thresh_var     = tk.IntVar(value=0)
+        self._brt_weight_var        = tk.DoubleVar(value=1.0)
+        self._extraction_stride_var = tk.IntVar(value=1)
+        self._roi_size_vars      = {
+            'HL': tk.IntVar(value=20),
+            'HR': tk.IntVar(value=20),
+            'FL': tk.IntVar(value=15),
+            'FR': tk.IntVar(value=15),
+        }
+        self._contour_roi_size_vars = {
+            'HL': tk.IntVar(value=60),
+            'HR': tk.IntVar(value=60),
+            'FL': tk.IntVar(value=40),
+            'FR': tk.IntVar(value=40),
+        }
+        self._dlc_config_var = tk.StringVar()
+        self._crop_x_var     = tk.IntVar(value=0)
+        self._crop_y_var     = tk.IntVar(value=0)
 
+        # ── Quick setup + Run / Cancel + readiness (always visible at top) ──
+        top = ttk.Frame(parent)
+        top.pack(fill='x', padx=2, pady=(4, 2))
+
+        quick_row = ttk.Frame(top)
+        quick_row.pack(fill='x', pady=(0, 2))
+        ttk.Label(quick_row, text="Quick setup:").pack(side='left')
+        self._preset_var = tk.StringVar(value='Formalin (contour/brightness)')
+        self._preset_combo = ttk.Combobox(
+            quick_row, textvariable=self._preset_var, state='readonly',
+            width=26, values=list(self.GAIT_PRESETS.keys()))
+        self._preset_combo.pack(side='left', padx=4)
+        self._preset_combo.bind('<<ComboboxSelected>>', self._apply_gait_preset)
+        self._tip(self._preset_combo,
+                  "One-click setup for common runs. Sets the brightness / contour /\n"
+                  "forepaw options for you so you don't have to know their\n"
+                  "dependencies. Fine-tune anything afterward in the tabs below.")
+
+        run_frame = ttk.Frame(top)
+        run_frame.pack(fill='x', pady=(2, 0))
         self._run_btn = ttk.Button(run_frame, text="▶  Run Analysis",
-                                   command=self._start_analysis)
+                                   command=self._start_analysis, state='disabled')
         self._run_btn.pack(side='left', padx=2)
         self._cancel_btn = ttk.Button(run_frame, text="■  Cancel",
                                       command=self._cancel_analysis,
                                       state='disabled')
         self._cancel_btn.pack(side='left', padx=2)
 
-        # ── Settings notebook ─────────────────────────────────────
+        # Readiness strip — always shows the next actionable step
+        self._readiness_lbl = ttk.Label(
+            top, text='', foreground='grey', wraplength=250,
+            justify='left', font=(FONT_FAMILY, 8))
+        self._readiness_lbl.pack(fill='x', pady=(3, 0))
+
+        # ── Settings notebook: ② Setup · ③ Detection · Advanced ──────
         settings_nb = ttk.Notebook(parent)
         settings_nb.pack(fill='both', expand=True, padx=2, pady=(4, 2))
 
-        # ── Tab 1: Setup (Key File + Paw Mapping) ────────────────────
-        setup_inner = self._make_scrollable_tab(settings_nb, "Setup")
+        setup_inner  = self._make_scrollable_tab(settings_nb, "② Setup")
+        detect_inner = self._make_scrollable_tab(settings_nb, "③ Detection")
+        adv_inner    = self._make_scrollable_tab(settings_nb, "Advanced")
 
         kf_lf = ttk.LabelFrame(setup_inner, text="Key File", padding=5)
         kf_lf.pack(fill='x', pady=(0, 6), padx=2)
@@ -371,143 +455,87 @@ class GaitLimbTab(ttk.Frame):
                    command=self._autodetect_bodyparts).grid(
             row=len(self.ROLES) + 1, column=0, columnspan=3, sticky='ew', pady=(6, 2))
 
-        # ── Tab 2: Parameters ─────────────────────────────────────
-        params_inner = self._make_scrollable_tab(settings_nb, "Parameters")
+        # === ③ Detection: contact detection + core kinematics + time bins ===
+        cd_lf = ttk.LabelFrame(detect_inner, text="Contact Detection", padding=5)
+        cd_lf.pack(fill='x', pady=(0, 6), padx=2)
 
-        par_lf = ttk.LabelFrame(params_inner, text="Parameters", padding=5)
-        par_lf.pack(fill='x', pady=(0, 6), padx=2)
+        ttk.Label(cd_lf, text="Method:").grid(row=0, column=0, sticky='w', pady=2)
+        cd_rb_frame = ttk.Frame(cd_lf)
+        cd_rb_frame.grid(row=0, column=1, sticky='w', padx=4, pady=2)
+        for txt, val in [("Height", "height"), ("Speed", "speed"), ("Combined", "combined"),
+                         ("Contour area", "contour_area")]:
+            ttk.Radiobutton(cd_rb_frame, text=txt, variable=self._contact_method_var,
+                            value=val).pack(side='left', padx=(0, 6))
+        self._tip(cd_lf,
+                  "Height: paw height below threshold (original).\n"
+                  "Speed: paw speed below threshold (Kumar Lab 2022).\n"
+                  "Combined: both must agree (logical AND).\n"
+                  "Contour area: hind-paw contour area above the px^2 threshold\n"
+                  "(both hind paws gated together) — the formalin contact gate.")
 
-        self._contact_thresh_var = tk.IntVar(value=15)
-        self._height_window_var  = tk.IntVar(value=500)
-        self._bin_seconds_var    = tk.IntVar(value=1)
-        self._bin_unit_var       = tk.StringVar(value='minutes')
-        self._fallback_fps_var   = tk.DoubleVar(value=60.0)
-        self._use_brightness_var = tk.BooleanVar(value=True)
-        self._brt_thresh_var     = tk.IntVar(value=0)
-        self._brt_weight_var        = tk.DoubleVar(value=1.0)
-        self._extraction_stride_var = tk.IntVar(value=1)
-        self._roi_size_vars      = {
-            'HL': tk.IntVar(value=20),
-            'HR': tk.IntVar(value=20),
-            'FL': tk.IntVar(value=15),
-            'FR': tk.IntVar(value=15),
-        }
-        self._contour_roi_size_vars = {
-            'HL': tk.IntVar(value=60),
-            'HR': tk.IntVar(value=60),
-            'FL': tk.IntVar(value=40),
-            'FR': tk.IntVar(value=40),
-        }
+        ttk.Label(cd_lf, text="Speed thresh (px/s):").grid(row=1, column=0, sticky='w', pady=2)
+        speed_ent = ttk.Entry(cd_lf, textvariable=self._speed_thresh_var, width=10)
+        speed_ent.grid(row=1, column=1, sticky='w', padx=4, pady=2)
+        self._tip(speed_ent,
+                  "'auto' = 20th percentile of paw speed.\n"
+                  "Or enter a numeric value in px/s.")
 
-        spinrows = [
-            ("Contact thresh (px):", self._contact_thresh_var, 0, 500,
+        ttk.Label(cd_lf, text="Median filter (ms):").grid(row=2, column=0, sticky='w', pady=2)
+        ttk.Spinbox(cd_lf, from_=0, to=500, textvariable=self._median_filter_var,
+                    width=8).grid(row=2, column=1, sticky='w', padx=4, pady=2)
+
+        ttk.Label(cd_lf, text="Min bout (ms):").grid(row=3, column=0, sticky='w', pady=2)
+        ttk.Spinbox(cd_lf, from_=0, to=500, textvariable=self._min_bout_var,
+                    width=8).grid(row=3, column=1, sticky='w', padx=4, pady=2)
+
+        _msd_lbl = ttk.Label(cd_lf, text="Min stance duration (ms):")
+        _msd_lbl.grid(row=4, column=0, sticky='w', pady=2)
+        _msd_sb = ttk.Spinbox(cd_lf, from_=0, to=500,
+                               textvariable=self._min_stance_ms_var, width=8)
+        _msd_sb.grid(row=4, column=1, sticky='w', padx=4, pady=2)
+        _msd_tip = ("Minimum stance bout duration for gait metrics.\n"
+                     "Stance bouts shorter than this are discarded as\n"
+                     "physiologically implausible (noise).\n"
+                     "Default 100 ms. Set 0 to disable.")
+        self._tip(_msd_lbl, _msd_tip)
+        self._tip(_msd_sb, _msd_tip)
+
+        _cat_lbl = ttk.Label(cd_lf, text="Contour-area thresh (px²):")
+        _cat_lbl.grid(row=5, column=0, sticky='w', pady=2)
+        _cat_sb = ttk.Spinbox(cd_lf, from_=0, to=100000,
+                              textvariable=self._contour_area_thresh_var, width=8)
+        _cat_sb.grid(row=5, column=1, sticky='w', padx=4, pady=2)
+        _cat_tip = ("Used only when Method = 'Contour area'. A hind paw counts as\n"
+                    "in ground contact when its contour area exceeds this many px^2\n"
+                    "(both hind paws gated together). Formalin default: 20.")
+        self._tip(_cat_lbl, _cat_tip)
+        self._tip(_cat_sb, _cat_tip)
+
+        # Core kinematics (floor / contact height estimation)
+        kin_lf = ttk.LabelFrame(detect_inner, text="Kinematics", padding=5)
+        kin_lf.pack(fill='x', pady=(0, 6), padx=2)
+        kin_rows = [
+            ("Paw-down height threshold (px):", self._contact_thresh_var, 0, 500,
              "Paw height (px) below which a frame is counted as ground contact.\n\n"
              "Height = rolling_max(paw_y, window=height_window) − current_paw_y.\n"
              "It measures how far the paw has risen above the estimated floor level.\n\n"
              "Typical: 5–30 px.  Too low → very few contact frames.  "
              "Too high → stance inflated by swing phase."),
-            ("Height window (fr):", self._height_window_var, 1, 10000,
+            ("Height window (frames):", self._height_window_var, 1, 10000,
              "Rolling-max window for floor estimation. Larger = more stable."),
             ("Fallback fps:", self._fallback_fps_var, 1, 500,
              "Used when the video cannot be opened to read its actual fps."),
-            ("Brightness threshold:", self._brt_thresh_var, 0, 255,
-             "Pixel intensity cutoff for brightness extraction.\n"
-             "0 = auto-detect (≈ mean frame brightness × 0.5).\n"
-             "Use the Preview button to set this visually."),
-            ("Extraction stride:", self._extraction_stride_var, 1, 16,
-             "Read every Nth video frame during brightness extraction.\n"
-             "1 = every frame (full accuracy).\n"
-             "2 = every 2nd frame (~2× faster, minimal accuracy loss for 30-s bins).\n"
-             "4 = every 4th frame (~4× faster, suitable for quick exploration runs)."),
         ]
-        for r, (lbl_text, var, from_, to, tip) in enumerate(spinrows):
-            lbl = ttk.Label(par_lf, text=lbl_text)
+        for r, (lbl_text, var, from_, to, tip) in enumerate(kin_rows):
+            lbl = ttk.Label(kin_lf, text=lbl_text)
             lbl.grid(row=r, column=0, sticky='w', pady=2)
-            sb = ttk.Spinbox(par_lf, from_=from_, to=to, textvariable=var, width=8)
+            sb = ttk.Spinbox(kin_lf, from_=from_, to=to, textvariable=var, width=8)
             sb.grid(row=r, column=1, sticky='w', padx=4, pady=2)
             self._tip(lbl, tip)
             self._tip(sb, tip)
 
-        brt_cb = ttk.Checkbutton(par_lf, text="Brightness-weighted (needs video)",
-                                  variable=self._use_brightness_var)
-        brt_cb.grid(row=len(spinrows), column=0, columnspan=2, sticky='w', pady=(4, 0))
-        self._tip(brt_cb,
-                  "Extract mean pixel brightness in each paw ROI during contact frames.\n"
-                  "Requires a video file for each session. Skipped if video is missing.")
-
-        ttk.Button(par_lf, text="Preview brightness…",
-                   command=self._open_brightness_preview).grid(
-            row=len(spinrows) + 1, column=0, columnspan=2, sticky='w', pady=(4, 0))
-
-        ttk.Button(par_lf, text="Detect cached brightness…",
-                   command=self._detect_brightness_caches).grid(
-            row=len(spinrows) + 2, column=0, columnspan=2, sticky='w', pady=(2, 0))
-
-        bw_row = ttk.Frame(par_lf)
-        bw_row.grid(row=len(spinrows) + 3, column=0, columnspan=2, sticky='w', pady=2)
-        bw_lbl = ttk.Label(bw_row, text="Brt contact weight:")
-        bw_lbl.pack(side='left')
-        bw_sb  = ttk.Spinbox(bw_row, from_=0.0, to=1.0, increment=0.05,
-                              textvariable=self._brt_weight_var, width=6, format='%.2f')
-        bw_sb.pack(side='left', padx=4)
-        _bw_tip = ("Weight given to ROI brightness when determining contact frames.\n\n"
-                   "0 = height only (default).  1 = brightness only.\n"
-                   "0.3–0.5 recommended for glass-floor / transilluminated setups.\n"
-                   "Requires 'Brightness-weighted (needs video)' to be enabled.")
-        self._tip(bw_lbl, _bw_tip)
-        self._tip(bw_sb,  _bw_tip)
-
-        contour_cb = ttk.Checkbutton(par_lf, text="Compute paw contour area",
-                                      variable=self._paw_contour_var)
-        contour_cb.grid(row=len(spinrows) + 4, column=0, columnspan=2, sticky='w', pady=(4, 0))
-        self._tip(contour_cb,
-                  "Detect paw outline within the contour ROI using Otsu thresholding.\n"
-                  "Requires brightness enabled + video.\n\n"
-                  "Output metrics per paw:\n"
-                  "  paw_area — contour area in px² (larger = more paw contact)\n"
-                  "  paw_spread — max(width, height) of contour bounding box (px)\n"
-                  "  contact_intensity — mean pixel brightness within the contour shape")
-
-        ttk.Button(par_lf, text="Preview contour…",
-                   command=self._open_contour_preview).grid(
-            row=len(spinrows) + 5, column=0, columnspan=2, sticky='w', pady=(2, 0))
-
-        ttk.Button(par_lf, text="Detect cached contour…",
-                   command=self._detect_contour_caches).grid(
-            row=len(spinrows) + 6, column=0, columnspan=2, sticky='w', pady=(2, 0))
-
-        ttk.Button(par_lf, text="Analyze both caches…",
-                   command=self._detect_both_caches).grid(
-            row=len(spinrows) + 7, column=0, columnspan=2, sticky='w', pady=(2, 0))
-
-        contour_roi_lbl = ttk.Label(par_lf, text="Contour ROI half-size (px):")
-        contour_roi_lbl.grid(row=len(spinrows) + 8, column=0, columnspan=2,
-                             sticky='w', pady=(6, 0))
-        _croi_tip = ("Half-width of the ROI crop used for paw contour detection.\n"
-                     "Larger = captures more of the paw shape but may include background.\n"
-                     "Set independently from brightness ROI.")
-        self._tip(contour_roi_lbl, _croi_tip)
-
-        croi_frame = ttk.Frame(par_lf)
-        croi_frame.grid(row=len(spinrows) + 9, column=0, columnspan=2,
-                        sticky='w', pady=(0, 2))
-        for i, role in enumerate(self.ROLES):
-            ttk.Label(croi_frame, text=f"{role}:").grid(
-                row=i // 2, column=(i % 2) * 2, sticky='w', padx=(0, 2))
-            sb = ttk.Spinbox(croi_frame, from_=5, to=200,
-                             textvariable=self._contour_roi_size_vars[role], width=5)
-            sb.grid(row=i // 2, column=(i % 2) * 2 + 1, sticky='w', padx=(0, 8))
-            self._tip(sb, _croi_tip)
-
-        fore_cb = ttk.Checkbutton(par_lf, text="Include forelimbs in contour",
-                                    variable=self._contour_forelimbs_var)
-        fore_cb.grid(row=len(spinrows) + 10, column=0, columnspan=2, sticky='w', pady=(2, 0))
-        self._tip(fore_cb,
-                  "By default, paw contour analysis is limited to hind limbs (HL, HR).\n"
-                  "Enable this to also extract contour metrics for forelimbs (FL, FR).")
-
         # Time Bins
-        tb_lf = ttk.LabelFrame(params_inner, text="Time Bins", padding=5)
+        tb_lf = ttk.LabelFrame(detect_inner, text="Time Bins", padding=5)
         tb_lf.pack(fill='x', pady=(0, 6), padx=2)
 
         tb_row = ttk.Frame(tb_lf)
@@ -531,12 +559,112 @@ class GaitLimbTab(ttk.Frame):
                   "Number of minutes (or seconds) per time bin.\n"
                   "0 = output the full session as a single row only.")
 
-        # DLC Crop Offset
-        self._dlc_config_var = tk.StringVar()
-        self._crop_x_var     = tk.IntVar(value=0)
-        self._crop_y_var     = tk.IntVar(value=0)
+        # === Advanced: brightness / contour / crop / filters (all optional) ===
+        brt_lf = ttk.LabelFrame(adv_inner, text="Brightness (needs video)", padding=5)
+        brt_lf.pack(fill='x', pady=(0, 6), padx=2)
 
-        crop_lf = ttk.LabelFrame(params_inner, text="DLC Crop Offset", padding=5)
+        brt_rows = [
+            ("Brightness threshold:", self._brt_thresh_var, 0, 255,
+             "Pixel intensity cutoff for brightness extraction.\n"
+             "0 = auto-detect (≈ mean frame brightness × 0.5).\n"
+             "Use the Preview button to set this visually."),
+            ("Extraction stride:", self._extraction_stride_var, 1, 16,
+             "Read every Nth video frame during brightness extraction.\n"
+             "1 = every frame (full accuracy).\n"
+             "2 = every 2nd frame (~2× faster, minimal accuracy loss for 30-s bins).\n"
+             "4 = every 4th frame (~4× faster, suitable for quick exploration runs)."),
+        ]
+        for r, (lbl_text, var, from_, to, tip) in enumerate(brt_rows):
+            lbl = ttk.Label(brt_lf, text=lbl_text)
+            lbl.grid(row=r, column=0, sticky='w', pady=2)
+            sb = ttk.Spinbox(brt_lf, from_=from_, to=to, textvariable=var, width=8)
+            sb.grid(row=r, column=1, sticky='w', padx=4, pady=2)
+            self._tip(lbl, tip)
+            self._tip(sb, tip)
+
+        brt_cb = ttk.Checkbutton(brt_lf, text="Brightness-weighted (needs video)",
+                                  variable=self._use_brightness_var)
+        brt_cb.grid(row=len(brt_rows), column=0, columnspan=2, sticky='w', pady=(4, 0))
+        self._tip(brt_cb,
+                  "Extract mean pixel brightness in each paw ROI during contact frames.\n"
+                  "Requires a video file for each session. Skipped if video is missing.")
+
+        ttk.Button(brt_lf, text="Preview brightness…",
+                   command=self._open_brightness_preview).grid(
+            row=len(brt_rows) + 1, column=0, columnspan=2, sticky='w', pady=(4, 0))
+
+        ttk.Button(brt_lf, text="Detect cached brightness…",
+                   command=self._detect_brightness_caches).grid(
+            row=len(brt_rows) + 2, column=0, columnspan=2, sticky='w', pady=(2, 0))
+
+        bw_row = ttk.Frame(brt_lf)
+        bw_row.grid(row=len(brt_rows) + 3, column=0, columnspan=2, sticky='w', pady=2)
+        bw_lbl = ttk.Label(bw_row, text="Brightness weight (0–1):")
+        bw_lbl.pack(side='left')
+        bw_sb  = ttk.Spinbox(bw_row, from_=0.0, to=1.0, increment=0.05,
+                              textvariable=self._brt_weight_var, width=6, format='%.2f')
+        bw_sb.pack(side='left', padx=4)
+        _bw_tip = ("Weight given to ROI brightness when determining contact frames.\n\n"
+                   "0 = height only (default).  1 = brightness only.\n"
+                   "0.3–0.5 recommended for glass-floor / transilluminated setups.\n"
+                   "Requires 'Brightness-weighted (needs video)' to be enabled.")
+        self._tip(bw_lbl, _bw_tip)
+        self._tip(bw_sb,  _bw_tip)
+
+        # Paw contour
+        contour_lf = ttk.LabelFrame(adv_inner,
+                                    text="Paw Contour (needs brightness + video)", padding=5)
+        contour_lf.pack(fill='x', pady=(0, 6), padx=2)
+
+        contour_cb = ttk.Checkbutton(contour_lf, text="Compute paw contour area",
+                                      variable=self._paw_contour_var)
+        contour_cb.grid(row=0, column=0, columnspan=2, sticky='w', pady=(0, 0))
+        self._tip(contour_cb,
+                  "Detect paw outline within the contour ROI using Otsu thresholding.\n"
+                  "Requires brightness enabled + video.\n\n"
+                  "Output metrics per paw:\n"
+                  "  paw_area — contour area in px² (larger = more paw contact)\n"
+                  "  paw_spread — max(width, height) of contour bounding box (px)\n"
+                  "  contact_intensity — mean pixel brightness within the contour shape")
+
+        ttk.Button(contour_lf, text="Preview contour…",
+                   command=self._open_contour_preview).grid(
+            row=1, column=0, columnspan=2, sticky='w', pady=(2, 0))
+
+        ttk.Button(contour_lf, text="Detect cached contour…",
+                   command=self._detect_contour_caches).grid(
+            row=2, column=0, columnspan=2, sticky='w', pady=(2, 0))
+
+        ttk.Button(contour_lf, text="Analyze both caches…",
+                   command=self._detect_both_caches).grid(
+            row=3, column=0, columnspan=2, sticky='w', pady=(2, 0))
+
+        contour_roi_lbl = ttk.Label(contour_lf, text="Contour ROI half-size (px):")
+        contour_roi_lbl.grid(row=4, column=0, columnspan=2, sticky='w', pady=(6, 0))
+        _croi_tip = ("Half-width of the ROI crop used for paw contour detection.\n"
+                     "Larger = captures more of the paw shape but may include background.\n"
+                     "Set independently from brightness ROI.")
+        self._tip(contour_roi_lbl, _croi_tip)
+
+        croi_frame = ttk.Frame(contour_lf)
+        croi_frame.grid(row=5, column=0, columnspan=2, sticky='w', pady=(0, 2))
+        for i, role in enumerate(self.ROLES):
+            ttk.Label(croi_frame, text=f"{role}:").grid(
+                row=i // 2, column=(i % 2) * 2, sticky='w', padx=(0, 2))
+            sb = ttk.Spinbox(croi_frame, from_=5, to=200,
+                             textvariable=self._contour_roi_size_vars[role], width=5)
+            sb.grid(row=i // 2, column=(i % 2) * 2 + 1, sticky='w', padx=(0, 8))
+            self._tip(sb, _croi_tip)
+
+        fore_cb = ttk.Checkbutton(contour_lf, text="Include forelimbs in contour",
+                                    variable=self._contour_forelimbs_var)
+        fore_cb.grid(row=6, column=0, columnspan=2, sticky='w', pady=(2, 0))
+        self._tip(fore_cb,
+                  "By default, paw contour analysis is limited to hind limbs (HL, HR).\n"
+                  "Enable this to also extract contour metrics for forelimbs (FL, FR).")
+
+        # DLC Crop Offset
+        crop_lf = ttk.LabelFrame(adv_inner, text="DLC Crop Offset", padding=5)
         crop_lf.pack(fill='x', pady=(0, 6), padx=2)
         self._tip(crop_lf,
                   "Apply when DLC tracking was done on a cropped video.\n"
@@ -566,52 +694,8 @@ class GaitLimbTab(ttk.Frame):
 
         crop_lf.columnconfigure(1, weight=1)
 
-        # ── Tab 3: Detection ────────────────────────────────────
-        detect_inner = self._make_scrollable_tab(settings_nb, "Detection")
-
-        cd_lf = ttk.LabelFrame(detect_inner, text="Contact Detection", padding=5)
-        cd_lf.pack(fill='x', pady=(0, 6), padx=2)
-
-        ttk.Label(cd_lf, text="Method:").grid(row=0, column=0, sticky='w', pady=2)
-        cd_rb_frame = ttk.Frame(cd_lf)
-        cd_rb_frame.grid(row=0, column=1, sticky='w', padx=4, pady=2)
-        for txt, val in [("Height", "height"), ("Speed", "speed"), ("Combined", "combined")]:
-            ttk.Radiobutton(cd_rb_frame, text=txt, variable=self._contact_method_var,
-                            value=val).pack(side='left', padx=(0, 6))
-        self._tip(cd_lf,
-                  "Height: paw height below threshold (original).\n"
-                  "Speed: paw speed below threshold (Kumar Lab 2022).\n"
-                  "Combined: both must agree (logical AND).")
-
-        ttk.Label(cd_lf, text="Speed thresh (px/s):").grid(row=1, column=0, sticky='w', pady=2)
-        speed_ent = ttk.Entry(cd_lf, textvariable=self._speed_thresh_var, width=10)
-        speed_ent.grid(row=1, column=1, sticky='w', padx=4, pady=2)
-        self._tip(speed_ent,
-                  "'auto' = 20th percentile of paw speed.\n"
-                  "Or enter a numeric value in px/s.")
-
-        ttk.Label(cd_lf, text="Median filter (ms):").grid(row=2, column=0, sticky='w', pady=2)
-        ttk.Spinbox(cd_lf, from_=0, to=500, textvariable=self._median_filter_var,
-                    width=8).grid(row=2, column=1, sticky='w', padx=4, pady=2)
-
-        ttk.Label(cd_lf, text="Min bout (ms):").grid(row=3, column=0, sticky='w', pady=2)
-        ttk.Spinbox(cd_lf, from_=0, to=500, textvariable=self._min_bout_var,
-                    width=8).grid(row=3, column=1, sticky='w', padx=4, pady=2)
-
-        _msd_lbl = ttk.Label(cd_lf, text="Min stance dur (ms):")
-        _msd_lbl.grid(row=4, column=0, sticky='w', pady=2)
-        _msd_sb = ttk.Spinbox(cd_lf, from_=0, to=500,
-                               textvariable=self._min_stance_ms_var, width=8)
-        _msd_sb.grid(row=4, column=1, sticky='w', padx=4, pady=2)
-        _msd_tip = ("Minimum stance bout duration for gait metrics.\n"
-                     "Stance bouts shorter than this are discarded as\n"
-                     "physiologically implausible (noise).\n"
-                     "Default 100 ms. Set 0 to disable.")
-        self._tip(_msd_lbl, _msd_tip)
-        self._tip(_msd_sb, _msd_tip)
-
         # DLC Confidence Filter
-        dlc_lf = ttk.LabelFrame(detect_inner, text="DLC Confidence Filter", padding=5)
+        dlc_lf = ttk.LabelFrame(adv_inner, text="DLC Confidence Filter", padding=5)
         dlc_lf.pack(fill='x', pady=(0, 6), padx=2)
         ttk.Checkbutton(dlc_lf, text="Filter low-confidence frames",
                         variable=self._use_likelihood_var).pack(anchor='w')
@@ -626,7 +710,7 @@ class GaitLimbTab(ttk.Frame):
                   "Default 0.6. Higher = stricter filtering.")
 
         # Locomotion Filter (with improved tooltip)
-        loco_lf = ttk.LabelFrame(detect_inner, text="Locomotion Filter", padding=5)
+        loco_lf = ttk.LabelFrame(adv_inner, text="Locomotion Filter", padding=5)
         loco_lf.pack(fill='x', pady=(0, 6), padx=2)
         ttk.Checkbutton(loco_lf, text="Restrict gait metrics to locomotion epochs",
                         variable=self._loco_filter_var).pack(anchor='w')
@@ -651,6 +735,12 @@ class GaitLimbTab(ttk.Frame):
                    command=self._open_locomotion_preview).pack(anchor='w', pady=(4, 0))
 
         # (Statistical tests settings moved to Graph Settings dialog)
+
+        # ── Readiness wiring: re-evaluate the Run gate when inputs change ──
+        for _rv in ('HL', 'HR'):
+            self._role_vars[_rv].trace_add('write', self._update_readiness)
+        self._use_brightness_var.trace_add('write', self._update_readiness)
+        self._key_file_var.trace_add('write', self._update_readiness)
 
     # ── Locomotion preview ─────────────────────────────────────────────────
 
@@ -2577,8 +2667,11 @@ class GaitLimbTab(ttk.Frame):
     # ── Right: Results ───────────────────────────────────────────────────────
 
     def _build_results_panel(self, parent):
+        ttk.Label(parent, text="④ Results",
+                  font=(FONT_FAMILY, 10, 'bold')).pack(anchor='w', padx=6, pady=(4, 0))
+
         btn_row = ttk.Frame(parent)
-        btn_row.pack(fill='x', padx=4, pady=(4, 2))
+        btn_row.pack(fill='x', padx=4, pady=(2, 2))
 
         self._export_sum_btn = ttk.Button(btn_row, text="Export Summary CSV",
                                           command=self._export_summary,
@@ -2596,6 +2689,10 @@ class GaitLimbTab(ttk.Frame):
             btn_row, text="Adjust Contact",
             command=self._open_contact_adjustment, state='disabled')
         self._adjust_contact_btn.pack(side='left', padx=2)
+
+        # Run outcome (N analyzed · M skipped/failed) — set by _on_analysis_complete
+        self._outcome_lbl = ttk.Label(parent, text='', font=(FONT_FAMILY, 9))
+        self._outcome_lbl.pack(anchor='w', padx=6, pady=(0, 2))
 
         # ── Key Metrics Summary ───────────────────────────────────
         self._summary_frame = ttk.LabelFrame(parent, text="Summary", padding=5)
@@ -3152,9 +3249,110 @@ class GaitLimbTab(ttk.Frame):
     # Analysis: launch / cancel
     # ═══════════════════════════════════════════════════════════════════════
 
+    def _apply_gait_preset(self, event=None):
+        """Set the interdependent toggle vars (and, for richer presets, the ROI /
+        likelihood / bin / contact-method knobs) from the chosen Quick-setup preset."""
+        preset = self.GAIT_PRESETS.get(self._preset_var.get())
+        if not preset:
+            return
+        self._use_brightness_var.set(bool(preset['brightness']))
+        self._paw_contour_var.set(bool(preset['contour']))
+        self._use_fore_var.set(bool(preset['fore']))
+        # Optional richer-preset knobs — applied only when the preset carries them,
+        # so the simple 3-toggle presets keep their existing behaviour.
+        if 'contour_roi' in preset:
+            for _r in ('HL', 'HR'):
+                if _r in self._contour_roi_size_vars:
+                    self._contour_roi_size_vars[_r].set(int(preset['contour_roi']))
+        if 'likelihood' in preset:
+            self._use_likelihood_var.set(bool(preset['likelihood']))
+        if 'likelihood_thresh' in preset:
+            self._likelihood_thresh_var.set(float(preset['likelihood_thresh']))
+        if 'bin_seconds' in preset:
+            self._bin_seconds_var.set(int(preset['bin_seconds']))
+        if 'bin_unit' in preset:
+            self._bin_unit_var.set(str(preset['bin_unit']))
+        if 'contact_method' in preset:
+            self._contact_method_var.set(str(preset['contact_method']))
+        if 'contour_area_threshold' in preset:
+            self._contour_area_thresh_var.set(int(preset['contour_area_threshold']))
+        # keep the fore-paw mapping widgets in sync with the checkbox
+        try:
+            self._on_use_fore_changed()
+        except Exception:
+            pass
+        self._update_readiness()
+
+    def _check_readiness(self):
+        """Return (ready, issues, notes).
+
+        issues = hard blockers that must be fixed before a run can start.
+        notes  = soft warnings that do not block (surfaced but non-fatal).
+        This is the single source of truth for both the readiness strip and
+        the guard at the top of ``_start_analysis``.
+        """
+        issues, notes = [], []
+
+        sel = self._sess_tree.selection() if hasattr(self, '_sess_tree') else ()
+        if not sel:
+            issues.append("Select at least one session (① Sessions)")
+
+        hl = self._role_vars['HL'].get().strip() if 'HL' in self._role_vars else ''
+        hr = self._role_vars['HR'].get().strip() if 'HR' in self._role_vars else ''
+        if not hl or not hr:
+            issues.append("Map HL and HR paws (② Setup)")
+
+        if self._key_df is None:
+            notes.append("no key file — treatment will be blank")
+
+        if self._use_brightness_var.get() and sel:
+            sel_names = {self._sess_tree.item(i, 'values')[0] for i in sel}
+            missing = [s['session_name'] for s in self._sessions
+                       if s['session_name'] in sel_names and not s.get('video_path')]
+            if missing:
+                notes.append(f"{len(missing)} selected session(s) lack video — "
+                             "brightness skipped")
+
+        return (not issues), issues, notes
+
+    def _update_readiness(self, *args):
+        """Refresh the readiness strip and gate the Run button. Trace/UI callback."""
+        if not hasattr(self, '_readiness_lbl'):
+            return
+        try:
+            ready, issues, notes = self._check_readiness()
+        except Exception:
+            return
+
+        running = bool(self._fit_thread and self._fit_thread.is_alive())
+        if hasattr(self, '_run_btn'):
+            self._run_btn.config(
+                state=('disabled' if (running or not ready) else 'normal'))
+
+        if running:
+            self._readiness_lbl.config(text="Running…", foreground='grey')
+            return
+        if issues:
+            self._readiness_lbl.config(text="⚠ " + "  •  ".join(issues),
+                                       foreground='#b00020')
+            return
+        n_sel = len(self._sess_tree.selection())
+        bits = [f"✓ {n_sel} session(s)", "✓ paws HL,HR"]
+        bits += ["⚠ " + n for n in notes]
+        self._readiness_lbl.config(
+            text="  ·  ".join(bits) + "  —  Ready to run",
+            foreground=('#7a6a00' if notes else '#127a12'))
+
     def _start_analysis(self):
         if self._fit_thread and self._fit_thread.is_alive():
             messagebox.showwarning("Busy", "Analysis is already running.", parent=self)
+            return
+
+        ready, issues, _notes = self._check_readiness()
+        if not ready:
+            messagebox.showwarning(
+                "Not ready to run",
+                "Please resolve:\n\n• " + "\n• ".join(issues), parent=self)
             return
 
         selected_items = self._sess_tree.selection()
@@ -3222,6 +3420,7 @@ class GaitLimbTab(ttk.Frame):
             'contour_roi_sizes':  {role: self._contour_roi_size_vars[role].get()
                                    for role in self.ROLES},
             'contour_forelimbs':  self._contour_forelimbs_var.get(),
+            'contour_area_threshold': self._contour_area_thresh_var.get(),
         }
 
         self._cancel_flag.clear()
@@ -3251,6 +3450,7 @@ class GaitLimbTab(ttk.Frame):
     def _analysis_thread(self, sessions, paw_map, params):
         summary_rows = []
         bin_rows = []
+        not_done = []   # sessions that raised or produced no result (skipped/failed)
         for sess in sessions:
             if self._cancel_flag.is_set():
                 self._log("Cancelled.")
@@ -3267,8 +3467,12 @@ class GaitLimbTab(ttk.Frame):
                     summary_rows.append(srow)
                     for brow in result['bins']:
                         bin_rows.append({**base, **brow})
+                else:
+                    not_done.append(name)
+                    self._log(f"  Skipped: {name} (no result)")
             except Exception as e:
                 self._log(f"  ERROR: {e}")
+                not_done.append(name)
             try:
                 self.app.root.after(0, self._progress.step, 1)
             except tk.TclError:
@@ -3277,7 +3481,8 @@ class GaitLimbTab(ttk.Frame):
         self._log(f"Analysis loop finished: {len(summary_rows)}/{len(sessions)} sessions produced results.")
 
         try:
-            self.app.root.after(0, self._on_analysis_complete, summary_rows, bin_rows)
+            self.app.root.after(0, self._on_analysis_complete,
+                                summary_rows, bin_rows, not_done)
         except tk.TclError:
             pass
 
@@ -4036,7 +4241,7 @@ class GaitLimbTab(ttk.Frame):
 
         # ── Brightness-weighted contact refinement ────────────────────────────
         brt_weight = params.get('brt_weight', 0.0)
-        if brt_weight > 0 and brightness_series:
+        if brt_weight > 0 and brightness_series and params.get('contact_method') != 'contour_area':
             thresh = params['contact_threshold']
             for role, bp in active_paws.items():
                 if role not in brightness_series or role not in contact_masks:
@@ -4220,6 +4425,33 @@ class GaitLimbTab(ttk.Frame):
             except Exception as e:
                 self._log(f"  Paw contour extraction failed: {e}")
                 paw_contour_data = {}
+
+        # ── Contour-area contact (formalin-style) ────────────────────────────
+        # A hind paw counts as in-contact when its contour area exceeds the
+        # threshold; both hind paws are gated together (matches the formalin
+        # figures). Built here — after contour extraction — so it replaces the
+        # height/brightness contact masks. The DLC-likelihood filter is applied
+        # downstream in _metrics, exactly as for every other contact method.
+        if params.get('contact_method') == 'contour_area' and paw_contour_data:
+            _area_thr = float(params.get('contour_area_threshold', 20))
+            _hind = [r for r in ('HL', 'HR')
+                     if r in paw_contour_data and 'areas' in paw_contour_data[r]]
+            if len(_hind) == 2:
+                _aHL = np.asarray(paw_contour_data['HL']['areas'])[:n_frames]
+                _aHR = np.asarray(paw_contour_data['HR']['areas'])[:n_frames]
+                _both = pd.Series((_aHL > _area_thr) & (_aHR > _area_thr),
+                                  dtype=bool).reset_index(drop=True)
+                contact_masks['HL'] = _both
+                contact_masks['HR'] = _both.copy()
+                self._log(f"  Contact: contour-area gate (>{_area_thr:.0f} px^2, both hind).")
+            elif len(_hind) == 1:
+                _r = _hind[0]
+                _a = np.asarray(paw_contour_data[_r]['areas'])[:n_frames]
+                contact_masks[_r] = pd.Series(_a > _area_thr, dtype=bool).reset_index(drop=True)
+                self._log(f"  Contact: contour-area gate (>{_area_thr:.0f} px^2, {_r} only).")
+            else:
+                self._log("  Contour-area contact selected but no hind contour data was "
+                          "extracted; keeping the existing contact masks.")
 
         # ── Metric computation helper ────────────────────────────────────────
         def _metrics(frame_slice=None):
@@ -4742,14 +4974,37 @@ class GaitLimbTab(ttk.Frame):
     # Analysis: completion callback (main thread)
     # ═══════════════════════════════════════════════════════════════════════
 
-    def _on_analysis_complete(self, summary_rows, bin_rows):
-        self._run_btn.config(state='normal')
+    def _on_analysis_complete(self, summary_rows, bin_rows, not_done=None):
         self._cancel_btn.config(state='disabled')
         self._progress_frame.pack_forget()
         self._sub_progress_label.config(text='')
 
+        not_done = not_done or []
+        n_ok = len(summary_rows)
+        n_bad = len(not_done)
+
+        # Visible run outcome
+        if hasattr(self, '_outcome_lbl'):
+            if n_bad:
+                self._outcome_lbl.config(
+                    text=f"{n_ok} analyzed · {n_bad} skipped/failed",
+                    foreground='#b00020')
+            else:
+                self._outcome_lbl.config(
+                    text=f"{n_ok} analyzed · 0 skipped/failed",
+                    foreground='#127a12')
+
         if not summary_rows:
-            self._log_ui("No results — all sessions were skipped or failed. Check log for ERROR messages.")
+            self._log_ui("No results — all sessions were skipped or failed. "
+                         "Check log for ERROR messages.")
+            names = ", ".join(not_done[:8]) + ("…" if n_bad > 8 else "")
+            messagebox.showwarning(
+                "No results",
+                "All selected sessions were skipped or failed"
+                + (f":\n\n{names}" if names else ".")
+                + "\n\nSee the Log panel for the specific errors.",
+                parent=self)
+            self._update_readiness()
             return
 
         self._summary_df = pd.DataFrame(summary_rows)
@@ -4773,6 +5028,7 @@ class GaitLimbTab(ttk.Frame):
                          f"(video FPS could not be detected).")
 
         self._log_ui(f"Done. {len(summary_rows)} session(s) processed.")
+        self._update_readiness()
 
     # ═══════════════════════════════════════════════════════════════════════
     # Post-analysis contact re-adjustment
