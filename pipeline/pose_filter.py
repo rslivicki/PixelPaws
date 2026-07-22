@@ -31,8 +31,16 @@ DEFAULTS = dict(
     loc_criterion=1.5,        # SimBA default-ish; threshold = reference * this
     loc_min_violations=2,
     max_interp_gap=5,
-    velocity_bps=(),          # e.g. ("snout",) - NEVER the hindpaws (scratching IS high paw velocity)
-    vel_criterion=1.0,        # multiples of reference per frame
+    # JUMP/teleport gate (2026-06-29): flag any frame where the bodypart moves more than
+    # vel_criterion*reference (~100px at a typical ~360px body length) between frames — a
+    # non-biological inter-frame "teleport". Enabled for every dot EXCEPT the hindpaws.
+    # Calibrated from ground truth: forepaw motion during confirmed tremor maxes ~60px
+    # (0 frames >100px) and snout/neck/centroid/tail have no fast independent behaviour,
+    # so >100px is unambiguously a teleport for them. Hindpaws are EXCLUDED because real
+    # scratching genuinely reaches >100px (~1.4% of hlpaw frames, up to ~267px) — gating
+    # them would clip real scratch strokes (cf. the locomotion-gate dead-end).
+    velocity_bps=("snout", "frpaw", "flpaw", "neck", "centroid", "tailbase", "tailtip"),
+    vel_criterion=0.28,       # multiples of reference per frame (~100px at ref≈360px)
 )
 
 

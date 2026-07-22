@@ -23,6 +23,23 @@ PixelPaws GUI writes this sidecar pointing at the active project + its scorer be
 launching, so extractor output (CollectedData_<scorer>) and the labeler always agree.
 """
 import os, glob, sys, shutil, time, json
+
+# --- PyInstaller --windowed hardening -------------------------------------------------------
+# A windowed (no-console) frozen build sets sys.stdout/sys.stderr to None. Native libraries in
+# the HDF5 save path (numexpr / PyTables) write to them and can crash or deadlock; give them a
+# real sink, and pin their thread pools to 1 so they never hang spinning up worker threads in a
+# GUI process. No effect when run normally from source (stdout is a real stream).
+if getattr(sys, "frozen", False):
+    os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+    os.environ.setdefault("NUMEXPR_MAX_THREADS", "1")
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    if sys.stdout is None or sys.stderr is None:
+        _sink = open(os.devnull, "w")
+        if sys.stdout is None:
+            sys.stdout = _sink
+        if sys.stderr is None:
+            sys.stderr = _sink
+
 import numpy as np, pandas as pd
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -38,9 +55,18 @@ _DEF_SKELETON = [('snout', 'neck'), ('neck', 'centroid'), ('centroid', 'tailbase
 _PALETTE = ['#3399ff', '#ff8800', '#33dd33', '#ee44ee', '#ffdd00', '#00dddd', '#22aa22', '#cc5555', '#999999']
 
 
+def _base_dir():
+    # PyInstaller-frozen build: resolve the sidecar + a relative ldir next to the .exe so a
+    # portable review package (exe + _labeler_config.json + labeled-data\) is self-contained.
+    # Running from source (or launched by the GUI with an absolute ldir): unchanged.
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 def _load_config():
     p = os.environ.get("PIXELPAWS_LABELER_CONFIG",
-                       os.path.join(os.path.dirname(os.path.abspath(__file__)), "_labeler_config.json"))
+                       os.path.join(_base_dir(), "_labeler_config.json"))
     try:
         return json.load(open(p, encoding="utf-8")) if os.path.isfile(p) else {}
     except Exception as e:
@@ -50,6 +76,8 @@ def _load_config():
 
 _CFG = _load_config()
 LDIR = _CFG.get("ldir", _DEF_LDIR)
+if not os.path.isabs(LDIR):
+    LDIR = os.path.join(_base_dir(), LDIR)
 SCORER = _CFG.get("scorer", _DEF_SCORER)
 BPS = list(_CFG.get("bps", _DEF_BPS))
 COLS = pd.MultiIndex.from_product([[SCORER], BPS, ['x', 'y']], names=['scorer', 'bodyparts', 'coords'])
@@ -62,6 +90,15 @@ MARKER = _CFG.get("marker", "_scratch_to_label.txt")
 HIT = 14          # px (image space) to grab a keypoint
 R = 6             # default dot radius (canvas px)
 PAN = 90          # px per pan step (buttons / arrow keys)
+
+
+def _img_key(i):
+    """Bare image filename for a CollectedData index entry — handles both the flat single-level
+    path string ("labeled-data\\<session>\\img###.png") and the 3-level DLC MultiIndex tuple
+    ("labeled-data", "<session>", "img###.png")."""
+    if isinstance(i, tuple):
+        return i[-1]
+    return str(i).replace("/", "\\").split("\\")[-1]
 
 
 def list_folders():
@@ -289,7 +326,11 @@ class Labeler:
         self.imgs = sorted(os.path.basename(p) for p in glob.glob(os.path.join(self.dir, "img*.png")))
         cd = pd.read_hdf(os.path.join(self.dir, f"CollectedData_{SCORER}.h5"))
         sc = cd.columns.get_level_values(0)[0]
-        by = {os.path.basename(str(i)): i for i in cd.index}
+        # Index entries come in two shapes: a flat single-level path string
+        # ("labeled-data\\<session>\\img###.png", written by this labeler / the extractor) OR a
+        # 3-level DLC MultiIndex tuple ("labeled-data", "<session>", "img###.png"). Key both by the
+        # bare image filename so existing labels match the frames on disk either way.
+        by = {_img_key(i): i for i in cd.index}
         self.coords = {}
         for im in self.imgs:
             r = by.get(im); d = {}
@@ -647,7 +688,8 @@ class Labeler:
 
     def on_close(self):
         try:
-            self.save()
+            if self._dirty:      # only persist on close when there are actual unsaved edits —
+                self.save()      # never rewrite a folder that was merely opened and viewed
         except Exception:
             pass
         self.root.destroy()
@@ -661,5 +703,81 @@ def main():
     return 0
 
 
+def _selftest():
+    """Headless check that the (possibly frozen) runtime can round-trip CollectedData via
+    PyTables — the highest-risk path in a packaged build. Prints SELFTEST OK / FAIL, exits."""
+    import tempfile
+    try:
+        d = tempfile.mkdtemp()
+        h5 = os.path.join(d, f"CollectedData_{SCORER}.h5")
+        df = pd.DataFrame([[1.0, 2.0] * len(BPS)], columns=COLS,
+                          index=[os.path.join("labeled-data", "selftest", "img000.png")])
+        df.to_hdf(h5, key="df_with_missing", mode="w")
+        df.to_csv(os.path.join(d, f"CollectedData_{SCORER}.csv"))
+        back = pd.read_hdf(h5)
+        ok = back.shape == df.shape
+        msg = f"SELFTEST {'OK' if ok else 'FAIL'} rows={len(back)} cols={back.shape[1]} scorer={SCORER}"
+        rc = 0 if ok else 1
+    except Exception as e:
+        msg = f"SELFTEST FAIL {type(e).__name__}: {e}"
+        rc = 1
+    # Write the result file FIRST — in a --windowed build sys.stdout is None, so print() must not
+    # be the thing that records the outcome.
+    out = os.environ.get("PIXELPAWS_SELFTEST_OUT",
+                         os.path.join(_base_dir(), "_selftest_result.txt"))
+    try:
+        open(out, "w", encoding="utf-8").write(msg + "\n")
+    except Exception:
+        pass
+    try:
+        print(msg)
+    except Exception:
+        pass
+    return rc
+
+
+def _check():
+    """Headless check that the folder queue resolves in a (possibly frozen) build: report how
+    many labeled-data folders list_folders() finds under the resolved LDIR. Writes + prints."""
+    try:
+        fs = list_folders()
+        # Also load the first folder's labels the same way the GUI does, and count how many frames
+        # actually resolve a labeled point — this catches index-format mismatches (flat vs 3-level)
+        # that would otherwise make existing labels silently invisible.
+        detail = ""
+        if fs:
+            d = os.path.join(LDIR, fs[0])
+            imgs = sorted(os.path.basename(p) for p in glob.glob(os.path.join(d, "img*.png")))
+            cd = pd.read_hdf(os.path.join(d, f"CollectedData_{SCORER}.h5"))
+            sc = cd.columns.get_level_values(0)[0]
+            by = {_img_key(i): i for i in cd.index}
+            matched = sum(1 for im in imgs if im in by
+                          and bool(pd.notna(cd.loc[by[im], sc]).any()))
+            detail = f" | first-folder frames={len(imgs)} with-labels={matched}"
+        msg = f"CHECK OK ldir={LDIR} folders={len(fs)} first={fs[0] if fs else '-'}{detail}"
+    except Exception as e:
+        msg = f"CHECK FAIL {type(e).__name__}: {e} ldir={LDIR}"
+    out = os.environ.get("PIXELPAWS_SELFTEST_OUT",
+                         os.path.join(_base_dir(), "_selftest_result.txt"))
+    try:
+        open(out, "w", encoding="utf-8").write(msg + "\n")
+    except Exception:
+        pass
+    try:
+        print(msg)
+    except Exception:
+        pass
+    return 0 if msg.startswith("CHECK OK") else 1
+
+
 if __name__ == "__main__":
+    # A PyInstaller-frozen exe that pulls in multiprocessing (via numpy/pandas/tables) will
+    # re-execute this whole program in each spawned child unless freeze_support() short-circuits
+    # them — without it the app fork-bombs itself. Must be the first thing in __main__.
+    import multiprocessing as _mp
+    _mp.freeze_support()
+    if "--selftest" in sys.argv:
+        raise SystemExit(_selftest())
+    if "--check" in sys.argv:
+        raise SystemExit(_check())
     raise SystemExit(main())

@@ -855,20 +855,28 @@ class SideBySidePreview:
                 print(f"Comparison will only cover first {min_length} frames")
             
             # Truncate to matching length
-            human_labels_subset = self.human_labels[:min_length]
-            predictions_subset = self.predictions[:min_length]
-            
-            # Calculate metrics
-            accuracy = accuracy_score(human_labels_subset, predictions_subset) * 100
-            f1 = f1_score(human_labels_subset, predictions_subset, zero_division=0) * 100
-            precision = precision_score(human_labels_subset, predictions_subset, zero_division=0) * 100
-            recall = recall_score(human_labels_subset, predictions_subset, zero_division=0) * 100
-            
-            comparison_text = f"Detected: {n_pos} ({pct:.1f}%) | " \
-                            f"Comparison ({min_length}/{len(self.predictions)} frames): " \
-                            f"Acc: {accuracy:.1f}% | F1: {f1:.1f}% | " \
-                            f"Prec: {precision:.1f}% | Rec: {recall:.1f}%"
-            ttk.Label(info, text=comparison_text, font=(FONT_FAMILY, 9), 
+            human_labels_subset = np.asarray(self.human_labels[:min_length], dtype=float)
+            predictions_subset = np.asarray(self.predictions[:min_length])
+
+            # Unobserved frames are stored as NaN — score only the observed
+            # (labeled) frames. Otherwise sklearn raises "y_true contains NaN".
+            obs = ~np.isnan(human_labels_subset)
+            n_obs = int(obs.sum())
+            if n_obs > 0:
+                y_t = human_labels_subset[obs].astype(int)
+                y_p = predictions_subset[obs]
+                accuracy = accuracy_score(y_t, y_p) * 100
+                f1 = f1_score(y_t, y_p, zero_division=0) * 100
+                precision = precision_score(y_t, y_p, zero_division=0) * 100
+                recall = recall_score(y_t, y_p, zero_division=0) * 100
+                comparison_text = f"Detected: {n_pos} ({pct:.1f}%) | " \
+                                f"Comparison ({n_obs} labeled frames): " \
+                                f"Acc: {accuracy:.1f}% | F1: {f1:.1f}% | " \
+                                f"Prec: {precision:.1f}% | Rec: {recall:.1f}%"
+            else:
+                comparison_text = (f"Detected: {n_pos} ({pct:.1f}%) | "
+                                   f"No labeled frames in this clip to compare")
+            ttk.Label(info, text=comparison_text, font=(FONT_FAMILY, 9),
                      foreground='blue').pack(side='right', padx=10)
         else:
             ttk.Label(info, text=f"Detected: {n_pos} frames ({pct:.1f}%)",
@@ -933,7 +941,27 @@ class SideBySidePreview:
         self._dlc_cb.pack(side='right', padx=5)
         if not self.bp_xy:
             self._dlc_cb.configure(state='disabled')
-        
+
+        # Bout jump dropdowns (machine + human). Selecting an entry seeks to that bout.
+        # A 2-column grid keeps the labels un-clipped and the two dropdowns aligned.
+        bout_select = ttk.Frame(self.window)
+        bout_select.pack(fill='x', padx=8, pady=(2, 4))
+        bout_select.columnconfigure(1, weight=1)
+
+        self._machine_bout_label = ttk.Label(bout_select, text="Machine bouts:")
+        self._machine_bout_label.grid(row=0, column=0, sticky='w', padx=(0, 8), pady=1)
+        self.machine_bout_combo = ttk.Combobox(bout_select, state='readonly')
+        self.machine_bout_combo.grid(row=0, column=1, sticky='ew', pady=1)
+        self.machine_bout_combo.bind('<<ComboboxSelected>>', self._on_machine_bout_selected)
+
+        self.human_bout_combo = None
+        if self.human_labels is not None and len(self.human_labels) > 0:
+            self._human_bout_label = ttk.Label(bout_select, text="Human bouts:")
+            self._human_bout_label.grid(row=1, column=0, sticky='w', padx=(0, 8), pady=1)
+            self.human_bout_combo = ttk.Combobox(bout_select, state='readonly')
+            self.human_bout_combo.grid(row=1, column=1, sticky='ew', pady=1)
+            self.human_bout_combo.bind('<<ComboboxSelected>>', self._on_human_bout_selected)
+
         # Timeline
         timeline_frame = ttk.Frame(self.window)
         timeline_frame.pack(fill='x', padx=5, pady=5)
@@ -947,7 +975,10 @@ class SideBySidePreview:
         self.pred_canvas.pack(fill='x', expand=True, pady=2)
         self.pred_canvas.bind('<Button-1>', self.on_pred_click)
         self.draw_pred_timeline()
-        
+
+        # Fill the bout dropdowns now that predictions/human labels are known.
+        self._populate_bout_dropdowns()
+
         # Keys
         self.window.bind('<space>', lambda e: self.toggle_play())
         self.window.bind('<Left>', lambda e: self.jump(-1))
@@ -1019,21 +1050,27 @@ class SideBySidePreview:
                 
                 # Show human label comparison if available
                 if self.human_labels is not None and self.current_frame < len(self.human_labels):
-                    human_label = int(self.human_labels[self.current_frame])
-                    
-                    # Check if prediction matches human label
-                    if pred == human_label:
-                        match_text = "CORRECT"
-                        match_color = (0, 255, 0)  # Green
+                    _raw_label = self.human_labels[self.current_frame]
+                    # Unobserved frames are NaN — show as "Unobserved", don't score.
+                    if _raw_label is None or (isinstance(_raw_label, float) and np.isnan(_raw_label)):
+                        cv2.putText(frame_display, "Human: Unobserved", (20, 180),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2)
                     else:
-                        match_text = "MISMATCH"
-                        match_color = (0, 165, 255)  # Orange
-                    
-                    human_text = f"Human: {'Behavior' if human_label == 1 else 'No Behavior'}"
-                    cv2.putText(frame_display, human_text, (20, 180),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-                    cv2.putText(frame_display, match_text, (20, 220),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.9, match_color, 2)
+                        human_label = int(_raw_label)
+
+                        # Check if prediction matches human label
+                        if pred == human_label:
+                            match_text = "CORRECT"
+                            match_color = (0, 255, 0)  # Green
+                        else:
+                            match_text = "MISMATCH"
+                            match_color = (0, 165, 255)  # Orange
+
+                        human_text = f"Human: {'Behavior' if human_label == 1 else 'No Behavior'}"
+                        cv2.putText(frame_display, human_text, (20, 180),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+                        cv2.putText(frame_display, match_text, (20, 220),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.9, match_color, 2)
             
             # DLC body part dots
             if self.show_dlc_var.get() and self.bp_xy:
@@ -1313,6 +1350,14 @@ class SideBySidePreview:
             self.window.after_cancel(self._scrollbar_update_id)
         self._scrollbar_update_id = self.window.after(100, self.update_graph_window)
     
+    def _is_label_mismatch(self, i):
+        """True only on observed (non-NaN) frames where prediction != human label.
+        Unobserved frames (NaN) are never mismatches."""
+        lbl = self.human_labels[i]
+        if lbl is None or (isinstance(lbl, float) and np.isnan(lbl)):
+            return False
+        return self.predictions[i] != int(lbl)
+
     def jump_to_next_mismatch(self):
         """Jump to next frame where prediction doesn't match human label"""
         if self.human_labels is None or len(self.human_labels) == 0:
@@ -1322,7 +1367,7 @@ class SideBySidePreview:
         
         # Search forward from current frame
         for i in range(self.current_frame + 1, min_len):
-            if self.predictions[i] != self.human_labels[i]:
+            if self._is_label_mismatch(i):
                 self.current_frame = i
                 self.update_frame()
                 self.update_graph_window()
@@ -1330,7 +1375,7 @@ class SideBySidePreview:
         
         # If no mismatch found forward, wrap around from beginning
         for i in range(0, self.current_frame):
-            if self.predictions[i] != self.human_labels[i]:
+            if self._is_label_mismatch(i):
                 self.current_frame = i
                 self.update_frame()
                 self.update_graph_window()
@@ -1348,7 +1393,7 @@ class SideBySidePreview:
         
         # Search backward from current frame
         for i in range(self.current_frame - 1, -1, -1):
-            if i < min_len and self.predictions[i] != self.human_labels[i]:
+            if i < min_len and self._is_label_mismatch(i):
                 self.current_frame = i
                 self.update_frame()
                 self.update_graph_window()
@@ -1356,7 +1401,7 @@ class SideBySidePreview:
         
         # If no mismatch found backward, wrap around from end
         for i in range(min_len - 1, self.current_frame, -1):
-            if self.predictions[i] != self.human_labels[i]:
+            if self._is_label_mismatch(i):
                 self.current_frame = i
                 self.update_frame()
                 self.update_graph_window()
@@ -1384,9 +1429,67 @@ class SideBySidePreview:
         # Handle bout that extends to end
         if in_bout and bout_start is not None:
             bouts.append((bout_start, len(self.predictions) - 1))
-        
+
         return bouts
-    
+
+    # ---- Bout dropdowns (machine + human) -------------------------------
+    def _bouts_from_array(self, arr):
+        """Return a list of inclusive (start, end) bouts — contiguous runs where value == 1.
+        Robust to float arrays; anything not exactly 1 ends/never-starts a bout."""
+        bouts = []
+        start = None
+        try:
+            n = len(arr)
+        except TypeError:
+            return bouts
+        for i in range(n):
+            on = (arr[i] == 1)
+            if on and start is None:
+                start = i
+            elif (not on) and start is not None:
+                bouts.append((start, i - 1))
+                start = None
+        if start is not None:
+            bouts.append((start, n - 1))
+        return bouts
+
+    def _format_bout(self, k, bout):
+        start, end = bout
+        secs = (end - start + 1) / max(float(self.fps or 0) or 1.0, 1e-6)
+        return f"Bout {k}: {start}–{end}  ({secs:.1f}s)"
+
+    def _populate_bout_dropdowns(self):
+        """Fill the machine (and, if present, human) bout comboboxes."""
+        # Machine
+        self._machine_bouts = self._bouts_from_array(self.predictions)
+        m_vals = [self._format_bout(k, b) for k, b in enumerate(self._machine_bouts, 1)]
+        self.machine_bout_combo['values'] = m_vals or ['(no bouts)']
+        self._machine_bout_label.config(text=f"Machine bouts ({len(self._machine_bouts)}):")
+        # Human (optional)
+        self._human_bouts = []
+        if self.human_bout_combo is not None:
+            hl = np.nan_to_num(np.asarray(self.human_labels, dtype=float), nan=0.0)
+            self._human_bouts = self._bouts_from_array(hl)
+            h_vals = [self._format_bout(k, b) for k, b in enumerate(self._human_bouts, 1)]
+            self.human_bout_combo['values'] = h_vals or ['(no bouts)']
+            self._human_bout_label.config(text=f"Human bouts ({len(self._human_bouts)}):")
+
+    def _seek_to(self, frame):
+        """Move the video (and graph, if open) to a given frame — the standard nav path."""
+        self.current_frame = int(frame)
+        self.update_frame()
+        self.update_graph_window()
+
+    def _on_machine_bout_selected(self, event=None):
+        i = self.machine_bout_combo.current()
+        if 0 <= i < len(getattr(self, '_machine_bouts', [])):
+            self._seek_to(self._machine_bouts[i][0])
+
+    def _on_human_bout_selected(self, event=None):
+        i = self.human_bout_combo.current()
+        if 0 <= i < len(getattr(self, '_human_bouts', [])):
+            self._seek_to(self._human_bouts[i][0])
+
     def jump_to_next_bout(self):
         """Jump to the start of the next behavior bout"""
         bouts = self.find_behavior_bouts()

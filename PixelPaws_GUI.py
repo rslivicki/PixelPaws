@@ -549,7 +549,7 @@ class PixelPawsGUI:
         self.notebook = SidebarNav(self.root, width=280, groups={
             "Pose & Features": ["🦴 Pose Estimation", "⚙️ Feature Extraction"],
             "Train & Label": ["🎓 Train Classifier", "🧠 Active Learning"],
-            "Predict & Evaluate": ["🎬 Predict", "📊 Evaluate", "📦 Batch"],
+            "Predict & Evaluate": ["🎬 Predict & Review", "📊 Evaluate", "🚀 Run Classifiers"],
             "Analyze": ["📈 Analysis", "🔀 Transitions"],
             "Discover": ["🔍 Discover"],
             "Locomotion": ["🐾 Gait & Limb Use", "🫃 Body Contact"],
@@ -561,14 +561,9 @@ class PixelPawsGUI:
         self.create_training_tab()
         self.create_prediction_tab()
         self.create_evaluation_tab()
-        self.create_batch_tab()
-        
-        # Analysis tab (for batch analysis and graphing)
-        if ANALYSIS_TAB_AVAILABLE:
-            self.analysis_tab_frame = ttk.Frame(self.notebook)
-            self.notebook.add(self.analysis_tab_frame, text="📈 Analysis")
-            self.analysis_tab = AnalysisTab(self.analysis_tab_frame, self)
-            self.analysis_tab.pack(fill='both', expand=True)
+        # Run Classifiers (batch prediction) + Analysis (subjects overview + inline graphs)
+        self.create_run_classifiers_tab()
+        self.create_analysis_tab()
 
         # Transitions tab (state transition analysis)
         if TRANSITIONS_TAB_AVAILABLE:
@@ -611,9 +606,8 @@ class PixelPawsGUI:
         self.create_pose_estimation_tab()
         self.create_feature_extraction_tab()
 
-        # Hide sidebar items for unavailable modules
-        if not ANALYSIS_TAB_AVAILABLE:
-            self.notebook.hide_item("📈 Analysis")
+        # Hide sidebar items for unavailable modules. "🚀 Run Classifiers" always works;
+        # "📈 Analysis" stays visible and shows a notice if the Analysis module is unavailable.
         if not UNSUPERVISED_TAB_AVAILABLE:
             self.notebook.hide_item("🔍 Discover")
         if not GAIT_LIMB_TAB_AVAILABLE:
@@ -1424,10 +1418,38 @@ class PixelPawsGUI:
                       font=(FONT_FAMILY, 11), foreground='red',
                       justify='center').pack(expand=True)
     
+    def _add_collapsible(self, parent, title, expanded=False):
+        """Return the inner body frame of a collapsible section (same idiom as the Train
+        tab's Session Selection panel). The caller packs widgets into the returned frame;
+        a header button shows/hides them and keeps its ▶/▼ arrow in sync."""
+        state = {'expanded': bool(expanded)}
+        btn = ttk.Button(parent, text="")
+        btn.pack(fill='x', padx=15, pady=(8, 0))
+        holder = ttk.Frame(parent, relief='groove', borderwidth=1)
+        holder.pack(fill='x', padx=15, pady=(0, 8))
+        inner = ttk.Frame(holder)
+
+        def _sync():
+            btn.config(text=("▼ " if state['expanded'] else "▶ ") + title)
+
+        def _toggle():
+            if state['expanded']:
+                inner.pack_forget()
+            else:
+                inner.pack(fill='x', padx=6, pady=6)
+            state['expanded'] = not state['expanded']
+            _sync()
+
+        btn.config(command=_toggle)
+        if state['expanded']:
+            inner.pack(fill='x', padx=6, pady=6)
+        _sync()
+        return inner
+
     def create_prediction_tab(self):
-        """Create the single video prediction tab"""
+        """Create the single-video Predict & Review tab."""
         pred_frame = ttk.Frame(self.notebook)
-        self.notebook.add(pred_frame, text="🎬 Predict")
+        self.notebook.add(pred_frame, text="🎬 Predict & Review")
         
         # Create scrollable canvas
         canvas = tk.Canvas(pred_frame)
@@ -1442,10 +1464,19 @@ class PixelPawsGUI:
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
         
-        # === CLASSIFIER SELECTION ===
+        # ── Header ────────────────────────────────────────────────────────
+        ttk.Label(scrollable_frame, text="Predict & Review",
+                  font=(FONT_FAMILY, 13, 'bold')).pack(anchor='w', padx=15, pady=(10, 0))
+        ttk.Label(scrollable_frame,
+                  text="Compare a classifier's predictions against human labels, session by session. "
+                       "Pick a classifier, scan the project, then run & score the sessions you select. "
+                       "One-off single-video prediction and video export live under Advanced.",
+                  foreground='gray', wraplength=700, justify='left').pack(anchor='w', padx=15, pady=(0, 4))
+
+        # === CLASSIFIER (shared by comparison + single video) ===
         clf_frame = ttk.LabelFrame(scrollable_frame, text="Classifier", padding=10)
         clf_frame.pack(fill='x', padx=15, pady=8)
-        
+
         ttk.Label(clf_frame, text="Classifier File:").grid(row=0, column=0, sticky='w', pady=2)
         self.pred_classifier_path = tk.StringVar()
         self.pred_classifier_combo = ttk.Combobox(
@@ -1477,10 +1508,138 @@ class PixelPawsGUI:
                        "None: raw threshold only",
                   foreground='gray', font=(FONT_FAMILY, 8)).pack(side='left', padx=(6, 0))
 
-        # === VIDEO SELECTION ===
-        video_frame = ttk.LabelFrame(scrollable_frame, text="Video Files", padding=10)
+        # Optional per-run parameter overrides in a collapsible row (hidden by default).
+        # When off, the classifier's own trained threshold + bout-filter values are used.
+        # (Feature settings can't be changed — they must match how the classifier was trained.)
+        self.pred_override_params = tk.BooleanVar(value=False)
+        self.pred_thresh_override = tk.StringVar()
+        self.pred_minbout_override = tk.StringVar()
+        self.pred_minafter_override = tk.StringVar()
+        self.pred_maxgap_override = tk.StringVar()
+        self._pr_override_open = False
+
+        override_btn = ttk.Button(clf_frame, text="▶ Override threshold / bout filters")
+        override_btn.grid(row=3, column=0, columnspan=4, sticky='w', pady=(4, 0))
+        override_box = ttk.Frame(clf_frame)
+        override_box.grid(row=4, column=0, columnspan=4, sticky='w', pady=(2, 2))
+        override_box.grid_remove()   # collapsed by default
+
+        ttk.Checkbutton(override_box, text="Apply overrides",
+                        variable=self.pred_override_params).pack(side='left')
+        for _lab, _var, _w in (("Threshold", self.pred_thresh_override, 6),
+                               ("Min bout", self.pred_minbout_override, 5),
+                               ("Min after", self.pred_minafter_override, 5),
+                               ("Max gap", self.pred_maxgap_override, 5)):
+            ttk.Label(override_box, text=_lab).pack(side='left', padx=(10, 2))
+            ttk.Entry(override_box, textvariable=_var, width=_w).pack(side='left')
+        ttk.Button(override_box, text="↺ From classifier",
+                   command=self._pr_load_params_from_classifier).pack(side='left', padx=(10, 0))
+        ttk.Label(override_box, text="(blank = keep classifier value)",
+                  foreground='gray', font=(FONT_FAMILY, 8)).pack(side='left', padx=(8, 0))
+
+        def _toggle_override():
+            if self._pr_override_open:
+                override_box.grid_remove()
+                override_btn.config(text="▶ Override threshold / bout filters")
+            else:
+                override_box.grid()
+                override_btn.config(text="▼ Override threshold / bout filters")
+            self._pr_override_open = not self._pr_override_open
+        override_btn.config(command=_toggle_override)
+
+        # ====================================================================
+        # COMPARISON (primary): human labels vs classifier, session by session
+        # ====================================================================
+        cmp_lf = ttk.LabelFrame(scrollable_frame,
+                                text="Compare — human labels vs classifier", padding=10)
+        cmp_lf.pack(fill='both', expand=True, padx=15, pady=8)
+        ttk.Label(cmp_lf,
+                  text="Scan the project's sessions, run the selected classifier, and score each "
+                       "session against its human labels. Sessions missing pose or human labels are "
+                       "flagged; cached features are reused.",
+                  foreground='#555', wraplength=680, justify='left').pack(anchor='w', pady=(0, 6))
+
+        # Session table
+        cmp_tbl = ttk.Frame(cmp_lf); cmp_tbl.pack(fill='both', expand=True)
+        _cols = ('session', 'pose', 'features', 'human', 'result')
+        self._pr_tree = ttk.Treeview(cmp_tbl, columns=_cols, show='headings',
+                                     height=8, selectmode='extended')
+        for _c, _t, _w, _a in (('session', 'Session', 300, 'w'), ('pose', 'Pose', 60, 'center'),
+                               ('features', 'Features', 70, 'center'),
+                               ('human', 'Human labels', 90, 'center'),
+                               ('result', 'Result (F1)', 160, 'w')):
+            self._pr_tree.heading(_c, text=_t); self._pr_tree.column(_c, width=_w, anchor=_a)
+        _pr_vsb = ttk.Scrollbar(cmp_tbl, orient='vertical', command=self._pr_tree.yview)
+        self._pr_tree.configure(yscrollcommand=_pr_vsb.set)
+        self._pr_tree.pack(side='left', fill='both', expand=True)
+        _pr_vsb.pack(side='right', fill='y')
+        self._pr_tree.bind('<Double-1>', lambda _e: self._pr_show_graph())
+
+        # Selection controls
+        cmp_sel = ttk.Frame(cmp_lf); cmp_sel.pack(fill='x', pady=(6, 2))
+        ttk.Button(cmp_sel, text="Select all",
+                   command=lambda: self._pr_tree.selection_set(self._pr_tree.get_children())
+                   ).pack(side='left')
+        ttk.Button(cmp_sel, text="With human labels",
+                   command=lambda: self._pr_select_where(lambda s: s.get('human'))
+                   ).pack(side='left', padx=(6, 0))
+        ttk.Button(cmp_sel, text="Not yet compared",
+                   command=lambda: self._pr_select_where(lambda s: not s.get('done'))
+                   ).pack(side='left', padx=(6, 0))
+        ttk.Button(cmp_sel, text="Clear",
+                   command=lambda: self._pr_tree.selection_remove(self._pr_tree.selection())
+                   ).pack(side='left', padx=(6, 0))
+        ttk.Button(cmp_sel, text="Rescan", command=self._pr_scan_sessions).pack(side='left', padx=(6, 0))
+        self._pr_status = ttk.Label(cmp_sel, text="", foreground='#555'); self._pr_status.pack(side='right')
+
+        # Run bar
+        cmp_run = ttk.Frame(cmp_lf); cmp_run.pack(fill='x', pady=(2, 4))
+        self._pr_run_btn = ttk.Button(cmp_run, text="▶  Run & Compare selected",
+                                      command=self._pr_run_compare, style='Accent.TButton')
+        self._pr_run_btn.pack(side='left')
+        self._pr_stop_btn = ttk.Button(cmp_run, text="■  Stop", command=self._pr_stop_compare,
+                                       state='disabled')
+        self._pr_stop_btn.pack(side='left', padx=(6, 0))
+        ttk.Button(cmp_run, text="📊 Show diagnostic graph",
+                   command=self._pr_show_graph).pack(side='left', padx=(6, 0))
+        ttk.Button(cmp_run, text="🎬 Preview with predictions",
+                   command=self._pr_preview_predictions).pack(side='left', padx=(6, 0))
+        ttk.Button(cmp_run, text="🎥 Export labeled video",
+                   command=self._pr_export_video).pack(side='left', padx=(6, 0))
+
+        # Per-session agreement metrics
+        ttk.Label(cmp_lf, text="Per-session agreement (observed frames only)",
+                  foreground='#555', font=(FONT_FAMILY, 9, 'bold')).pack(anchor='w', pady=(6, 0))
+        _mcols = ('session', 'frames', 'f1', 'bout_f1', 'prec', 'rec', 'agree', 'r')
+        self._pr_metrics_tree = ttk.Treeview(cmp_lf, columns=_mcols, show='headings', height=6)
+        for _c, _t, _w in (('session', 'Session', 240), ('frames', 'Frames', 65),
+                           ('f1', 'Frame F1', 70), ('bout_f1', 'Bout F1', 65),
+                           ('prec', 'Precision', 75), ('rec', 'Recall', 65), ('agree', '% agree', 65),
+                           ('r', 'time-bin R', 75)):
+            self._pr_metrics_tree.heading(_c, text=_t)
+            self._pr_metrics_tree.column(_c, width=_w, anchor=('w' if _c == 'session' else 'center'))
+        self._pr_metrics_tree.pack(fill='x', pady=(2, 4))
+
+        # Comparison log
+        self._pr_log_text = scrolledtext.ScrolledText(cmp_lf, height=6, wrap='word',
+                                                      font=('Consolas', 9))
+        self._pr_log_text.pack(fill='both', expand=False, pady=(2, 0))
+
+        # Comparison-flow state
+        self._pr_sessions = []      # list of session dicts with status flags
+        self._pr_results = {}       # session_name -> {png, f1, ...}
+        self._pr_stop_event = threading.Event()
+
+        # ====================================================================
+        # ADVANCED — single-video prediction & export (collapsed)
+        # ====================================================================
+        adv = self._add_collapsible(
+            scrollable_frame, "Advanced — single-video prediction & export", expanded=False)
+
+        # === Video & pose ===
+        video_frame = ttk.LabelFrame(adv, text="Video & pose", padding=10)
         video_frame.pack(fill='x', padx=15, pady=8)
-        
+
         ttk.Label(video_frame, text="Video File:").grid(row=0, column=0, sticky='w', pady=2)
         self.pred_video_path = tk.StringVar()
         self.pred_video_options = {}
@@ -1492,50 +1651,53 @@ class PixelPawsGUI:
                    command=self.refresh_pred_videos).grid(row=0, column=2, pady=2)
         ttk.Button(video_frame, text="📁", width=3,
                    command=self.browse_pred_video).grid(row=0, column=3, pady=2)
-        
+
         ttk.Label(video_frame, text="DLC Pose File:").grid(row=1, column=0, sticky='w', pady=2)
         self.pred_dlc_path = tk.StringVar()
         ttk.Entry(video_frame, textvariable=self.pred_dlc_path, width=50).grid(
             row=1, column=1, padx=5, pady=2)
-        ttk.Button(video_frame, text="📁 Browse", 
+        ttk.Button(video_frame, text="📁 Browse",
                   command=self.browse_pred_dlc).grid(row=1, column=2, pady=2)
-        
-        ttk.Button(video_frame, text="🔍 Auto-Find DLC File", 
+
+        ttk.Button(video_frame, text="🔍 Auto-Find DLC File",
                   command=self.auto_find_dlc).grid(row=2, column=1, sticky='w', pady=5)
-        
+
+        # === Inputs: features cache · crop config · human labels (mainstay) ===
+        opt_inner = ttk.LabelFrame(
+            adv, text="Inputs — features cache · crop config · human labels", padding=10)
+        opt_inner.pack(fill='x', padx=15, pady=8)
+
         # Features file (optional)
-        ttk.Label(video_frame, text="Features File (optional):").grid(row=3, column=0, sticky='w', pady=2)
+        ttk.Label(opt_inner, text="Features File (optional):").grid(row=0, column=0, sticky='w', pady=2)
         self.pred_features_path = tk.StringVar()
-        ttk.Entry(video_frame, textvariable=self.pred_features_path, width=50).grid(
-            row=3, column=1, padx=5, pady=2)
-        ttk.Button(video_frame, text="📁 Browse", 
-                  command=self.browse_pred_features).grid(row=3, column=2, pady=2)
-        
-        ttk.Label(video_frame, text="Skip feature extraction if file provided", 
-                 font=(FONT_FAMILY, 8), foreground='gray').grid(row=3, column=1, sticky='w', padx=5)
-        
+        ttk.Entry(opt_inner, textvariable=self.pred_features_path, width=50).grid(
+            row=0, column=1, padx=5, pady=2)
+        ttk.Button(opt_inner, text="📁 Browse",
+                  command=self.browse_pred_features).grid(row=0, column=2, pady=2)
+        ttk.Label(opt_inner, text="Skip feature extraction when a cache is provided",
+                 font=(FONT_FAMILY, 8), foreground='gray').grid(row=1, column=1, sticky='w', padx=5)
+
         # DLC Config for crop parameters
-        ttk.Label(video_frame, text="DLC Config (for crop):").grid(row=4, column=0, sticky='w', pady=2)
+        ttk.Label(opt_inner, text="DLC Config (for crop):").grid(row=2, column=0, sticky='w', pady=2)
         self.pred_dlc_config_path = tk.StringVar()
-        ttk.Entry(video_frame, textvariable=self.pred_dlc_config_path, width=50).grid(
-            row=4, column=1, padx=5, pady=2)
-        ttk.Button(video_frame, text="📁 Browse", 
-                  command=self.browse_pred_dlc_config).grid(row=4, column=2, pady=2)
-        
-        ttk.Button(video_frame, text="🔍 Auto-Find Config", 
-                  command=self.auto_find_dlc_config).grid(row=5, column=1, sticky='w', pady=5)
-        
+        ttk.Entry(opt_inner, textvariable=self.pred_dlc_config_path, width=50).grid(
+            row=2, column=1, padx=5, pady=2)
+        ttk.Button(opt_inner, text="📁 Browse",
+                  command=self.browse_pred_dlc_config).grid(row=2, column=2, pady=2)
+
+        ttk.Button(opt_inner, text="🔍 Auto-Find Config",
+                  command=self.auto_find_dlc_config).grid(row=3, column=1, sticky='w', pady=5)
+
         # Human labels (optional)
-        ttk.Label(video_frame, text="Human Labels (optional):").grid(row=6, column=0, sticky='w', pady=2)
+        ttk.Label(opt_inner, text="Human Labels (optional):").grid(row=4, column=0, sticky='w', pady=2)
         self.pred_human_labels_path = tk.StringVar()
-        ttk.Entry(video_frame, textvariable=self.pred_human_labels_path, width=50).grid(
-            row=6, column=1, padx=5, pady=2)
-        ttk.Button(video_frame, text="📁 Browse", 
-                  command=self.browse_pred_human_labels).grid(row=6, column=2, pady=2)
-        
-        # === OUTPUT OPTIONS ===
-        output_frame = ttk.LabelFrame(scrollable_frame, text="Output Options", padding=10)
-        output_frame.pack(fill='x', padx=15, pady=8)
+        ttk.Entry(opt_inner, textvariable=self.pred_human_labels_path, width=50).grid(
+            row=4, column=1, padx=5, pady=2)
+        ttk.Button(opt_inner, text="📁 Browse",
+                  command=self.browse_pred_human_labels).grid(row=4, column=2, pady=2)
+
+        # === Output Options (collapsible) ===
+        output_frame = self._add_collapsible(adv, "Output Options", expanded=False)
 
         self.pred_save_csv = tk.BooleanVar(value=True)
         ttk.Checkbutton(output_frame, text="Save frame-by-frame predictions (CSV)", 
@@ -1579,36 +1741,41 @@ class PixelPawsGUI:
                   command=self.browse_pred_output).grid(row=5, column=2, pady=2)
         ttk.Label(output_frame, text="(Leave empty to use project results/ folder, or video folder if no project is set)", foreground='gray').grid(row=6, column=1, sticky='w')
         
-        # === ACTIONS ===
-        action_frame = ttk.Frame(scrollable_frame)
-        action_frame.pack(fill='x', padx=5, pady=10)
-        
-        ttk.Button(action_frame, text="🎥 Preview Video", 
-                  command=self.preview_pred_video).pack(side='left', padx=5)
-        ttk.Button(action_frame, text="🔍 Preview with Predictions", 
-                  command=self.preview_with_predictions).pack(side='left', padx=5)
-        ttk.Button(action_frame, text="🎯 Optimize Parameters", 
-                  command=self.optimize_parameters).pack(side='left', padx=5)
-        self._pred_run_btn = ttk.Button(action_frame, text="▶ RUN PREDICTION",
+        # === Run single-video prediction ===
+        run_bar = ttk.LabelFrame(adv, text="Run prediction (this video)", padding=8)
+        run_bar.pack(fill='x', padx=15, pady=8)
+        self._pred_run_btn = ttk.Button(run_bar, text="▶ RUN PREDICTION",
                   command=self.run_single_prediction,
                   style='Accent.TButton')
         self._pred_run_btn.pack(side='left', padx=5)
-        self._pred_stop_btn = ttk.Button(action_frame, text="■  Stop",
+        self._pred_stop_btn = ttk.Button(run_bar, text="■  Stop",
                   command=self._cancel_prediction,
                   state='disabled')
         self._pred_stop_btn.pack(side='left', padx=5)
+
+        # === PREVIEW · TUNE · EXPORT (secondary tools) ===
+        tools_bar = ttk.LabelFrame(adv, text="Preview · tune · export", padding=8)
+        tools_bar.pack(fill='x', padx=15, pady=(0, 8))
+        ttk.Button(tools_bar, text="🎥 Preview Video",
+                  command=self.preview_pred_video).pack(side='left', padx=5)
+        ttk.Button(tools_bar, text="🔍 Preview with Predictions",
+                  command=self.preview_with_predictions).pack(side='left', padx=5)
+        ttk.Button(tools_bar, text="🎯 Optimize Parameters",
+                  command=self.optimize_parameters).pack(side='left', padx=5)
         self.pred_export_video_btn = ttk.Button(
-            action_frame, text="🎬 Export Labeled Video",
+            tools_bar, text="🎬 Export Labeled Video",
             command=self.export_labeled_video, state='disabled')
         self.pred_export_video_btn.pack(side='left', padx=5)
         self.pred_diagnostic_btn = ttk.Button(
-            action_frame, text="📊 Diagnostic Plot",
+            tools_bar, text="📊 Diagnostic Plot",
             command=self.export_diagnostic_plot, state='disabled')
         self.pred_diagnostic_btn.pack(side='left', padx=5)
 
-        # === EXPORT VIDEO OVERLAYS ===
-        overlay_opts = ttk.LabelFrame(scrollable_frame, text="Export Video Overlays", padding=4)
-        overlay_opts.pack(fill='x', padx=5, pady=(0, 4))
+        # === EXPORT VIDEO OVERLAYS (collapsible) ===
+        overlay_opts = self._add_collapsible(
+            adv,
+            "Export Video Overlays — labeled-video styling",
+            expanded=False)
 
         # Row 0 — checkboxes
         cb_row = ttk.Frame(overlay_opts)
@@ -1688,10 +1855,10 @@ class PixelPawsGUI:
         # Auto-refresh preview when video path changes
         self.pred_video_path.trace_add('write', lambda *_: self._refresh_overlay_preview())
 
-        # === RESULTS DISPLAY ===
-        results_frame = ttk.LabelFrame(scrollable_frame, text="Results", padding=5)
-        results_frame.pack(fill='both', expand=True, padx=5, pady=5)
-        
+        # === RESULTS DISPLAY (single-video log) ===
+        results_frame = ttk.LabelFrame(adv, text="Results (single-video log)", padding=5)
+        results_frame.pack(fill='both', expand=True, padx=15, pady=5)
+
         self.pred_results_text = scrolledtext.ScrolledText(results_frame, height=12, wrap=tk.WORD)
         self.pred_results_text.pack(fill='both', expand=True)
         
@@ -1700,130 +1867,917 @@ class PixelPawsGUI:
         scrollbar.pack(side="right", fill="y")
         bind_mousewheel(canvas)
 
-    def create_batch_tab(self):
-        """Create the batch processing tab"""
-        batch_frame = ttk.Frame(self.notebook)
-        self.notebook.add(batch_frame, text="📦 Batch")
-        
-        # Create scrollable canvas
-        canvas = tk.Canvas(batch_frame)
-        scrollbar = ttk.Scrollbar(batch_frame, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        # Populate the comparison session list (cheap — file-existence checks only).
+        try:
+            self._pr_scan_sessions()
+        except Exception:
+            pass
+
+    # ================================================================== #
+    # Predict & Review — comparison flow (human labels vs classifier)
+    # ================================================================== #
+
+    def _pr_log(self, msg):
+        """Thread-safe append to the comparison log."""
+        def _do():
+            try:
+                self._pr_log_text.insert(tk.END, msg + "\n")
+                self._pr_log_text.see(tk.END)
+            except Exception:
+                pass
+        self._safe_after(_do)
+
+    def _pr_project(self):
+        return self.current_project_folder.get() or self.train_project_folder.get()
+
+    def _pr_select_where(self, pred):
+        """Select session rows whose session dict satisfies pred(session)."""
+        try:
+            self._pr_tree.selection_set(
+                [str(i) for i, s in enumerate(self._pr_sessions) if pred(s)])
+        except Exception:
+            pass
+
+    def _pr_scan_sessions(self):
+        """Populate the comparison table: one row per project session with pose / features /
+        human-label availability. Fast — only checks file existence (no video decoding)."""
+        tree = getattr(self, '_pr_tree', None)
+        if tree is None:
+            return
+        tree.delete(*tree.get_children())
+        self._pr_sessions = []
+        proj = self._pr_project()
+        if not proj or not os.path.isdir(proj):
+            self._pr_status.config(text="Load a project folder, then press Rescan.")
+            return
+        try:
+            from evaluation_tab import find_session_triplets
+            found = find_session_triplets(proj, prefer_filtered=True,
+                                          require_labels=False, recursive=True)
+        except Exception as e:
+            self._pr_status.config(text=f"Scan failed: {e}")
+            return
+        features_dir = os.path.join(proj, 'features')
+        beh_dir = os.path.join(proj, 'behavior_labels')
+        n_human = 0
+        for s in found:
+            name = s.get('session_name') or os.path.splitext(os.path.basename(s.get('video', '')))[0]
+            dlc = s.get('dlc')
+            video = s.get('video')
+            if not video:
+                continue
+            has_pose = bool(dlc and os.path.isfile(dlc))
+            has_feats = bool(glob.glob(os.path.join(features_dir, f"{name}_features_*.pkl")))
+            labels_path = s.get('labels')
+            if not labels_path:
+                cand = os.path.join(beh_dir, f"{name}_labels.csv")
+                labels_path = cand if os.path.isfile(cand) else None
+            has_human = bool(labels_path)
+            n_human += 1 if has_human else 0
+            sess = {'name': name, 'video': video, 'dlc': dlc, 'labels': labels_path,
+                    'pose': has_pose, 'features': has_feats, 'human': has_human,
+                    'done': False, 'result': ''}
+            self._pr_sessions.append(sess)
+            iid = str(len(self._pr_sessions) - 1)
+            tree.insert('', 'end', iid=iid, values=(
+                name, '✓' if has_pose else '—', '✓' if has_feats else '—',
+                '✓' if has_human else '—', ''))
+        # Pre-select sessions that can actually be compared (pose + human labels).
+        tree.selection_set([str(i) for i, s in enumerate(self._pr_sessions)
+                            if s['pose'] and s['human']])
+        n = len(self._pr_sessions)
+        self._pr_status.config(
+            text=f"{n} session(s) · {n_human} with human labels · "
+                 f"{sum(1 for s in self._pr_sessions if not s['pose'])} missing pose")
+
+    def _pr_stop_compare(self):
+        self._pr_stop_event.set()
+        self._pr_log("Stop requested — finishing current session…")
+
+    def _pr_run_compare(self):
+        """Kick off the predict+compare worker over the selected sessions."""
+        if getattr(self, '_pr_running', False):
+            return
+        clf_path = self.pred_classifier_path.get().strip()
+        if not clf_path or not os.path.isfile(clf_path):
+            messagebox.showwarning("No classifier", "Select a classifier first.")
+            return
+        sel = self._pr_tree.selection()
+        if not sel:
+            messagebox.showinfo("Nothing selected", "Select at least one session to compare.")
+            return
+        chosen = [self._pr_sessions[int(i)] for i in sel]
+        runnable = [s for s in chosen if s['pose']]
+        if not runnable:
+            messagebox.showinfo("No pose data",
+                                "None of the selected sessions have a DLC pose file to predict from.")
+            return
+        smooth = (self.pred_smoothing_mode.get()
+                  if getattr(self, 'pred_smoothing_mode', None) is not None else 'bout_filters')
+        # Read parameter overrides on the main thread (tk vars aren't thread-safe).
+        overrides = None
+        if getattr(self, 'pred_override_params', None) is not None and self.pred_override_params.get():
+            overrides = {}
+            try:
+                for _key, _var, _cast in (
+                        ('best_thresh', self.pred_thresh_override, float),
+                        ('min_bout', self.pred_minbout_override, int),
+                        ('min_after_bout', self.pred_minafter_override, int),
+                        ('max_gap', self.pred_maxgap_override, int)):
+                    _txt = _var.get().strip()
+                    if _txt:
+                        overrides[_key] = _cast(_txt)
+            except ValueError:
+                messagebox.showwarning(
+                    "Invalid parameters",
+                    "Threshold must be a number and the bout values whole numbers.")
+                return
+            if 'best_thresh' in overrides and not (0.0 <= overrides['best_thresh'] <= 1.0):
+                messagebox.showwarning("Invalid threshold", "Threshold must be between 0 and 1.")
+                return
+            overrides = overrides or None
+        self._pr_stop_event.clear()
+        self._pr_running = True
+        self._pr_run_btn.config(state='disabled')
+        self._pr_stop_btn.config(state='normal')
+        self._pr_log_text.delete('1.0', tk.END)
+        self._pr_metrics_tree.delete(*self._pr_metrics_tree.get_children())
+        threading.Thread(target=self._pr_compare_worker,
+                         args=(chosen, clf_path, smooth, overrides), daemon=True).start()
+
+    def _pr_load_params_from_classifier(self):
+        """Fill the override fields with the selected classifier's trained values (and turn the
+        override on) so the user can tweak from there."""
+        clf = self.pred_classifier_path.get().strip()
+        if not clf or not os.path.isfile(clf):
+            messagebox.showwarning("No classifier", "Select a classifier first.")
+            return
+        try:
+            with open(clf, 'rb') as f:
+                cd = pickle.load(f)
+        except Exception as e:
+            messagebox.showerror("Load failed", f"Could not read classifier:\n{e}")
+            return
+        self.pred_thresh_override.set(f"{float(cd.get('best_thresh', 0.5)):.3f}")
+        self.pred_minbout_override.set(str(int(cd.get('min_bout', 1))))
+        self.pred_minafter_override.set(str(int(cd.get('min_after_bout', 0))))
+        self.pred_maxgap_override.set(str(int(cd.get('max_gap', 0))))
+        self.pred_override_params.set(True)
+
+    def _pr_set_row(self, name, result_text):
+        """Update the Result column of the session row for *name* (main thread)."""
+        def _do():
+            for i, s in enumerate(self._pr_sessions):
+                if s['name'] == name:
+                    vals = list(self._pr_tree.item(str(i), 'values'))
+                    if len(vals) == 5:
+                        vals[4] = result_text
+                        self._pr_tree.item(str(i), values=vals)
+                    break
+        self._safe_after(_do)
+
+    def _pr_add_metric_row(self, name, frames, f1, bout_f1, prec, rec, agree, r):
+        def _do():
+            self._pr_metrics_tree.insert('', 'end', values=(
+                name, frames,
+                f"{f1:.2f}" if f1 is not None else "—",
+                f"{bout_f1:.2f}" if bout_f1 is not None else "—",
+                f"{prec:.2f}" if prec is not None else "—",
+                f"{rec:.2f}" if rec is not None else "—",
+                f"{agree:.0f}%" if agree is not None else "—",
+                f"{r:.2f}" if r is not None else "—"))
+        self._safe_after(_do)
+
+    def _pr_predict_one_session(self, clf_data, model, video_path, dlc_path, smooth, cancel_flag):
+        """Predict one session, reusing any already-extracted feature cache before extracting.
+
+        Uses the SAME cache key as training / the Feature Extraction tab —
+        `_feature_hash_key({**clf_data, 'bp_include_list': None})` — and searches the project
+        features/ folder first (then legacy per-video caches, then ancestors), exactly like the
+        optimizer/eval paths. Only extracts when nothing is found. Returns (y_proba, y_pred, fps)."""
+        import cv2 as _cv2
+        video_name = os.path.splitext(os.path.basename(video_path))[0]
+        video_dir = os.path.dirname(video_path)
+        proj = self._pr_project()
+        cfg_hash = PixelPawsGUI._feature_hash_key({**clf_data, 'bp_include_list': None})
+        cache_fname = f"{video_name}_features_{cfg_hash}.pkl"
+
+        cache_locations = []
+        if proj and os.path.isdir(proj):
+            cache_locations.append(os.path.join(proj, 'features', cache_fname))
+        cache_locations += [
+            os.path.join(video_dir, 'PredictionCache', cache_fname),
+            os.path.join(video_dir, 'FeatureCache', cache_fname),
+        ]
+        _anc = video_dir
+        while True:
+            _par = os.path.dirname(_anc)
+            if _par == _anc:
+                break
+            _anc = _par
+            cache_locations.append(os.path.join(_anc, 'features', cache_fname))
+            cache_locations.append(os.path.join(_anc, 'FeatureCache', cache_fname))
+            if proj and os.path.normpath(_anc) == os.path.normpath(proj):
+                break
+        cache_file = next((loc for loc in cache_locations if os.path.isfile(loc)), None)
+
+        if cache_file:
+            self._pr_log(f"  ✓ using cached features: {os.path.basename(cache_file)}")
+            with open(cache_file, 'rb') as f:
+                X = pickle.load(f)
+        else:
+            self._pr_log("  no matching feature cache for this classifier — extracting…")
+            if proj and os.path.isdir(proj):
+                cache_dir = os.path.join(proj, 'features')
+            else:
+                cache_dir = os.path.join(video_dir, 'FeatureCache')
+            os.makedirs(cache_dir, exist_ok=True)
+            out_cache = os.path.join(cache_dir, cache_fname)
+            config_yaml = None
+            for _c in (os.path.join(video_dir, 'config.yaml'),
+                       os.path.join(os.path.dirname(video_dir), 'config.yaml')):
+                if os.path.isfile(_c):
+                    config_yaml = _c
+                    break
+            X = PixelPaws_ExtractFeatures(
+                pose_data_file=dlc_path, video_file_path=video_path,
+                bp_include_list=clf_data.get('bp_include_list'),
+                bp_pixbrt_list=clf_data.get('bp_pixbrt_list', []),
+                square_size=clf_data.get('square_size', [40]),
+                pix_threshold=clf_data.get('pix_threshold', 0.3),
+                config_yaml_path=config_yaml,
+                include_optical_flow=clf_data.get('include_optical_flow', False),
+                bp_optflow_list=clf_data.get('bp_optflow_list', []) or None,
+                cancel_flag=cancel_flag, clf_data=clf_data)
+            try:
+                _atomic_pickle_save(X, out_cache)
+            except Exception:
+                pass
+
+        X = augment_features_post_cache(X, clf_data, model, dlc_path, log_fn=self._pr_log)
+        y_proba = predict_with_xgboost(model, X, calibrator=clf_data.get('prob_calibrator'),
+                                       fold_models=clf_data.get('fold_models'))
+        y_pred = apply_smoothing(y_proba, clf_data, smooth)
+        cap = _cv2.VideoCapture(video_path)
+        fps = cap.get(_cv2.CAP_PROP_FPS)
+        cap.release()
+        if not fps or fps <= 0:
+            fps = 60.0
+        return y_proba, y_pred, fps
+
+    def _pr_compare_worker(self, sessions, clf_path, smooth, overrides=None):
+        """Background: predict each session and score it against human labels. Saves a
+        per-session diagnostic PNG and fills the metrics table.
+
+        `overrides` (optional) is a dict of {best_thresh/min_bout/min_after_bout/max_gap}
+        applied on top of the classifier's trained values for this run only — feature
+        settings are never overridden (they must match how the model was trained)."""
+        import numpy as _np
+        try:
+            from evaluation_tab import render_session_diagnostic, EvaluationTab
+            with open(clf_path, 'rb') as f:
+                clf_data = pickle.load(f)
+            clf_data['bp_include_list'] = clean_bodyparts_list(clf_data.get('bp_include_list', []))
+            clf_data['bp_pixbrt_list'] = clean_bodyparts_list(clf_data.get('bp_pixbrt_list', []))
+            clf_data = auto_detect_bodyparts_from_model(clf_data, verbose=False)
+            model = clf_data['clf_model']
+            if overrides:
+                clf_data.update(overrides)   # threshold / bout-filter overrides for this run
+            best_thresh = float(clf_data.get('best_thresh', 0.5))
+            behavior = clf_data.get('Behavior_type', 'Behavior')
+            self._pr_log(f"Classifier: {os.path.basename(clf_path)}   ·   behavior: {behavior}   ·   "
+                         f"threshold: {best_thresh:.3f}   ·   smoothing: {smooth}")
+            if overrides:
+                self._pr_log("  overrides: " + ", ".join(f"{k}={v}" for k, v in overrides.items()))
+
+            proj = self._pr_project()
+            out_dir = os.path.join(proj or '.', 'results', 'diagnostics')
+            os.makedirs(out_dir, exist_ok=True)
+
+            f1s = []
+            bf1s = []
+            for s in sessions:
+                if self._pr_stop_event.is_set():
+                    self._pr_log("Stopped."); break
+                name = s['name']
+                if not s['pose']:
+                    self._pr_set_row(name, "skipped (no pose)")
+                    continue
+                self._pr_set_row(name, "predicting…")
+                self._pr_log(f"\n▶ {name}")
+                try:
+                    y_proba, y_pred, fps = self._pr_predict_one_session(
+                        clf_data, model, s['video'], s['dlc'], smooth, self._pr_stop_event)
+                except InterruptedError:
+                    self._pr_set_row(name, "cancelled"); break
+                except Exception as e:
+                    self._pr_log(f"  ✗ prediction failed: {e}")
+                    self._pr_set_row(name, "error (see log)")
+                    continue
+                s['done'] = True
+                # Keep predictions + probabilities so "Preview with predictions" opens the
+                # interactive side-by-side preview without re-predicting. human_labels is filled
+                # in below when the session has ground truth (enables the graph's mismatch marks).
+                self._pr_results[name] = {'png': None, 'f1': None, 'r': None, 'bout_f1': None,
+                                          'y_pred': _np.asarray(y_pred),
+                                          'y_proba': _np.asarray(y_proba),
+                                          'behavior': behavior, 'threshold': best_thresh,
+                                          'fps': fps, 'human_labels': None,
+                                          'video': s['video'], 'dlc': s['dlc']}
+
+                # Human labels?
+                if not s['human'] or not s['labels'] or not os.path.isfile(s['labels']):
+                    self._pr_set_row(name, "predicted (no human labels)")
+                    self._pr_log("  (no human labels — prediction only, nothing to compare)")
+                    continue
+                try:
+                    import pandas as _pd
+                    df = _pd.read_csv(s['labels'])
+                    col = self._pr_resolve_behavior_col(df, behavior)
+                    if col is None:
+                        self._pr_set_row(name, f"no '{behavior}' column")
+                        self._pr_log(f"  ⚠ labels file has no '{behavior}' column "
+                                     f"(columns: {list(df.columns)[:8]})")
+                        continue
+                    y_true_raw = _np.asarray(df[col].values, dtype=float)
+                    # -1 (unobserved) -> NaN so the diagnostic + metrics exclude those frames
+                    y_true_raw[y_true_raw < 0] = _np.nan
+                    n = int(min(len(y_true_raw), len(y_pred), len(y_proba)))
+                    yt, yp = y_true_raw[:n], _np.asarray(y_pred)[:n].astype(int)
+                    # Keep the aligned human labels (NaN = unobserved) for the interactive preview.
+                    self._pr_results[name]['human_labels'] = yt
+                    obs = ~_np.isnan(yt)
+                    bout_f1 = None
+                    if obs.any():
+                        yt_obs = yt[obs].astype(int); yp_obs = yp[obs]
+                        f1, prec, rec, acc = EvaluationTab._compute_metrics(yt_obs, yp_obs)
+                        agree = 100.0 * acc
+                        try:
+                            bout_f1 = EvaluationTab._compute_bout_metrics(
+                                yt_obs, yp_obs, fps=float(fps)).get('bout_f1')
+                        except Exception:
+                            bout_f1 = None
+                    else:
+                        f1 = prec = rec = agree = None
+                    out_png = os.path.join(
+                        out_dir, f"PixelPaws_{behavior}_Diagnostic_{name}.png")
+                    res = render_session_diagnostic(
+                        yt, yp, behavior, name, out_png, fps=float(fps),
+                        threshold=best_thresh, y_proba=_np.asarray(y_proba)[:n])
+                    r = res.get('r')
+                    self._pr_results[name].update({'png': out_png, 'f1': res.get('f1'),
+                                                   'r': r, 'bout_f1': bout_f1})
+                    disp_f1 = res.get('f1') if res.get('f1') is not None else (f1 or 0.0)
+                    _bf = f"  ·  BF1 {bout_f1:.2f}" if bout_f1 is not None else ""
+                    self._pr_set_row(name, f"F1 {disp_f1:.2f}{_bf}"
+                                     + (f"  ·  R {r:.2f}" if r is not None else ""))
+                    self._pr_add_metric_row(name, int(obs.sum()), f1, bout_f1, prec, rec, agree, r)
+                    if res.get('f1') is not None:
+                        f1s.append(res['f1'])
+                    if bout_f1 is not None:
+                        bf1s.append(bout_f1)
+                    self._pr_log(f"  ✓ Frame F1={disp_f1:.2f}"
+                                 + (f"  Bout F1={bout_f1:.2f}" if bout_f1 is not None else "")
+                                 + (f"  R={r:.2f}" if r is not None else "")
+                                 + f"   → {out_png}")
+                except Exception as e:
+                    import traceback
+                    self._pr_log(f"  ✗ comparison failed: {traceback.format_exc()}")
+                    self._pr_set_row(name, "compare error")
+                    continue
+
+            if f1s:
+                _mean_bf1 = (sum(bf1s) / len(bf1s)) if bf1s else None
+                self._pr_log(f"\nMean Frame F1 over {len(f1s)} compared session(s): "
+                             f"{sum(f1s) / len(f1s):.3f}"
+                             + (f"   ·   Mean Bout F1: {_mean_bf1:.3f}" if _mean_bf1 is not None else ""))
+                self._pr_add_metric_row("— MEAN —", "", sum(f1s) / len(f1s), _mean_bf1,
+                                        None, None, None, None)
+            self._pr_log("\nDone.")
+        except Exception as e:
+            import traceback
+            self._pr_log(f"\n✗ Worker error: {traceback.format_exc()}")
+        finally:
+            def _finish():
+                self._pr_running = False
+                self._pr_run_btn.config(state='normal')
+                self._pr_stop_btn.config(state='disabled')
+            self._safe_after(_finish)
+
+    @staticmethod
+    def _pr_resolve_behavior_col(df, behavior):
+        """Resolve which label column to compare: exact → case-insensitive → sole non-frame column."""
+        if behavior in df.columns:
+            return behavior
+        low = {c.lower(): c for c in df.columns}
+        if behavior.lower() in low:
+            return low[behavior.lower()]
+        non_frame = [c for c in df.columns if c.lower() not in ('frame', 'frames', 'index')]
+        if len(non_frame) == 1:
+            return non_frame[0]
+        return None
+
+    @staticmethod
+    def _pr_open_file(path):
+        """Open a file with the OS default app (cross-platform)."""
+        try:
+            os.startfile(path)   # Windows
+        except Exception:
+            try:
+                import subprocess, sys as _sys
+                subprocess.Popen([('open' if _sys.platform == 'darwin' else 'xdg-open'), path])
+            except Exception as e:
+                messagebox.showerror("Open failed", f"Could not open file:\n{e}")
+
+    def _pr_show_graph(self):
+        """Open the saved human-vs-machine diagnostic graph (PNG) for the selected session."""
+        sel = self._pr_tree.selection()
+        if not sel:
+            messagebox.showinfo("Select a session", "Select a compared session first.")
+            return
+        s = self._pr_sessions[int(sel[0])]
+        res = self._pr_results.get(s['name'])
+        png = res.get('png') if res else None
+        if not png or not os.path.isfile(png):
+            messagebox.showinfo(
+                "No graph",
+                f"No diagnostic graph for '{s['name']}' yet.\n"
+                "Run & Compare it first (a graph is only produced when the session has human labels).")
+            return
+        self._pr_open_file(png)
+
+    def _pr_preview_predictions(self):
+        """Open the selected session's video in the interactive side-by-side preview (with the
+        clickable, seek-on-click probability graph) — the same window the single-video
+        'Preview with Predictions' uses. Reuses the predictions from Run & Compare (no
+        re-prediction / feature extraction); the session must have been run first."""
+        sel = self._pr_tree.selection()
+        if not sel:
+            messagebox.showinfo("Select a session", "Select a session first.")
+            return
+        s = self._pr_sessions[int(sel[0])]
+        res = self._pr_results.get(s['name'])
+        y_pred = res.get('y_pred') if res else None
+        y_proba = res.get('y_proba') if res else None
+        if y_pred is None or y_proba is None:
+            messagebox.showinfo(
+                "Run first",
+                f"Run & Compare '{s['name']}' first — then Preview reuses those predictions "
+                "(no re-extraction).")
+            return
+        video = res.get('video') or s.get('video')
+        dlc = res.get('dlc') or s.get('dlc')
+        if not video or not os.path.isfile(video):
+            messagebox.showwarning("No video", "The session's video file could not be found.")
+            return
+        try:
+            from dialogs import SideBySidePreview
+            overlay_colors = None
+            try:
+                overlay_colors = {'behavior': self._hex_to_bgr(self.lv_behavior_color.get()),
+                                  'no_behavior': self._hex_to_bgr(self.lv_nobehavior_color.get())}
+            except Exception:
+                overlay_colors = None
+            SideBySidePreview(self.root, video, y_pred, y_proba,
+                              res.get('behavior', 'Behavior'),
+                              float(res.get('threshold', 0.5)),
+                              human_labels=res.get('human_labels'),
+                              overlay_colors=overlay_colors,
+                              dlc_path=dlc)
+        except Exception as e:
+            import traceback
+            messagebox.showerror("Preview failed", f"Could not open preview:\n{e}")
+            print(traceback.format_exc())
+
+    def _pr_export_video(self):
+        """Export a labeled video for the selected session using its Run & Compare predictions
+        (no re-prediction). Prompts for clip range, output folder, and overlay styling first —
+        the controls bind to the shared clip / lv_* vars the exporter reads, then it populates
+        self._last_pred_* and reuses the existing export machinery."""
+        sel = self._pr_tree.selection()
+        if not sel:
+            messagebox.showinfo("Select a session", "Select a session first.")
+            return
+        s = self._pr_sessions[int(sel[0])]
+        res = self._pr_results.get(s['name'])
+        y_pred = res.get('y_pred') if res else None
+        y_proba = res.get('y_proba') if res else None
+        if y_pred is None or y_proba is None:
+            messagebox.showinfo(
+                "Run first",
+                f"Run & Compare '{s['name']}' first — then Export reuses those predictions "
+                "(no re-extraction).")
+            return
+        video = res.get('video') or s.get('video')
+        dlc = res.get('dlc') or s.get('dlc')
+        if not video or not os.path.isfile(video):
+            messagebox.showwarning("No video", "The session's video file could not be found.")
+            return
+
+        # fps: prefer the value cached at compare time; else read from the video.
+        fps = res.get('fps')
+        if not fps or fps <= 0:
+            try:
+                import cv2 as _cv2
+                cap = _cv2.VideoCapture(video)
+                fps = cap.get(_cv2.CAP_PROP_FPS)
+                cap.release()
+            except Exception:
+                fps = 0
+        if not fps or fps <= 0:
+            fps = 60.0
+
+        proj = self._pr_project()
+        default_out = os.path.join(proj, 'results') if (proj and os.path.isdir(proj)) \
+            else os.path.dirname(video)
+
+        # ── Export-options dialog ─────────────────────────────────────────
+        dlg = tk.Toplevel(self.root)
+        dlg.title(f"Export labeled video — {s['name']}")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dw, dh = 620, 340
+        sw, sh = dlg.winfo_screenwidth(), dlg.winfo_screenheight()
+        dlg.geometry(f"{dw}x{dh}+{(sw - dw) // 2}+{(sh - dh) // 2}")
+        dlg.minsize(560, 320)
+        _pad = dict(padx=10, pady=(6, 0))
+
+        ttk.Label(dlg, text=f"{s['name']}   ·   behavior: {res.get('behavior', 'Behavior')}",
+                  font=(FONT_FAMILY, 11, 'bold')).pack(anchor='w', **_pad)
+
+        # Clip range (bound to the shared pred_clip_* vars).
+        clip_lf = ttk.LabelFrame(dlg, text="Clip range (blank = whole video)", padding=8)
+        clip_lf.pack(fill='x', **_pad)
+        ttk.Label(clip_lf, text="From").pack(side='left')
+        ttk.Entry(clip_lf, textvariable=self.pred_clip_start, width=9).pack(side='left', padx=4)
+        ttk.Label(clip_lf, text="To").pack(side='left', padx=(6, 0))
+        ttk.Entry(clip_lf, textvariable=self.pred_clip_end, width=9).pack(side='left', padx=4)
+        ttk.Label(clip_lf, text="(frame #, seconds like 1.5, or H:MM:SS)",
+                  foreground='gray').pack(side='left', padx=6)
+
+        # Output folder.
+        out_lf = ttk.LabelFrame(dlg, text="Output folder", padding=8)
+        out_lf.pack(fill='x', **_pad)
+        out_var = tk.StringVar(value=default_out)
+        ttk.Entry(out_lf, textvariable=out_var).pack(side='left', fill='x', expand=True)
+        ttk.Button(out_lf, text="Browse",
+                   command=lambda: out_var.set(
+                       filedialog.askdirectory(title="Select output folder") or out_var.get())
+                   ).pack(side='left', padx=4)
+
+        # Overlay style (bound to the shared lv_* vars).
+        ov_lf = ttk.LabelFrame(dlg, text="Overlay style", padding=8)
+        ov_lf.pack(fill='x', **_pad)
+        cb = ttk.Frame(ov_lf); cb.pack(fill='x', anchor='w')
+        for _txt, _var in (("Skeleton dots", self.lv_skeleton_dots),
+                           ("Frame tint", self.lv_frame_tint),
+                           ("Timeline strip", self.lv_timeline_strip),
+                           ("Halo border", self.lv_halo_border),
+                           ("Bout counter", self.lv_bout_counter)):
+            ttk.Checkbutton(cb, text=_txt, variable=_var).pack(side='left', padx=4)
+
+        cr = ttk.Frame(ov_lf); cr.pack(fill='x', anchor='w', pady=(6, 0))
+        ttk.Label(cr, text="Scheme:").pack(side='left')
+        scheme_combo = ttk.Combobox(
+            cr, textvariable=self.lv_color_scheme,
+            values=list(OVERLAY_COLOR_SCHEMES.keys()) + ['Custom'], state='readonly', width=16)
+        scheme_combo.pack(side='left', padx=(2, 10))
+        ttk.Label(cr, text="Behavior:").pack(side='left')
+        beh_btn = tk.Button(cr, text="  ", width=3, bg=self.lv_behavior_color.get(), relief='raised')
+        beh_btn.configure(command=lambda: self._pick_overlay_color(self.lv_behavior_color, beh_btn))
+        beh_btn.pack(side='left', padx=(2, 10))
+        ttk.Label(cr, text="No-behavior:").pack(side='left')
+        nob_btn = tk.Button(cr, text="  ", width=3, bg=self.lv_nobehavior_color.get(), relief='raised')
+        nob_btn.configure(command=lambda: self._pick_overlay_color(self.lv_nobehavior_color, nob_btn))
+        nob_btn.pack(side='left', padx=(2, 0))
+
+        def _apply_scheme(_e=None):
+            nm = self.lv_color_scheme.get()
+            if nm in OVERLAY_COLOR_SCHEMES:
+                _b, _n = OVERLAY_COLOR_SCHEMES[nm]
+                self.lv_behavior_color.set(_b); self.lv_nobehavior_color.set(_n)
+                beh_btn.configure(bg=_b); nob_btn.configure(bg=_n)
+        scheme_combo.bind('<<ComboboxSelected>>', _apply_scheme)
+
+        tr = ttk.Frame(ov_lf); tr.pack(fill='x', anchor='w', pady=(6, 0))
+        ttk.Label(tr, text="Tint opacity:").pack(side='left')
+        ttk.Scale(tr, from_=0.05, to=0.50, length=110,
+                  variable=self.lv_tint_opacity).pack(side='left', padx=(2, 12))
+        ttk.Label(tr, text="HUD:").pack(side='left')
+        for _val, _lbl in (('top', 'Top'), ('bottom', 'Bottom')):
+            ttk.Radiobutton(tr, text=_lbl, variable=self.lv_hud_position,
+                            value=_val).pack(side='left', padx=2)
+
+        def _do_export():
+            out_dir = out_var.get().strip() or default_out
+            try:
+                os.makedirs(out_dir, exist_ok=True)
+            except Exception:
+                pass
+            # Populate the single-video "last prediction" state the exporter reads.
+            self._last_pred_y_pred = res['y_pred']
+            self._last_pred_y_proba = res['y_proba']
+            self._last_pred_threshold = float(res.get('threshold', 0.5))
+            self._last_pred_fps = float(fps)
+            self._last_pred_n_frames = len(res['y_pred'])
+            self._last_pred_video_path = video
+            self._last_pred_behavior_name = res.get('behavior', 'Behavior')
+            self._last_pred_output_folder = out_dir
+            self._last_pred_base_name = s['name']
+            self._last_pred_dlc_path = dlc
+            self._last_pred_crop_offset = (0, 0)
+            dlg.destroy()
+            self._pr_log(f"Exporting labeled video for {s['name']} → {out_dir}  "
+                         "(progress shows in Advanced ▸ Results)")
+            self.export_labeled_video()
+
+        bar = ttk.Frame(dlg); bar.pack(fill='x', side='bottom', padx=10, pady=10)
+        ttk.Button(bar, text="Cancel", command=dlg.destroy).pack(side='right')
+        ttk.Button(bar, text="🎥 Export", command=_do_export,
+                   style='Accent.TButton').pack(side='right', padx=(0, 6))
+
+    def create_run_classifiers_tab(self):
+        """Run Classifiers tab — batch prediction: pick classifier(s) and run them on the
+        project's videos to produce results/ that the Analysis tab consumes."""
+        frame = ttk.Frame(self.notebook)
+        self.notebook.add(frame, text="🚀 Run Classifiers")
+        canvas = tk.Canvas(frame, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(frame, orient='vertical', command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        inner.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.create_window((0, 0), window=inner, anchor='nw')
         canvas.configure(yscrollcommand=scrollbar.set)
-        
-        # === INPUT FOLDER ===
-        input_frame = ttk.LabelFrame(scrollable_frame, text="Input Files", padding=10)
-        input_frame.pack(fill='x', padx=15, pady=8)
-        
-        ttk.Label(input_frame, text="Data Folder:").grid(row=0, column=0, sticky='w', pady=2)
-        self.batch_folder = tk.StringVar()
-        ttk.Entry(input_frame, textvariable=self.batch_folder, width=50).grid(
-            row=0, column=1, padx=5, pady=2)
-        ttk.Button(input_frame, text="📁 Browse", 
-                  command=self.browse_batch_folder).grid(row=0, column=2, pady=2)
-        
-        ttk.Label(input_frame, text="Video Extension:").grid(row=1, column=0, sticky='w', pady=2)
+        canvas.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+        try:
+            bind_mousewheel(canvas)
+        except Exception:
+            pass
+        ttk.Label(inner, text="Run classifiers",
+                  font=(FONT_FAMILY, 14, 'bold')).pack(anchor='w', padx=15, pady=(10, 2))
+        ttk.Label(inner, text="Pick one or more classifiers and run them on the project's videos. "
+                  "Results feed the Analysis tab.",
+                  foreground='gray', wraplength=760, justify='left').pack(anchor='w', padx=15, pady=(0, 6))
+        self._build_batch_run_panel(inner)
+        try:
+            self._ba_scan_sessions()
+        except Exception:
+            pass
+
+    def create_analysis_tab(self):
+        """Analysis tab — subjects overview + settings + inline graphs (embedded AnalysisTab)."""
+        frame = ttk.Frame(self.notebook)
+        self.notebook.add(frame, text="📈 Analysis")
+        if ANALYSIS_TAB_AVAILABLE:
+            self.analysis_tab = AnalysisTab(frame, self)
+            self.analysis_tab.pack(fill='both', expand=True)
+        else:
+            self.analysis_tab = None
+            ttk.Label(frame, text="Analysis module unavailable.",
+                      foreground='gray').pack(pady=40)
+
+    def _build_batch_run_panel(self, parent):
+        """Batch classifier-run controls, no project-folder input (uses the startup project).
+        Writes per-(video,classifier) CSVs + an optional consolidated per-frame sheet into
+        <project>/results/."""
+        # Internal project mirror kept synced to current_project_folder — no visible picker.
+        if not isinstance(getattr(self, 'batch_folder', None), tk.StringVar):
+            self.batch_folder = tk.StringVar()
+        self.batch_folder.set(self.current_project_folder.get() or '')
+
+        # === Input options ===
+        input_frame = ttk.LabelFrame(parent, text="Input options", padding=10)
+        input_frame.pack(fill='x', padx=15, pady=6)
+
+        ttk.Label(input_frame, text="Video Extension:").grid(row=0, column=0, sticky='w', pady=2)
         self.batch_video_ext = ttk.Combobox(input_frame, values=['.mp4', '.avi'], width=10)
         self.batch_video_ext.set('.mp4')
-        self.batch_video_ext.grid(row=1, column=1, sticky='w', padx=5, pady=2)
-        
+        self.batch_video_ext.grid(row=0, column=1, sticky='w', padx=5, pady=2)
+
         self.batch_prefer_filtered = tk.BooleanVar(value=True)
-        ttk.Checkbutton(input_frame, text="Prefer 'filtered' DLC files when available", 
-                       variable=self.batch_prefer_filtered).grid(row=2, column=1, sticky='w', pady=2)
-        
-        ttk.Label(input_frame, text="DLC Config (optional):").grid(row=3, column=0, sticky='w', pady=2)
+        ttk.Checkbutton(input_frame, text="Prefer 'filtered' DLC files when available",
+                        variable=self.batch_prefer_filtered).grid(row=1, column=1, sticky='w', pady=2)
+
+        ttk.Label(input_frame, text="DLC Config (optional):").grid(row=2, column=0, sticky='w', pady=2)
         self.batch_dlc_config = tk.StringVar()
-        ttk.Entry(input_frame, textvariable=self.batch_dlc_config, width=50).grid(
-            row=3, column=1, padx=5, pady=2)
-        ttk.Button(input_frame, text="📁 Browse", 
-                  command=self.browse_batch_dlc_config).grid(row=3, column=2, pady=2)
-        
-        ttk.Label(input_frame, text="For DLC crop offset in brightness extraction", 
-                 font=(FONT_FAMILY, 8), foreground='gray').grid(row=4, column=1, sticky='w', padx=5)
-        
-        # === CLASSIFIERS ===
-        clf_frame = ttk.LabelFrame(scrollable_frame, text="Classifiers", padding=10)
-        clf_frame.pack(fill='both', expand=True, padx=5, pady=5)
-        
-        # Listbox with scrollbar
+        ttk.Entry(input_frame, textvariable=self.batch_dlc_config, width=48).grid(
+            row=2, column=1, padx=5, pady=2)
+        ttk.Button(input_frame, text="📁 Browse",
+                   command=self.browse_batch_dlc_config).grid(row=2, column=2, pady=2)
+        ttk.Label(input_frame, text="For DLC crop offset in brightness extraction",
+                  font=(FONT_FAMILY, 8), foreground='gray').grid(row=3, column=1, sticky='w', padx=5)
+
+        # === Classifiers (add one or more) ===
+        clf_frame = ttk.LabelFrame(parent, text="Classifiers (add one or more)", padding=10)
+        clf_frame.pack(fill='x', padx=15, pady=6)
+        self.batch_classifiers = {}   # {path: {settings}}
+
+        # Pick-from-project dropdown (like the Predict tab) + Add.
+        pick_row = ttk.Frame(clf_frame)
+        pick_row.pack(fill='x')
+        ttk.Label(pick_row, text="Classifier:").pack(side='left')
+        self.batch_clf_options = {}   # {display: path}
+        self.batch_clf_var = tk.StringVar()
+        self.batch_clf_combo = ttk.Combobox(pick_row, textvariable=self.batch_clf_var,
+                                            state='readonly', width=42)
+        self.batch_clf_combo.pack(side='left', fill='x', expand=True, padx=5)
+        ttk.Button(pick_row, text="🔄", width=3,
+                   command=self._refresh_batch_clf_options).pack(side='left', padx=2)
+        ttk.Button(pick_row, text="➕ Add",
+                   command=self._batch_add_selected_classifier).pack(side='left', padx=2)
+        ttk.Button(pick_row, text="📁", width=3,
+                   command=self.batch_add_classifier).pack(side='left', padx=2)
+
+        # Added-classifiers list.
         list_frame = ttk.Frame(clf_frame)
-        list_frame.pack(fill='both', expand=True)
-        
-        self.batch_clf_listbox = tk.Listbox(list_frame, height=8)
+        list_frame.pack(fill='both', expand=True, pady=(6, 0))
+        self.batch_clf_listbox = tk.Listbox(list_frame, height=5)
         self.batch_clf_listbox.pack(side='left', fill='both', expand=True)
-        
-        list_scrollbar = ttk.Scrollbar(list_frame, orient='vertical', 
-                                      command=self.batch_clf_listbox.yview)
+        list_scrollbar = ttk.Scrollbar(list_frame, orient='vertical',
+                                       command=self.batch_clf_listbox.yview)
         list_scrollbar.pack(side='right', fill='y')
         self.batch_clf_listbox.config(yscrollcommand=list_scrollbar.set)
-        
-        # Classifier buttons
+
         btn_frame = ttk.Frame(clf_frame)
         btn_frame.pack(fill='x', pady=5)
-        
-        ttk.Button(btn_frame, text="➕ Add Classifier", 
-                  command=self.batch_add_classifier).pack(side='left', padx=2)
-        ttk.Button(btn_frame, text="➖ Remove Selected", 
-                  command=self.batch_remove_classifier).pack(side='left', padx=2)
-        ttk.Button(btn_frame, text="⚙ Edit Settings", 
-                  command=self.batch_edit_classifier).pack(side='left', padx=2)
+        ttk.Button(btn_frame, text="➖ Remove",
+                   command=self.batch_remove_classifier).pack(side='left', padx=2)
+        ttk.Button(btn_frame, text="⚙ Edit Settings",
+                   command=self.batch_edit_classifier).pack(side='left', padx=2)
         ttk.Button(btn_frame, text="👁 Preview Mapping",
-                  command=self.batch_preview_mapping).pack(side='left', padx=2)
-        ttk.Button(btn_frame, text="🔄 Auto-Detect All",
+                   command=self.batch_preview_mapping).pack(side='left', padx=2)
+        ttk.Button(btn_frame, text="🔄 Add All",
                    command=self.batch_autodetect_classifiers).pack(side='left', padx=2)
-        
-        # Batch classifier storage
-        self.batch_classifiers = {}  # {path: {min_bout_sec, bin_size_sec}}
-        
-        # === OUTPUT OPTIONS ===
-        output_frame = ttk.LabelFrame(scrollable_frame, text="Output Options", padding=10)
-        output_frame.pack(fill='x', padx=15, pady=8)
+        self._refresh_batch_clf_options()
 
+        # === Session readiness (pose / features extracted · group from key file) ===
+        sess_frame = ttk.LabelFrame(parent, text="Sessions — features & group status", padding=8)
+        sess_frame.pack(fill='x', padx=15, pady=6)
+        _bcols = ('session', 'pose', 'features', 'group')
+        self._ba_tree = ttk.Treeview(sess_frame, columns=_bcols, show='headings', height=6)
+        for _c, _t, _w, _a in (('session', 'Session', 300, 'w'), ('pose', 'Pose', 60, 'center'),
+                               ('features', 'Features', 80, 'center'), ('group', 'Group', 150, 'w')):
+            self._ba_tree.heading(_c, text=_t)
+            self._ba_tree.column(_c, width=_w, anchor=_a)
+        _ba_vsb = ttk.Scrollbar(sess_frame, orient='vertical', command=self._ba_tree.yview)
+        self._ba_tree.configure(yscrollcommand=_ba_vsb.set)
+        self._ba_tree.pack(side='left', fill='x', expand=True)
+        _ba_vsb.pack(side='right', fill='y')
+
+        sbar = ttk.Frame(parent)
+        sbar.pack(fill='x', padx=15, pady=(0, 4))
+        ttk.Button(sbar, text="🔍 Rescan",
+                   command=self._ba_scan_sessions).pack(side='left')
+        self._ba_status = ttk.Label(sbar, text="", foreground='#555')
+        self._ba_status.pack(side='right')
+
+        # === Output options ===
+        output_frame = ttk.LabelFrame(parent, text="Output Options", padding=10)
+        output_frame.pack(fill='x', padx=15, pady=6)
         self.batch_save_labels = tk.BooleanVar(value=True)
         ttk.Checkbutton(output_frame, text="Save frame-by-frame labels for each video",
-                       variable=self.batch_save_labels).grid(row=0, column=0, sticky='w', pady=2)
-        
-        # === ACTIONS ===
-        action_frame = ttk.Frame(scrollable_frame)
-        action_frame.pack(fill='x', padx=5, pady=10)
-        
-        ttk.Button(action_frame, text="🔍 Check Feature Status", 
-                  command=self.check_batch_features, 
-                  ).pack(side='left', padx=5)
-        
-        self._batch_run_btn = ttk.Button(action_frame, text="▶ RUN BATCH ANALYSIS",
-                  command=self.run_batch_analysis,
-                  style='Accent.TButton')
+                        variable=self.batch_save_labels).grid(row=0, column=0, sticky='w', pady=2)
+        self.batch_save_perframe = tk.BooleanVar(value=True)
+        ttk.Checkbutton(output_frame,
+                        text="Save consolidated per-frame sheet per video "
+                             "(probability + 0/1 per behavior)",
+                        variable=self.batch_save_perframe).grid(row=1, column=0, sticky='w', pady=2)
+
+        # === Actions ===
+        action_frame = ttk.Frame(parent)
+        action_frame.pack(fill='x', padx=15, pady=8)
+        self._batch_run_btn = ttk.Button(action_frame, text="▶ RUN CLASSIFIERS",
+                   command=self.run_batch_analysis, style='Accent.TButton')
         self._batch_run_btn.pack(side='left', padx=5)
         self._batch_stop_btn = ttk.Button(action_frame, text="■  Stop",
-                  command=self._cancel_batch_analysis,
-                  state='disabled')
+                   command=self._cancel_batch_analysis, state='disabled')
         self._batch_stop_btn.pack(side='left', padx=5)
-        
-        # === PROGRESS ===
-        progress_frame = ttk.LabelFrame(scrollable_frame, text="Progress", padding=5)
-        progress_frame.pack(fill='both', expand=True, padx=5, pady=5)
-        
+
+        # === Progress ===
+        progress_frame = ttk.LabelFrame(parent, text="Progress", padding=5)
+        progress_frame.pack(fill='x', padx=15, pady=6)
         self.batch_progress_label = ttk.Label(progress_frame, text="Ready to process")
-        self.batch_progress_label.pack(pady=5)
-        
+        self.batch_progress_label.pack(pady=3)
         self.batch_progress = ttk.Progressbar(progress_frame, length=400, mode='determinate')
-        self.batch_progress.pack(pady=5)
-        
-        self.batch_log = scrolledtext.ScrolledText(progress_frame, height=8, wrap=tk.WORD)
+        self.batch_progress.pack(pady=3)
+        self.batch_log = scrolledtext.ScrolledText(progress_frame, height=6, wrap=tk.WORD)
         self.batch_log.pack(fill='both', expand=True)
-        
-        # Pack canvas and scrollbar
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        bind_mousewheel(canvas)
+
+    def _ba_scan_sessions(self):
+        """Populate the Batch session-status table: which sessions have pose + extracted
+        features, and each subject's group (from the project key_file.csv) — an at-a-glance
+        readiness view before running batch."""
+        tree = getattr(self, '_ba_tree', None)
+        if tree is None:
+            return
+        tree.delete(*tree.get_children())
+        proj = self.current_project_folder.get()
+        if not proj or not os.path.isdir(proj):
+            if getattr(self, '_ba_status', None) is not None:
+                self._ba_status.config(text="Load a project to see session status.")
+            return
+        # Group map from the project key file (Subject → Treatment).
+        group_map = {}
+        try:
+            kf = os.path.join(proj, 'key_file.csv')
+            if os.path.isfile(kf):
+                _kdf = pd.read_csv(kf)
+                if 'Subject' in _kdf.columns and 'Treatment' in _kdf.columns:
+                    group_map = {str(s): str(t) for s, t in zip(_kdf['Subject'], _kdf['Treatment'])}
+        except Exception:
+            group_map = {}
+        try:
+            from evaluation_tab import find_session_triplets
+            found = find_session_triplets(proj, prefer_filtered=True,
+                                          require_labels=False, recursive=True)
+        except Exception as e:
+            self._ba_status.config(text=f"Scan failed: {e}")
+            return
+        features_dir = os.path.join(proj, 'features')
+        n_feat = n_group = 0
+        seen = set()
+        for s in found:
+            name = s.get('session_name') or os.path.splitext(os.path.basename(s.get('video', '')))[0]
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            has_pose = bool(s.get('dlc'))
+            has_feats = bool(glob.glob(os.path.join(features_dir, f"{name}_features_*.pkl")))
+            grp = group_map.get(name, '')
+            if not grp and group_map:   # token fallback: a key subject appearing in the name
+                for subj, t in group_map.items():
+                    if subj and subj in name:
+                        grp = t
+                        break
+            n_feat += 1 if has_feats else 0
+            n_group += 1 if grp else 0
+            tree.insert('', 'end', values=(name, '✓' if has_pose else '—',
+                                           '✓' if has_feats else '—', grp or '—'))
+        total = len(seen)
+        note = "" if group_map else "  ·  no key file (use Generate… below)"
+        self._ba_status.config(
+            text=f"{total} session(s)  ·  {n_feat} with features  ·  {n_group} grouped{note}")
+
+    def _refresh_batch_clf_options(self):
+        """Populate the batch classifier dropdown from project + global classifiers
+        (same discovery as the Predict tab)."""
+        combo = getattr(self, 'batch_clf_combo', None)
+        if combo is None:
+            return
+        import glob as _g
+        opts = {}
+        proj = self.current_project_folder.get()
+        clf_dir = os.path.join(proj, 'classifiers') if proj else ''
+        if clf_dir and os.path.isdir(clf_dir):
+            for full in sorted(_g.glob(os.path.join(clf_dir, '**', '*.pkl'), recursive=True)):
+                opts[f"[Project] {os.path.basename(full)}"] = full
+        try:
+            from user_config import get_global_classifiers_folder
+            gcf = get_global_classifiers_folder()
+            if gcf and os.path.isdir(gcf):
+                for full in sorted(_g.glob(os.path.join(gcf, '**', '*.pkl'), recursive=True)):
+                    opts[f"[Global] {os.path.basename(full)}"] = full
+        except Exception:
+            pass
+        self.batch_clf_options = opts
+        combo['values'] = list(opts.keys())
+        if opts and not self.batch_clf_var.get():
+            combo.current(0)
+
+    def _batch_add_classifier_path(self, path, label=None):
+        """Add a classifier path to the batch list (shared by dropdown-add + file browse).
+        Returns False if the path is empty or already added."""
+        if not path or path in self.batch_classifiers:
+            return False
+        try:
+            with open(path, 'rb') as f:
+                clf_data = pickle.load(f)
+            self.batch_classifiers[path] = {
+                'use_override': False,
+                'threshold': clf_data.get('best_thresh', 0.5),
+                'min_bout': clf_data.get('min_bout', 1),
+                'min_after_bout': clf_data.get('min_after_bout', 1),
+                'max_gap': clf_data.get('max_gap', 0),
+                'bin_size_sec': 60.0,
+            }
+        except Exception:
+            self.batch_classifiers[path] = {
+                'use_override': False, 'threshold': 0.5, 'min_bout': 1,
+                'min_after_bout': 1, 'max_gap': 0, 'bin_size_sec': 60.0,
+            }
+        self.batch_clf_listbox.insert(tk.END, label or os.path.basename(path))
+        return True
+
+    def _batch_add_selected_classifier(self):
+        """Add the classifier currently chosen in the dropdown to the batch list."""
+        disp = self.batch_clf_var.get()
+        path = self.batch_clf_options.get(disp)
+        if not path:
+            messagebox.showinfo("No classifier",
+                                "Pick a classifier from the dropdown first (🔄 to refresh the list).")
+            return
+        if not self._batch_add_classifier_path(path, label=disp):
+            messagebox.showinfo("Already added", "That classifier is already in the batch list.")
 
     def create_tools_tab(self):
         """Create tools tab with grouped tool sections"""
@@ -2999,13 +3953,25 @@ class PixelPawsGUI:
         # Refresh classifier dropdowns
         self.refresh_pred_classifiers()
         self.refresh_pred_videos()
+        # Refresh the Predict & Review comparison session list for the new project.
+        try:
+            self._pr_scan_sessions()
+        except Exception:
+            pass
 
-        # Sync analysis tab project folder and trigger background scan
+        # Sync analysis tab project folder and trigger background scan + subjects overview.
         if hasattr(self, 'analysis_tab') and self.analysis_tab is not None:
             if hasattr(self.analysis_tab, 'analysis_project_var'):
                 self.analysis_tab.analysis_project_var.set(folder)
                 # Defer scan slightly so the tab finishes any pending layout
                 self.root.after(200, lambda: self.analysis_tab.scan_project_folder(folder))
+            if hasattr(self.analysis_tab, '_dash_subjects_overview'):
+                self.root.after(250, self.analysis_tab._dash_subjects_overview)
+        # Refresh the merged Batch tab's session-status table + classifier dropdown.
+        if hasattr(self, '_ba_tree'):
+            self.root.after(200, self._ba_scan_sessions)
+        if hasattr(self, 'batch_clf_combo'):
+            self.root.after(200, self._refresh_batch_clf_options)
 
         # Sync unsupervised tab
         if UNSUPERVISED_TAB_AVAILABLE and hasattr(self, 'unsupervised_tab'):
@@ -8911,7 +9877,7 @@ class PixelPawsGUI:
 
         def _predict():
             try:
-                self.notebook.select("🎬 Predict")
+                self.notebook.select("🎬 Predict & Review")
             except Exception:
                 pass
 
@@ -10835,10 +11801,390 @@ Median: {feature_data.median():.6f}
     # === FEATURE EXTRACTION TOOL ===
 
     def create_feature_extraction_tab(self):
-        """⚙️ Feature Extraction as a first-class tab (same body as the Tools dialog)."""
+        """⚙️ Feature Extraction tab. Mirrors the Pose Estimation tab: a lean launcher
+        that opens a separate window which auto-identifies the videos still needing
+        features, plus a secondary entry to the single-video / manual tool."""
         frame = ttk.Frame(self.notebook)
         self.notebook.add(frame, text="⚙️ Feature Extraction")
-        self._build_feature_extraction_body(frame)
+
+        ttk.Label(frame, text="Feature Extraction",
+                  font=(FONT_FAMILY, 14, 'bold')).pack(pady=(12, 2))
+        ttk.Label(frame, text="Extract pose + brightness (+ optional optical flow) features for "
+                  "your project's tracked videos.", foreground='gray').pack(pady=(0, 8))
+
+        run_lf = ttk.LabelFrame(frame, text="Extract features", padding=10)
+        run_lf.pack(fill='x', padx=15, pady=6)
+        ttk.Label(run_lf, text="Scan the current project for tracked videos, see which ones still "
+                  "need features for the current settings, and extract the ones you select. "
+                  "Already-cached sessions are detected automatically and skipped.",
+                  foreground='#555', wraplength=620, justify='left').pack(anchor='w', pady=(0, 6))
+        ttk.Button(run_lf, text="⚙️ Analyze Videos (Feature Extraction)…",
+                   command=self.open_feature_extraction_run, style='Accent.TButton').pack(anchor='w')
+
+        adv_lf = ttk.LabelFrame(frame, text="Single video / manual", padding=10)
+        adv_lf.pack(fill='x', padx=15, pady=6)
+        ttk.Label(adv_lf, text="Extract features for one specific video + DLC file, or configure a "
+                  "manual batch run with custom paths.",
+                  foreground='#555', wraplength=620, justify='left').pack(anchor='w', pady=(0, 6))
+        ttk.Button(adv_lf, text="Open single-video / manual tool…",
+                   command=self.open_feature_extraction).pack(anchor='w')
+
+    @staticmethod
+    def _newest_feature_sidecar_config(features_dir):
+        """Return the feature `config` dict from the most recently written
+        `*_features_*.pkl.version.json` sidecar in `features_dir`, or None. Used to seed the
+        Feature Extraction window's settings so they reproduce the project's existing cache
+        (otherwise the hash won't match and existing features look like they're missing)."""
+        try:
+            sidecars = glob.glob(os.path.join(features_dir, '*_features_*.pkl.version.json'))
+        except Exception:
+            sidecars = []
+        if not sidecars:
+            return None
+        try:
+            newest = max(sidecars, key=os.path.getmtime)
+            import json as _json
+            with open(newest, 'r') as f:
+                return (_json.load(f) or {}).get('config') or None
+        except Exception:
+            return None
+
+    def open_feature_extraction_run(self):
+        """Auto-identify project videos that still need features and extract the selected ones.
+
+        Mirrors the Pose Estimation 'Analyze Videos' flow (dlc_run_dialog): a separate window
+        scans the project for video + DLC-h5 sessions, flags which ones already have a cached
+        feature file, pre-selects those that don't, and runs extraction with live progress.
+        Cached sessions are skipped by the worker.
+
+        Settings are seeded from the project's existing feature cache (via the version.json
+        sidecars) so the recomputed cache hash matches what's already on disk; falls back to
+        the training feature config when no cache exists yet."""
+        proj = self.current_project_folder.get() or self.train_project_folder.get()
+        if not proj or not os.path.isdir(proj):
+            messagebox.showwarning("No project", "Load a project folder first.")
+            return
+        _seed = self._newest_feature_sidecar_config(os.path.join(proj, 'features')) or {}
+
+        win = tk.Toplevel(self.root)
+        win.title("Analyze Videos — Feature Extraction")
+        win.transient(self.root)
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        w, h = max(720, int(sw * 0.46)), max(620, int(sh * 0.80))
+        win.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+        win.minsize(680, 560)
+
+        outer = ttk.Frame(win, padding=14)
+        outer.pack(fill='both', expand=True)
+
+        ttk.Label(outer, text="Feature Extraction",
+                  font=(FONT_FAMILY, 14, 'bold')).pack(pady=(0, 2))
+        ttk.Label(outer, text=f"Project: {proj}", foreground='#555').pack(pady=(0, 8))
+
+        # ── Feature settings (seeded from the training feature config) ──
+        sett = ttk.LabelFrame(outer, text="Feature settings", padding=8)
+        sett.pack(fill='x', pady=(0, 8))
+        sett.columnconfigure(1, weight=1)
+
+        # Seed each setting from the project's existing cache config (`_seed`) when present,
+        # else from the training feature config, else a sane default.
+        def _seed_str(key, train_attr, default):
+            if _seed.get(key):
+                v = _seed[key]
+                return ','.join(str(x) for x in v) if isinstance(v, (list, tuple)) else str(v)
+            return getattr(self, train_attr).get() if hasattr(self, train_attr) else default
+
+        fe_bp_pixbrt = tk.StringVar(value=_seed_str('bp_pixbrt_list', 'train_bp_pixbrt', "hrpaw,hlpaw,snout"))
+        fe_square = tk.StringVar(value=_seed_str('square_size', 'train_square_sizes', "40,40,40"))
+        fe_threshold = tk.DoubleVar(
+            value=float(_seed['pix_threshold']) if _seed.get('pix_threshold') is not None
+            else (self.train_pix_threshold.get() if hasattr(self, 'train_pix_threshold') else 0.3))
+        fe_optflow = tk.BooleanVar(
+            value=bool(_seed['include_optical_flow']) if 'include_optical_flow' in _seed
+            else (self.train_include_optical_flow.get()
+                  if hasattr(self, 'train_include_optical_flow') else False))
+        fe_bp_optflow = tk.StringVar(value=_seed_str('bp_optflow_list', 'train_bp_optflow', "hrpaw,hlpaw,snout"))
+        fe_dlc_config = tk.StringVar(
+            value=self.train_dlc_config.get() if hasattr(self, 'train_dlc_config') else "")
+
+        ttk.Label(sett, text="Brightness body parts:").grid(row=0, column=0, sticky='w', pady=2)
+        ttk.Entry(sett, textvariable=fe_bp_pixbrt).grid(
+            row=0, column=1, columnspan=2, sticky='ew', padx=5, pady=2)
+        ttk.Label(sett, text="Square sizes:").grid(row=1, column=0, sticky='w', pady=2)
+        ttk.Entry(sett, textvariable=fe_square, width=18).grid(row=1, column=1, sticky='w', padx=5, pady=2)
+        ttk.Label(sett, text="Pixel threshold:").grid(row=2, column=0, sticky='w', pady=2)
+        ttk.Entry(sett, textvariable=fe_threshold, width=10).grid(row=2, column=1, sticky='w', padx=5, pady=2)
+        ttk.Checkbutton(sett, text="Include optical flow  (slower — reads video frames)",
+                        variable=fe_optflow).grid(row=3, column=1, columnspan=2, sticky='w', pady=2)
+        ttk.Label(sett, text="Optical flow parts:").grid(row=4, column=0, sticky='w', pady=2)
+        ttk.Entry(sett, textvariable=fe_bp_optflow).grid(
+            row=4, column=1, columnspan=2, sticky='ew', padx=5, pady=2)
+        ttk.Label(sett, text="Changing a setting changes which sessions count as cached — press "
+                  "Rescan to refresh.", foreground='#777').grid(
+            row=5, column=0, columnspan=3, sticky='w', pady=(4, 0))
+
+        def _build_cfg():
+            return {
+                'bp_pixbrt_list': [x.strip() for x in fe_bp_pixbrt.get().split(',') if x.strip()],
+                'square_size': [int(x.strip()) for x in fe_square.get().split(',') if x.strip()],
+                'pix_threshold': float(fe_threshold.get()),
+                'include_optical_flow': bool(fe_optflow.get()),
+                'bp_optflow_list': [x.strip() for x in fe_bp_optflow.get().split(',') if x.strip()]
+                                   if fe_optflow.get() else [],
+                'dlc_config': fe_dlc_config.get().strip() or None,
+            }
+
+        # ── Sessions table ──
+        sfr = ttk.LabelFrame(outer, text="Sessions in project", padding=8)
+        sfr.pack(fill='both', expand=True, pady=(0, 6))
+        cols = ('name', 'frames', 'status')
+        tree = ttk.Treeview(sfr, columns=cols, show='headings', height=9, selectmode='extended')
+        tree.heading('name', text='Session'); tree.column('name', width=360, anchor='w')
+        tree.heading('frames', text='Frames'); tree.column('frames', width=90, anchor='center')
+        tree.heading('status', text='Status'); tree.column('status', width=160, anchor='w')
+        vsb = ttk.Scrollbar(sfr, orient='vertical', command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.pack(side='left', fill='both', expand=True)
+        vsb.pack(side='right', fill='y')
+
+        state = {'sessions': [], 'running': False}
+
+        def _scan():
+            if state['running']:
+                return
+            tree.delete(*tree.get_children())
+            state['sessions'] = []
+            try:
+                from evaluation_tab import find_session_triplets
+                found = find_session_triplets(proj, prefer_filtered=True,
+                                              require_labels=False, recursive=True)
+            except Exception as e:
+                status_lbl.config(text=f"Scan failed: {e}")
+                return
+            found = [s for s in found if s.get('video') and s.get('dlc')]
+            if not found:
+                status_lbl.config(text="No video + DLC-h5 sessions found in this project.")
+                return
+            cfg = _build_cfg()
+            cache_root = os.path.join(proj, 'features')
+            try:
+                from project_config import ProjectConfig as _PC
+                _proj_cfg = _PC.load(self.current_project_folder.get() or proj)
+            except Exception:
+                _proj_cfg = None
+            need = other = 0
+            for s in found:
+                name = s.get('session_name') or os.path.splitext(os.path.basename(s['video']))[0]
+                sess = {'session_name': name, 'pose_path': s['dlc'], 'video_path': s['video']}
+                _mm = None
+                if _proj_cfg is not None:
+                    try:
+                        _mm = _proj_cfg.resolve_mm_per_pixel(sess)
+                    except Exception:
+                        _mm = None
+                _cfg_hash_src = dict(cfg)
+                if _mm is not None:
+                    _cfg_hash_src['mm_per_pixel'] = float(_mm)
+                try:
+                    cfg_hash = PixelPawsGUI._feature_hash_key(_cfg_hash_src)
+                except Exception:
+                    cfg_hash = PixelPawsGUI._feature_hash_key(cfg)
+                # Existing feature files for this session (any settings hash).
+                existing = [p for p in glob.glob(
+                    os.path.join(cache_root, f"{name}_features_*.pkl"))
+                    if not p.endswith('.version.json')]
+                cache_file = os.path.join(cache_root, f"{name}_features_{cfg_hash}.pkl")
+                cached = os.path.isfile(cache_file)
+                has_other = bool(existing) and not cached
+                frames = "?"
+                try:
+                    import cv2
+                    cap = cv2.VideoCapture(s['video'])
+                    if cap.isOpened():
+                        n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                        if n > 0:
+                            frames = str(n)
+                    cap.release()
+                except Exception:
+                    pass
+                sess['cached'] = cached
+                sess['has_other'] = has_other
+                sess['existing'] = sorted(existing)
+                sess['cur_hash'] = cfg_hash
+                sess['cur_cfg'] = dict(_cfg_hash_src)
+                state['sessions'].append(sess)
+                if cached:
+                    status = "✓ cached"
+                elif has_other:
+                    status = "cached (other settings)"
+                    other += 1
+                else:
+                    status = "needs features"
+                    need += 1
+                iid = str(len(state['sessions']) - 1)
+                tree.insert('', 'end', iid=iid, values=(name, frames, status))
+            # Pre-select only sessions with no features at all for the current settings.
+            tree.selection_set([str(i) for i, s in enumerate(state['sessions'])
+                                if not s['cached']])
+            parts = [f"{len(state['sessions'])} session(s)",
+                     f"{need} need features",
+                     f"{len(state['sessions']) - need - other} cached"]
+            if other:
+                parts.append(f"{other} cached under other settings")
+            status_lbl.config(text="  ·  ".join(parts))
+
+        def _inspect(_evt=None):
+            """Show the selected session's existing feature files: each file's hash, recorded
+            config (from its .version.json sidecar), and how it differs from the current
+            settings. Double-clicking a row opens the same view."""
+            sel = tree.selection()
+            if not sel:
+                messagebox.showinfo("Select a session",
+                                    "Select a session in the list to inspect its feature files.",
+                                    parent=win)
+                return
+            sess = state['sessions'][int(sel[0])]
+            cache_root = os.path.join(proj, 'features')
+            cur_cfg = sess.get('cur_cfg') or _build_cfg()
+            cur_hash = sess.get('cur_hash', '?')
+            FIELDS = ['bp_include_list', 'bp_pixbrt_list', 'square_size', 'pix_threshold',
+                      'include_optical_flow', 'bp_optflow_list', 'mm_per_pixel']
+
+            def _norm(v):
+                return list(v) if isinstance(v, (list, tuple)) else v
+
+            def _fmt(v):
+                if v is None:
+                    return "(none)"
+                if isinstance(v, (list, tuple)):
+                    return ", ".join(str(x) for x in v) if v else "(empty)"
+                return str(v)
+
+            lines = [f"Session: {sess['session_name']}",
+                     f"Video:   {sess['video_path']}", ""]
+            lines.append(f"CURRENT SETTINGS  →  hash {cur_hash}")
+            for k in FIELDS:
+                if k in cur_cfg:
+                    lines.append(f"    {k:<22}{_fmt(cur_cfg[k])}")
+            exact = os.path.join(cache_root, f"{sess['session_name']}_features_{cur_hash}.pkl")
+            lines.append(f"    {'file on disk?':<22}"
+                         f"{'YES — up to date' if os.path.isfile(exact) else 'no — would extract'}")
+            lines.append("")
+
+            existing = sess.get('existing') or []
+            if not existing:
+                lines.append("No feature files exist for this session yet.")
+            else:
+                import json as _json, re as _re
+                lines.append(f"EXISTING FEATURE FILES ({len(existing)}):")
+                for p in existing:
+                    fn = os.path.basename(p)
+                    m = _re.search(r'_features_([0-9a-fA-F]+)\.pkl$', fn)
+                    fh = m.group(1) if m else '?'
+                    size_mb = (os.path.getsize(p) / 1e6) if os.path.isfile(p) else 0
+                    tag = "   ← matches current settings" if fh == cur_hash else ""
+                    lines.append("")
+                    lines.append(f"  • {fn}   ({size_mb:.0f} MB){tag}")
+                    side = p + ".version.json"
+                    if not os.path.isfile(side):
+                        lines.append("      (no sidecar — config unknown; only the hash is recorded.)")
+                        continue
+                    try:
+                        meta = _json.load(open(side))
+                    except Exception as e:
+                        lines.append(f"      (could not read sidecar: {e})")
+                        continue
+                    ocfg = meta.get('config') or {}
+                    if meta.get('saved_at'):
+                        lines.append(f"      saved {meta['saved_at']}   ·   "
+                                     f"pose v{meta.get('pose_feature_version', '?')} / "
+                                     f"brightness v{meta.get('brightness_feature_version', '?')}")
+                    diffs = [(k, _norm(ocfg.get(k)), _norm(cur_cfg.get(k)))
+                             for k in FIELDS
+                             if (k in cur_cfg or k in ocfg)
+                             and _norm(ocfg.get(k)) != _norm(cur_cfg.get(k))]
+                    if diffs:
+                        lines.append("      differs from current settings:")
+                        for k, ov, cv in diffs:
+                            lines.append(f"        {k}:  this file = {_fmt(ov)}   |   current = {_fmt(cv)}")
+                    elif fh == cur_hash:
+                        lines.append("      config identical to current settings.")
+                    else:
+                        lines.append("      (hash differs but recorded config matches — likely a "
+                                     "feature-version or calibration difference.)")
+
+            dlg = tk.Toplevel(win); dlg.title(f"Inspect features — {sess['session_name']}")
+            dlg.transient(win)
+            dlg.geometry("780x520")
+            txt = scrolledtext.ScrolledText(dlg, wrap='word', font=('Consolas', 9))
+            txt.pack(fill='both', expand=True, padx=8, pady=8)
+            txt.insert('1.0', "\n".join(lines)); txt.configure(state='disabled')
+            ttk.Button(dlg, text="Close", command=dlg.destroy).pack(pady=(0, 8))
+
+        tree.bind('<Double-1>', _inspect)
+
+        # ── Selection controls ──
+        selbar = ttk.Frame(outer); selbar.pack(fill='x', pady=(0, 6))
+        ttk.Button(selbar, text="Select all",
+                   command=lambda: tree.selection_set(tree.get_children())).pack(side='left')
+        ttk.Button(selbar, text="Select needs-features only",
+                   command=lambda: tree.selection_set(
+                       [str(i) for i, s in enumerate(state['sessions']) if not s['cached']])
+                   ).pack(side='left', padx=(6, 0))
+        ttk.Button(selbar, text="Clear",
+                   command=lambda: tree.selection_remove(tree.selection())).pack(side='left', padx=(6, 0))
+        ttk.Button(selbar, text="Inspect…", command=_inspect).pack(side='left', padx=(6, 0))
+        ttk.Button(selbar, text="Rescan", command=_scan).pack(side='left', padx=(6, 0))
+        status_lbl = ttk.Label(selbar, text="", foreground='#555'); status_lbl.pack(side='right')
+
+        # ── Progress log ──
+        pfr = ttk.LabelFrame(outer, text="Progress", padding=6)
+        pfr.pack(fill='both', expand=True, pady=(0, 6))
+        logtxt = scrolledtext.ScrolledText(pfr, height=8, wrap='word', font=('Consolas', 9))
+        logtxt.pack(fill='both', expand=True)
+
+        stop_event = threading.Event()
+
+        def _log(m):
+            logtxt.insert(tk.END, m + "\n"); logtxt.see(tk.END)
+
+        def _run():
+            if state['running']:
+                return
+            sel = tree.selection()
+            if not sel:
+                messagebox.showinfo("Nothing selected",
+                                    "Select at least one session to extract.", parent=win)
+                return
+            chosen = [state['sessions'][int(i)] for i in sel]
+            sessions = [{'session_name': s['session_name'], 'pose_path': s['pose_path'],
+                         'video_path': s['video_path']} for s in chosen]
+            cfg = _build_cfg()
+            cache_root = os.path.join(proj, 'features')
+            stop_event.clear()
+            state['running'] = True
+            run_btn.config(state='disabled'); stop_btn.config(state='normal')
+            logtxt.delete('1.0', tk.END)
+
+            def _done():
+                state['running'] = False
+                run_btn.config(state='normal'); stop_btn.config(state='disabled')
+                _scan()   # refresh statuses so freshly-cached sessions flip to "cached"
+
+            threading.Thread(
+                target=self._run_feature_extraction_thread,
+                args=(sessions, cache_root, None, cfg, _log, stop_event, _done),
+                daemon=True).start()
+
+        # ── Buttons ──
+        bar = ttk.Frame(outer); bar.pack(fill='x')
+        run_btn = ttk.Button(bar, text="▶  Extract selected", command=_run, style='Accent.TButton')
+        run_btn.pack(side='left', padx=(0, 4))
+        stop_btn = ttk.Button(bar, text="■  Stop", command=lambda: stop_event.set(), state='disabled')
+        stop_btn.pack(side='left', padx=4)
+        ttk.Button(bar, text="Close", command=win.destroy).pack(side='right')
+
+        _scan()
 
     def open_feature_extraction(self):
         """Open the standalone Feature Extraction tool window (Tools entry point)."""
@@ -14491,9 +15837,15 @@ Left/Right  - Previous/Next frame
         if selection:
             idx = selection[0]
             item = self.batch_clf_listbox.get(idx)
-            # Find full path
+            # Strip the "[Project] "/"[Global] " label prefix that Auto-Detect adds so the
+            # basename match against the stored full paths still succeeds.
+            label = item
+            for _pfx in ('[Project] ', '[Global] '):
+                if label.startswith(_pfx):
+                    label = label[len(_pfx):]
+                    break
             for path in list(self.batch_classifiers.keys()):
-                if os.path.basename(path) == item:
+                if os.path.basename(path) == label:
                     del self.batch_classifiers[path]
                     break
             self.batch_clf_listbox.delete(idx)
@@ -14814,7 +16166,11 @@ Left/Right  - Previous/Next frame
                     continue
                 
                 self._batch_log(f"  DLC: {os.path.basename(dlc_path)}\n\n")
-                
+
+                # Accumulate per-frame prob + 0/1 across all classifiers → one consolidated sheet.
+                _pf_cols = {}
+                _pf_n = 0
+
                 for clf_path, settings in self.batch_classifiers.items():
                     clf_name = os.path.basename(clf_path)
                     clf_base = os.path.splitext(clf_name)[0]
@@ -15068,6 +16424,14 @@ Left/Right  - Previous/Next frame
                         n_behavior_frames = np.sum(y_pred_filtered)
                         percent_behavior = (n_behavior_frames / n_frames) * 100 if n_frames > 0 else 0
 
+                        # Consolidated per-frame accumulation (one prob + one 0/1 column per behavior).
+                        _pf_key = behavior_name
+                        if f"{_pf_key}_pred" in _pf_cols:
+                            _pf_key = f"{behavior_name}_{clf_base}"
+                        _pf_cols[f"{_pf_key}_prob"] = np.asarray(y_proba)
+                        _pf_cols[f"{_pf_key}_pred"] = np.asarray(y_pred_filtered)
+                        _pf_n = max(_pf_n, n_frames)
+
                         # Get FPS (needed for bout durations and timebins)
                         import cv2 as _cv2
                         _cap = _cv2.VideoCapture(video_path)
@@ -15168,13 +16532,33 @@ Left/Right  - Previous/Next frame
                         text=f"Processing {current_operation}/{total_operations} ({progress:.1f}%)"
                     )
                     self.root.update_idletasks()
-            
+
+                # ── Consolidated per-frame sheet for this video (prob + 0/1 per behavior) ──
+                if (getattr(self, 'batch_save_perframe', None) is not None
+                        and self.batch_save_perframe.get() and _pf_cols and _pf_n > 0):
+                    try:
+                        _pf_proj = self.current_project_folder.get()
+                        _pf_dir = (os.path.join(_pf_proj, 'results', 'per_frame')
+                                   if _pf_proj and os.path.isdir(_pf_proj)
+                                   else os.path.join(video_dir, 'Results', 'per_frame'))
+                        os.makedirs(_pf_dir, exist_ok=True)
+                        _pf_len = min([len(v) for v in _pf_cols.values()] + [_pf_n])
+                        _pf_data = {'frame': np.arange(_pf_len)}
+                        for _k, _v in _pf_cols.items():
+                            _pf_data[_k] = np.asarray(_v)[:_pf_len]
+                        _pf_path = os.path.join(_pf_dir, f"{video_base}_frames.csv")
+                        pd.DataFrame(_pf_data).to_csv(_pf_path, index=False)
+                        self._batch_log(f"  ✓ Consolidated per-frame sheet → {os.path.basename(_pf_path)}\n")
+                    except Exception as _pfe:
+                        self._batch_log(f"  ⚠ per-frame sheet failed: {_pfe}\n")
+
             # Save summary reports — one per behavior
             if summary_results:
                 summary_df = pd.DataFrame(summary_results)
                 
-                # Top-level Results folder for summaries
-                results_root = os.path.join(folder, "Results")
+                # Top-level results folder for summaries (lowercase to match per-video outputs
+                # so the Analysis scanner finds everything in one tree).
+                results_root = os.path.join(folder, "results")
                 os.makedirs(results_root, exist_ok=True)
                 
                 # Combined summary (all behaviors, for convenience)
@@ -15205,20 +16589,44 @@ Left/Right  - Previous/Next frame
             
             self.batch_progress_label.config(text="Complete!")
 
-            if batch_timebins_files:
-                self.root.after(0, self._auto_show_batch_graph_settings, batch_timebins_files)
-
             # Build completion message
             behaviors_run = list({r['behavior'] for r in summary_results}) if summary_results else []
-            behavior_list = '\n'.join(f'    Results/{b}/' for b in sorted(behaviors_run))
+            behavior_list = '\n'.join(f'    results/{b}/' for b in sorted(behaviors_run))
             completion_msg = (
                 f"Batch analysis completed!\n\n"
                 f"Processed {len(videos)} video(s) with {len(self.batch_classifiers)} classifier(s).\n\n"
                 f"Output folders:\n{behavior_list}\n\n"
-                f"Combined summary:\n    Results/PixelPaws_Batch_Summary.csv"
+                f"Combined summary:\n    results/PixelPaws_Batch_Summary.csv"
             )
 
-            self._safe_after(lambda m=completion_msg: messagebox.showinfo("Complete", m))
+            # Fill the embedded dashboard in place: scan the new results, and if a key file is
+            # loaded, run the analysis (which renders graphs inline). Otherwise just show the note.
+            def _post_batch(m=completion_msg):
+                ran = False
+                try:
+                    at = getattr(self, 'analysis_tab', None)
+                    proj = self.current_project_folder.get()
+                    if at is not None and proj:
+                        at.scan_project_folder(proj)
+                        if hasattr(at, '_dash_subjects_overview'):
+                            at._dash_subjects_overview()
+                        if getattr(at, 'key_df', None) is not None:
+                            # silent: no "Analysis Complete" popup on the wrong tab.
+                            at.run_analysis(silent=True)
+                            ran = getattr(at, 'results_df', None) is not None
+                except Exception:
+                    pass
+                if ran:
+                    try:
+                        self.notebook.select("📈 Analysis")
+                    except Exception:
+                        pass
+                    messagebox.showinfo("Batch + analysis complete",
+                        m + "\n\nGraphs are ready in the 📈 Analysis tab.")
+                else:
+                    messagebox.showinfo("Batch complete",
+                        m + "\n\nOpen the 📈 Analysis tab, load/Generate a key file, then Run Analysis.")
+            self._safe_after(_post_batch)
 
         except Exception as e:
             self._batch_log(f"\n\n✗ Error: {str(e)}\n")

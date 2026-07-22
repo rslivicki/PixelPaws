@@ -83,7 +83,7 @@ class SidebarNav(ttk.Frame):
         Example::
 
             {"Train & Label": ["🎓 Train Classifier", "🧠 Active Learning"],
-             "Predict & Evaluate": ["🎬 Predict", "📊 Evaluate", "📦 Batch"],
+             "Predict & Evaluate": ["🎬 Predict & Review", "📊 Evaluate", "📦 Batch"],
              ...}
     width : int
         Sidebar width in pixels (default 220).

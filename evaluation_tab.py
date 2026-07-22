@@ -60,10 +60,14 @@ def render_session_diagnostic(y_true, y_pred, behavior_name, base_name, out_path
     except ImportError:
         pearsonr = None
 
-    y_true = np.asarray(y_true).astype(int)
+    y_true_raw = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred).astype(int)
-    n = int(min(len(y_true), len(y_pred)))
-    y_true, y_pred = y_true[:n], y_pred[:n]
+    n = int(min(len(y_true_raw), len(y_pred)))
+    y_true_raw, y_pred = y_true_raw[:n], y_pred[:n]
+    # Unobserved frames are stored as NaN. Keep a display array (NaN->0) for the
+    # raster / time-bins, and an observed mask for the metrics (F1 / confusion).
+    obs = ~np.isnan(y_true_raw)
+    y_true = np.where(obs, y_true_raw, 0).astype(int)
     if y_proba is not None:
         y_proba = np.asarray(y_proba, dtype=float)[:n]
 
@@ -74,8 +78,12 @@ def render_session_diagnostic(y_true, y_pred, behavior_name, base_name, out_path
         e = np.where(d == -1)[0]
         return list(zip(s.tolist(), (e - s).tolist()))
 
-    f1 = _f1(y_true, y_pred, zero_division=0)
-    cm_raw = _cm(y_true, y_pred, labels=[0, 1]).astype(float)
+    if obs.any():
+        f1 = _f1(y_true[obs], y_pred[obs], zero_division=0)
+        cm_raw = _cm(y_true[obs], y_pred[obs], labels=[0, 1]).astype(float)
+    else:
+        f1 = 0.0
+        cm_raw = np.zeros((2, 2), dtype=float)
     rs = cm_raw.sum(axis=1, keepdims=True)
     rs[rs == 0] = 1
     cm_norm = cm_raw / rs

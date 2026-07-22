@@ -850,6 +850,16 @@ def augment_features_post_cache(X, clf_data, model, dlc_path, log_fn=None):
     except Exception as e:
         _warn(f'  ⚠️  Brightness Category-B augmentation failed: {e}')
 
+    # --- Brightness ratios (Log10(Pix_a/Pix_b) + |d/dt|) -------------------
+    # Deterministic transforms of the base Pix_ columns; recovers any ratio the
+    # cache lacks (notably a cache that stored only the flipped direction) with
+    # no video re-read. Matched by _POST_CACHE_RE so their absence never forces
+    # a re-extract.
+    try:
+        X = compute_brightness_ratios(X, model=model, log_fn=log_fn)
+    except Exception as e:
+        _warn(f'  ⚠️  Brightness-ratio augmentation failed: {e}')
+
     # --- Normalized pairwise distances (ARBEL parity) ----------------------
     # Same design as Category B: always compute when Dis_ columns exist,
     # let gain pruning pick between raw / normalized versions per-behavior.
@@ -1085,6 +1095,71 @@ def compute_brightness_category_b(X, log_fn=None):
     return X
 
 
+def _brightness_ratio_series(X, a, b):
+    """Return ``Log10(Pix_a/Pix_b)`` as a Series, preferring the most exact source:
+
+      1. the column itself, if already present;
+      2. the *negated* inverse ratio ``Log10(Pix_b/Pix_a)`` — exact, since
+         ``log10(a/b) == -log10(b/a)`` (this is the flipped-direction case);
+      3. computed from the base ``Pix_a`` / ``Pix_b`` columns, matching the
+         extraction-time formula (``brightness_features`` clamps at 1e-10).
+
+    Returns ``None`` when none of those inputs are available.
+    """
+    direct = f'Log10(Pix_{a}/Pix_{b})'
+    if direct in X.columns:
+        return X[direct]
+    inv = f'Log10(Pix_{b}/Pix_{a})'
+    if inv in X.columns:
+        return -X[inv]
+    pa, pb = f'Pix_{a}', f'Pix_{b}'
+    if pa in X.columns and pb in X.columns:
+        ratio = X[pa] / X[pb].clip(lower=1e-10)
+        return np.log10(ratio.clip(lower=1e-10))
+    return None
+
+
+def compute_brightness_ratios(X, model=None, log_fn=None):
+    """Synthesize the model's ``Log10(Pix_a/Pix_b)`` brightness ratios (and their
+    ``|d/dt(...)|`` derivatives) when the cache lacks them.
+
+    These are deterministic transforms of the base ``Pix_`` columns produced at
+    brightness-extraction time, so they can always be reconstructed post-cache with
+    no video re-read. The common trigger is a cache that stored only the *flipped*
+    ratio direction (``Log10(Pix_b/Pix_a)``) — recovered here by negation. Only the
+    ratios the model actually references are computed. Idempotent.
+    """
+    if model is None or not hasattr(model, 'feature_names_in_'):
+        return X
+    _added = 0
+    for feat in (str(f) for f in model.feature_names_in_):
+        if feat in X.columns:
+            continue
+        _m_r = re.match(r'^Log10\(Pix_([^/()]+)/Pix_([^/()]+)\)$', feat)
+        _m_d = re.match(r'^\|d/dt\(Log10\(Pix_([^/()]+)/Pix_([^/()]+)\)\)\|$', feat)
+        if _m_r:
+            _s = _brightness_ratio_series(X, _m_r.group(1), _m_r.group(2))
+            if _s is not None:
+                X[feat] = _s.replace([np.inf, -np.inf], 0.0).fillna(0.0)
+                _added += 1
+        elif _m_d:
+            _a, _b = _m_d.group(1), _m_d.group(2)
+            # |d/dt| is sign-independent, so the flipped derivative is identical.
+            _inv_d = f'|d/dt(Log10(Pix_{_b}/Pix_{_a}))|'
+            if _inv_d in X.columns:
+                X[feat] = X[_inv_d]
+                _added += 1
+            else:
+                _s = _brightness_ratio_series(X, _a, _b)
+                if _s is not None:
+                    X[feat] = _s.diff().abs().replace(
+                        [np.inf, -np.inf], 0.0).fillna(0.0)
+                    _added += 1
+    if _added and log_fn:
+        log_fn(f'  + {_added} brightness ratio feature(s) (derived from cached Pix_ columns)')
+    return X
+
+
 # ---------------------------------------------------------------------------
 # Feature cache loading with incremental upgrade
 # ---------------------------------------------------------------------------
@@ -1095,12 +1170,15 @@ def compute_brightness_category_b(X, log_fn=None):
 #   - contact features in calculate_contact_features
 #   - lag features in calculate_lag_features
 #   - brightness Category B in compute_brightness_category_b
+#   - brightness ratios in compute_brightness_ratios
 #   - normalized distances in compute_normalized_distances
 _POST_CACHE_RE = re.compile(
     r'^Ego_'
     r'|_ContactState$|_ContactTransition$|_DutyCycle$|^N_InContact$'
     r'|_lag[mp]\d+$'
     r'|^Pix_(baseline_sub|std_temporal|jerk|onset|prequi|corr|velprod)_'
+    r'|^Log10\(Pix_[^/()]+/Pix_[^/()]+\)$'
+    r'|^\|d/dt\(Log10\(Pix_[^/()]+/Pix_[^/()]+\)\)\|$'
     r'|^Dis_norm_'
     r'|_(std|max)_\d+ms$'
 )
@@ -1165,8 +1243,15 @@ def _load_features_for_prediction(cache_file, model, extract_fn=None,
     # --- try cache ---
     if cache_file and os.path.isfile(cache_file):
         try:
-            with open(cache_file, 'rb') as _f:
-                X = pickle.load(_f)
+            # Canonical (8aed1c22) feature caches are joblib+LZ4, not plain pickle — joblib.load
+            # reads both, so use it to avoid an "invalid load key '\x04'" that would otherwise
+            # fall through to a needless full video re-extraction.
+            try:
+                import joblib as _joblib
+                X = _joblib.load(cache_file)
+            except Exception:
+                with open(cache_file, 'rb') as _f:
+                    X = pickle.load(_f)
             # Unwrap training-data-backup pickles of the form {'X': df, 'y': ...}
             if isinstance(X, dict) and 'X' in X:
                 X = X['X']
@@ -1241,40 +1326,59 @@ def _load_features_for_prediction(cache_file, model, extract_fn=None,
                                 _log(f"  Missing brightness feature(s): {_brt} — requires video re-read.")
                             if _pose:
                                 _log(f"  Missing pose feature(s): {_pose}")
-                        # --- brightness-preserve: if only pose features missing, skip video re-read ---
+                        # --- pose-append: if only POSE features are missing, derive them from
+                        # the DLC and APPEND just the missing ones to the cache. No video
+                        # re-read, and — crucially — the cache's existing (correct) columns are
+                        # never clobbered. The earlier approach rebuilt every pose column from a
+                        # fresh extractor and kept only brightness from cache; that regenerated
+                        # `_inFrame_p<t>` at the wrong threshold (the brightness pix_threshold,
+                        # ~0.3) so the model's `_inFrame_p0.8` columns went missing on merge. ---
                         _candidate = _upgraded if _upgraded is not None else X
                         _cand_still = _base_needed - set(_candidate.columns)
                         _brt_still  = [f for f in _cand_still
                                         if 'brt' in f.lower() or 'pix' in f.lower()]
                         _pose_still = [f for f in _cand_still if f not in _brt_still]
                         if not _brt_still and _pose_still:
-                            _log("  Brightness features present in cache — re-extracting pose from DLC (no video re-read)...")
+                            _log(f"  {len(_pose_still)} pose feature(s) missing — deriving from DLC (no video re-read)...")
                             try:
+                                # Mirror the full-extraction pose config so values/naming match
+                                # the cache: the DLC likelihood threshold (read from the model's
+                                # own `inFrame_p<t>` columns — NOT the brightness pix_threshold)
+                                # and the training mm/px scaling.
+                                _thr = re.findall(r'inFrame_p([\d.]+)', ' '.join(_base_needed))
+                                _pose_prob = (float(_thr[0]) if _thr
+                                              else float(clf_data.get('min_prob') or 0.8))
                                 _pe = PoseFeatureExtractor(
-                                    bodyparts=clf_data.get('bp_include_list') or [],
-                                    likelihood_threshold=clf_data.get('pix_threshold', 0.8),
+                                    bodyparts=clean_bodyparts_list(
+                                        clf_data.get('bp_include_list')) or [],
+                                    likelihood_threshold=_pose_prob,
                                     velocity_delta=clf_data.get('dt_vel', 2),
+                                    mm_per_pixel=clf_data.get('training_mm_per_pixel'),
                                 )
                                 _pose_fresh = _pe.extract_all_features(dlc_path)
                                 if len(_pose_fresh) > len(_candidate):
                                     _pose_fresh = _pose_fresh.iloc[:len(_candidate)].reset_index(drop=True)
                                 if len(_pose_fresh) == len(_candidate):
-                                    _brt_cols = [c for c in _candidate.columns
-                                                 if 'brt' in c.lower() or 'pix' in c.lower()]
+                                    # Append ONLY the missing needed columns; leave the cache intact.
+                                    _addable = [c for c in _pose_still if c in _pose_fresh.columns]
                                     _merged = pd.concat([
-                                        _pose_fresh.reset_index(drop=True),
-                                        _candidate[_brt_cols].reset_index(drop=True)
+                                        _candidate.reset_index(drop=True),
+                                        _pose_fresh[_addable].reset_index(drop=True),
                                     ], axis=1)
-                                    if not (_base_needed - set(_merged.columns)):
-                                        _log("✓ Pose re-extracted from DLC; brightness preserved from cache (no video re-read)")
+                                    _merged = _merged.loc[:, ~_merged.columns.duplicated()]
+                                    _final_missing = _base_needed - set(_merged.columns)
+                                    if not _final_missing:
+                                        _log(f"✓ Appended {len(_addable)} pose feature(s) from DLC; "
+                                             f"cache preserved (no video re-read)")
                                         if save_path:
                                             _save(_merged, save_path)
                                         return _merged
-                                    _log(f"  Merged still missing {len(_base_needed - set(_merged.columns))} feature(s) — falling back")
+                                    _log(f"  Still missing {len(_final_missing)} feature(s) after "
+                                         f"pose append: {sorted(_final_missing)[:6]} — falling back")
                                 else:
                                     _log(f"  Row count mismatch ({len(_candidate)} vs {len(_pose_fresh)}) — falling back")
                             except Exception as _brt_err:
-                                _log(f"  Brightness-preserve attempt failed ({_brt_err}) — falling back")
+                                _log(f"  Pose-append attempt failed ({_brt_err}) — falling back")
                     except Exception as _ue:
                         _log(f"⚠ Pose-only upgrade failed ({_ue}) — falling back to full re-extraction")
 

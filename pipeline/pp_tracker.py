@@ -18,9 +18,44 @@ CLI:
   pp_tracker.py --proj DIR --cohort NAME [--nvid N] [--webhook URL]
 """
 from __future__ import annotations
-import argparse, json, re, time, urllib.request
+import argparse, json, re, subprocess, time, urllib.request
 from pathlib import Path
 import sys
+
+
+def _gpu_stats():
+    """(temp_C, util_%, power_W) from nvidia-smi, or None on failure."""
+    try:
+        r = subprocess.run(["nvidia-smi", "--query-gpu=temperature.gpu,utilization.gpu,power.draw",
+                            "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=8)
+        t, u, p = (x.strip() for x in r.stdout.strip().splitlines()[0].split(","))
+        return int(float(t)), int(float(u)), int(float(p))
+    except Exception:
+        return None
+
+
+def _cpu_temp():
+    """CPU temperature °C — best effort. Tries LibreHardwareMonitor / OpenHardwareMonitor
+    WMI, then ACPI thermal zone. Returns None if no source is exposed (the usual case
+    on Windows without a hardware-monitor tool running / without admin)."""
+    ps = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        "foreach($ns in 'root/LibreHardwareMonitor','root/OpenHardwareMonitor'){"
+        " $s=Get-CimInstance -Namespace $ns -ClassName Sensor 2>$null |"
+        "   Where-Object {$_.SensorType -eq 'Temperature' -and $_.Name -match 'CPU'} |"
+        "   Sort-Object Value -Descending | Select-Object -First 1;"
+        " if($s){ [int]$s.Value; return } }"
+        "$z=Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature 2>$null |"
+        "  Select-Object -First 1;"
+        "if($z){ [int](($z.CurrentTemperature/10)-273.15) }"
+    )
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                           capture_output=True, text=True, timeout=10)
+        out = r.stdout.strip()
+        return int(out) if out.lstrip("-").isdigit() else None
+    except Exception:
+        return None
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))      # pp_config beside us
 from pp_config import PROCESSING_WEBHOOK, FEATURE_HASH, SHUFFLE  # noqa: E402
@@ -58,9 +93,11 @@ def ts_to_sec(t):
 
 
 class Tracker:
-    def __init__(self, proj: Path, cohort: str, nvid: int, webhook: str):
+    def __init__(self, proj: Path, cohort: str, nvid: int, webhook: str,
+                 expected_stems=None, shuffle: int = SHUFFLE):
         self.proj = proj
         self.cohort = cohort
+        self.shuffle = int(shuffle)
         self.nvid = max(1, nvid)
         self.webhook = webhook
         self.videos = proj / "videos"
@@ -70,24 +107,40 @@ class Tracker:
         self.done = proj / "PIPELINE_DONE"
         self.msg_file = proj / "_discord_msg.json"
         self.start = time.time()
+        # Optional set of expected output basenames (sans .mp4). If provided,
+        # all on-disk counters are filtered to just these stems — so an
+        # incremental run into an existing project doesn't double-count old files.
+        self.expected_stems = set(expected_stems) if expected_stems else None
+
+    def _matches(self, name: str) -> bool:
+        if not self.expected_stems:
+            return True
+        for s in self.expected_stems:
+            if name.startswith(s):
+                return True
+        return False
 
     # --- robust on-disk counters ---------------------------------------------
     def count_transcoded(self):
         try:
-            return len([x for x in self.videos.glob("*.mp4")])
+            return sum(1 for x in self.videos.glob("*.mp4") if self._matches(x.stem))
         except Exception:
             return 0
 
     def count_h5(self):
+        # self.shuffle, not pp_config.SHUFFLE: a run launched with pp_pipeline's
+        # --shuffle writes *shuffle<N>*.h5, and counting the default instead would
+        # report DLC as 0/N for the whole stage.
         try:
-            return len([x for x in self.videos.glob(f"*shuffle{SHUFFLE}*.h5")
-                        if not x.name.endswith("_filtered.h5")])
+            return sum(1 for x in self.videos.glob(f"*shuffle{self.shuffle}*.h5")
+                       if not x.name.endswith("_filtered.h5") and self._matches(x.name))
         except Exception:
             return 0
 
     def count_feat(self):
         try:
-            return len(list(self.features.glob(f"*_features_{FEATURE_HASH}.pkl")))
+            return sum(1 for x in self.features.glob(f"*_features_{FEATURE_HASH}.pkl")
+                       if self._matches(x.name))
         except Exception:
             return 0
 
@@ -141,7 +194,13 @@ class Tracker:
         n = self.nvid
         head = (f"**🐭 {self.cohort} — pipeline live** · elapsed {hms(time.time()-self.start)} "
                 f"· upd {time.strftime('%H:%M:%S')}\n")
-        lines = [head]
+        # hardware line: GPU temp/util/power (always) + CPU temp (best-effort)
+        g = _gpu_stats(); ct = _cpu_temp()
+        hw = []
+        if g:
+            hw.append(f"🌡️ GPU **{g[0]}°C** · {g[1]}% · {g[2]}W")
+        hw.append(f"CPU {('**'+str(ct)+'°C**') if ct is not None else 'temp n/a'}")
+        lines = [head, " · ".join(hw)]
 
         # Transcode line (+ live fps when actively encoding)
         tline = f"Transcode  {bar(min(tr, n), n)}"
@@ -260,10 +319,23 @@ def main(argv=None):
     ap.add_argument("--sources", help="sources.json to derive --nvid from")
     ap.add_argument("--portal", help="portal dir to derive --nvid from")
     ap.add_argument("--webhook", default=PROCESSING_WEBHOOK)
+    ap.add_argument("--shuffle", type=int, default=SHUFFLE,
+                    help="DLC shuffle whose *shuffle<N>*.h5 count as DLC progress. Must match "
+                         "the --shuffle the run was launched with, else DLC reads 0/N throughout.")
     a = ap.parse_args(argv)
     proj = Path(a.proj)
     nvid = a.nvid if a.nvid else _derive_nvid(proj, a.portal, a.sources)
-    return Tracker(proj, a.cohort, nvid, a.webhook).loop()
+    # If sources is given, derive expected output basenames so the tracker
+    # only counts THIS batch's files (works for incremental runs).
+    expected_stems = None
+    if a.sources:
+        try:
+            sj = json.loads(Path(a.sources).read_text(encoding="utf-8"))
+            expected_stems = {Path(s["out"]).stem for s in sj if "out" in s}
+        except Exception:
+            pass
+    return Tracker(proj, a.cohort, nvid, a.webhook, expected_stems=expected_stems,
+                   shuffle=a.shuffle).loop()
 
 
 if __name__ == "__main__":

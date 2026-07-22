@@ -87,7 +87,9 @@ CRF = "23"
 PRESET = "slow"
 
 # --- Repo -------------------------------------------------------------------
-REPO = r"E:\Sync_from_lab\PixelPaws"
+# The app repo moved out of Syncthing (commit e84f82b). The old E:\Sync_from_lab\PixelPaws
+# copy still exists but is stale, so the features stage must import from here, not there.
+REPO = r"E:\Code\PixelPaws"
 
 
 def post(msg: str, webhook: str = PROCESSING_WEBHOOK) -> None:

@@ -43,14 +43,20 @@ Paw contour area (optional, requires video):
 
 import os
 import re
+import pickle
 import threading
 import tkinter as tk
 import tkinter.font as tkfont
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, simpledialog
 from datetime import datetime
 
 import numpy as np
 import pandas as pd
+
+try:
+    from io_utils import atomic_pickle_save
+except Exception:  # pragma: no cover - fallback if io_utils unavailable
+    atomic_pickle_save = None
 
 try:
     from scipy.ndimage import median_filter as _median_filter
@@ -78,7 +84,7 @@ from brightness_features import PixelBrightnessExtractorOptimized
 
 from ui_utils import (ToolTip as _ToolTip,
                       _bind_tight_layout_on_resize, _draw_canvas_fit,
-                      FONT_FAMILY)
+                      bind_mousewheel, FONT_FAMILY)
 
 try:
     from evaluation_tab import find_session_triplets
@@ -183,7 +189,8 @@ class GaitLimbTab(ttk.Frame):
         'Formalin (contour/brightness)': dict(
             brightness=True, contour=True, fore=False, contour_roi=50,
             likelihood=True, likelihood_thresh=0.6, bin_seconds=5, bin_unit='minutes',
-            contact_method='contour_area', contour_area_threshold=20),
+            contact_method='contour_area', contour_area_threshold=20,
+            exclude_licking=True),
         'Hindpaw gait (minimal)':        dict(brightness=False, contour=False, fore=False,
                                               contact_method='height'),
         'Gait + forepaws':               dict(brightness=False, contour=False, fore=True,
@@ -209,7 +216,7 @@ class GaitLimbTab(ttk.Frame):
         self._stats_alpha_var        = tk.DoubleVar(value=0.05)
         self._timecourse_posthoc_var = tk.BooleanVar(value=False)
         self._stats_paradigm_var    = tk.StringVar(value='parametric')
-        self._contact_method_var  = tk.StringVar(value='height')
+        self._contact_method_var  = tk.StringVar(value='contour_area')
         self._speed_thresh_var   = tk.StringVar(value='auto')
         self._median_filter_var  = tk.IntVar(value=50)
         self._min_bout_var       = tk.IntVar(value=30)
@@ -221,17 +228,37 @@ class GaitLimbTab(ttk.Frame):
         self._contour_forelimbs_var = tk.BooleanVar(value=False)
         self._contour_area_thresh_var = tk.IntVar(value=20)  # px^2 gate for contour-area contact
         self._min_stance_ms_var  = tk.IntVar(value=100)
+        # Exclude-licking (formalin): drop frames predicted as a licking behavior
+        # from the weight-bearing / contact / brightness metrics.
+        self._exclude_lick_var   = tk.BooleanVar(value=False)
+        self._lick_behavior_var  = tk.StringVar(value='')
+        self._lick_thresh_var    = tk.DoubleVar(value=0.5)
+        self._lick_behaviors     = []   # behaviors found on disk (results/)
+        # Hard gate: restrict analysis to frames where all four paws are in contact.
+        self._gate_4paw_var      = tk.BooleanVar(value=False)
         self._fit_thread: threading.Thread = None
         self._cancel_flag = threading.Event()
         self._bodyparts: list = []
         self._last_graph_cfg = None
         self._session_intermediates = {}
+        self._loading_session = False      # True while restoring (suppresses auto-save)
+        self._saved_items = []             # [(label, path)] for the saved-session combo
         self._pawlike_thresholds = {'solidity': 1.00, 'aspect_ratio': 1.6, 'circularity': 0.10}
 
         self._build_ui()
+        # Discover licking behaviors on disk before applying the default preset,
+        # so the Formalin profile can auto-enable licking exclusion when available.
+        try:
+            self._refresh_lick_behaviors()
+        except Exception:
+            pass
         # Open in the default analysis profile (formalin contour/brightness).
         try:
             self._apply_gait_preset()
+        except Exception:
+            pass
+        try:
+            self._refresh_saved_sessions()
         except Exception:
             pass
 
@@ -241,38 +268,120 @@ class GaitLimbTab(ttk.Frame):
 
     def _build_ui(self):
         hdr = ttk.Frame(self)
-        hdr.pack(fill='x', padx=10, pady=(8, 0))
+        hdr.pack(fill='x', padx=12, pady=(10, 2))
         ttk.Label(hdr, text="🐾  Gait & Limb Use Analysis",
-                  font=(FONT_FAMILY, 13, 'bold')).pack(side='left')
+                  font=(FONT_FAMILY, 14, 'bold')).pack(side='left')
         ttk.Label(hdr,
-                  text="   Pick sessions → check setup → run.  Advanced options are optional.",
+                  text="   Pick sessions → check setup → run.",
                   foreground='grey', font=(FONT_FAMILY, 9)).pack(side='left')
 
+        # Two panes (Analysis-tab layout): a scrollable control rail on the left,
+        # results pane on the right.
         paned = ttk.PanedWindow(self, orient='horizontal')
-        paned.pack(fill='both', expand=True, padx=6, pady=4)
+        paned.pack(fill='both', expand=True)
 
-        left  = ttk.Frame(paned, width=220)
-        mid   = ttk.Frame(paned, width=260)
-        right = ttk.Frame(paned, width=420)
+        # ── LEFT: scrollable control rail ──
+        left_host = ttk.Frame(paned)
+        paned.add(left_host, weight=0)
+        lcanvas = tk.Canvas(left_host, width=580, highlightthickness=0)
+        lscroll = ttk.Scrollbar(left_host, orient='vertical', command=lcanvas.yview)
+        rail = ttk.Frame(lcanvas)
+        rail.bind('<Configure>',
+                  lambda e: lcanvas.configure(scrollregion=lcanvas.bbox('all')))
+        _rail_id = lcanvas.create_window((0, 0), window=rail, anchor='nw')
+        lcanvas.bind('<Configure>',
+                     lambda e: lcanvas.itemconfig(_rail_id, width=e.width))
+        lcanvas.configure(yscrollcommand=lscroll.set)
+        lcanvas.pack(side='left', fill='both', expand=True)
+        lscroll.pack(side='right', fill='y')
+        try:
+            bind_mousewheel(lcanvas)
+        except Exception:
+            pass
 
-        paned.add(left,  weight=1)
-        paned.add(mid,   weight=1)
-        paned.add(right, weight=2)
+        self._build_sessions_panel(rail)
+        self._build_quicksetup(rail)
+        self._build_settings_panel(rail)
+        self._build_run_panel(rail)
 
-        self._build_sessions_panel(left)
-        self._build_settings_panel(mid)
+        # ── RIGHT: results pane ──
+        right = ttk.Frame(paned)
+        paned.add(right, weight=1)
         self._build_results_panel(right)
 
         # Initial readiness state (all widgets now exist)
         self._update_readiness()
+
+        # Offer to reload the last saved results when this tab becomes active.
+        try:
+            self.app.notebook.bind('<<NotebookTabChanged>>',
+                                   self._on_tab_shown, add='+')
+        except Exception:
+            pass
+
+    def _rail_section(self, parent, title):
+        """A bold section header + content frame stacked in the rail (replaces the
+        old settings sub-tabs). Returns the content frame to build widgets into."""
+        ttk.Label(parent, text=title,
+                  font=(FONT_FAMILY, 10, 'bold')).pack(anchor='w', padx=6, pady=(10, 0))
+        frame = ttk.Frame(parent)
+        frame.pack(fill='x', padx=2)
+        return frame
+
+    def _build_quicksetup(self, parent):
+        """One-click preset chooser (moved out of the old settings top strip)."""
+        lf = ttk.LabelFrame(parent, text="Quick Setup", padding=6)
+        lf.pack(fill='x', padx=4, pady=(6, 2))
+        row = ttk.Frame(lf)
+        row.pack(fill='x')
+        ttk.Label(row, text="Preset:").pack(side='left')
+        self._preset_var = tk.StringVar(value='Formalin (contour/brightness)')
+        self._preset_combo = ttk.Combobox(
+            row, textvariable=self._preset_var, state='readonly',
+            width=28, values=list(self.GAIT_PRESETS.keys()))
+        self._preset_combo.pack(side='left', padx=4)
+        self._preset_combo.bind('<<ComboboxSelected>>', self._apply_gait_preset)
+        self._tip(self._preset_combo,
+                  "One-click setup for common runs. Sets the brightness / contour /\n"
+                  "forepaw options for you so you don't have to know their\n"
+                  "dependencies. Fine-tune anything afterward in the sections below.")
+
+    def _build_run_panel(self, parent):
+        """Run / Cancel + readiness + progress, grouped at the bottom of the rail."""
+        lf = ttk.LabelFrame(parent, text="Run", padding=6)
+        lf.pack(fill='x', padx=4, pady=(8, 10))
+        run_frame = ttk.Frame(lf)
+        run_frame.pack(fill='x')
+        self._run_btn = ttk.Button(run_frame, text="▶  Run Analysis",
+                                   command=self._start_analysis, state='disabled')
+        self._run_btn.pack(side='left', padx=2)
+        self._cancel_btn = ttk.Button(run_frame, text="■  Cancel",
+                                      command=self._cancel_analysis,
+                                      state='disabled')
+        self._cancel_btn.pack(side='left', padx=2)
+
+        # Readiness strip — always shows the next actionable step.
+        self._readiness_lbl = ttk.Label(
+            lf, text='', foreground='grey', wraplength=520,
+            justify='left', font=(FONT_FAMILY, 8))
+        self._readiness_lbl.pack(fill='x', pady=(3, 0))
+
+        # Progress bar (hidden until analysis runs; shown/hidden by
+        # _start_analysis / _on_analysis_complete).
+        self._progress_frame = ttk.Frame(lf)
+        self._progress = ttk.Progressbar(self._progress_frame, mode='determinate')
+        self._progress.pack(fill='x', padx=4, pady=(0, 1))
+        self._sub_progress_label = ttk.Label(
+            self._progress_frame, text="", font=('TkDefaultFont', 8))
+        self._sub_progress_label.pack(fill='x', padx=4, pady=(0, 2))
 
     # ── Left: Sessions ──────────────────────────────────────────────────────
 
     def _build_sessions_panel(self, parent):
         self._override_folder_var = tk.StringVar(value='')
 
-        lf = ttk.LabelFrame(parent, text="① Sessions", padding=5)
-        lf.pack(fill='both', expand=True, padx=4, pady=4)
+        lf = ttk.LabelFrame(parent, text="Sessions", padding=5)
+        lf.pack(fill='x', padx=4, pady=4)
 
         btn_row = ttk.Frame(lf)
         btn_row.pack(fill='x', pady=(0, 4))
@@ -285,15 +394,17 @@ class GaitLimbTab(ttk.Frame):
         ttk.Button(btn_row, text="Browse…",
                    command=self._browse_sessions_folder).pack(side='left', padx=2)
 
-        cols = ('name', 'subject', 'vid')
+        cols = ('name', 'subject', 'vid', 'cache')
         self._sess_tree = ttk.Treeview(lf, columns=cols, show='headings',
-                                       selectmode='extended', height=20)
+                                       selectmode='extended', height=9)
         self._sess_tree.heading('name',    text='Session')
         self._sess_tree.heading('subject', text='Subject')
         self._sess_tree.heading('vid',     text='Video?')
+        self._sess_tree.heading('cache',   text='Cache')
         self._sess_tree.column('name',    width=120, stretch=True)
         self._sess_tree.column('subject', width=60,  stretch=False)
         self._sess_tree.column('vid',     width=45,  stretch=False)
+        self._sess_tree.column('cache',   width=80,  stretch=False)
 
         sb = ttk.Scrollbar(lf, orient='vertical', command=self._sess_tree.yview)
         self._sess_tree.config(yscrollcommand=sb.set)
@@ -353,47 +464,12 @@ class GaitLimbTab(ttk.Frame):
         self._crop_x_var     = tk.IntVar(value=0)
         self._crop_y_var     = tk.IntVar(value=0)
 
-        # ── Quick setup + Run / Cancel + readiness (always visible at top) ──
-        top = ttk.Frame(parent)
-        top.pack(fill='x', padx=2, pady=(4, 2))
-
-        quick_row = ttk.Frame(top)
-        quick_row.pack(fill='x', pady=(0, 2))
-        ttk.Label(quick_row, text="Quick setup:").pack(side='left')
-        self._preset_var = tk.StringVar(value='Formalin (contour/brightness)')
-        self._preset_combo = ttk.Combobox(
-            quick_row, textvariable=self._preset_var, state='readonly',
-            width=26, values=list(self.GAIT_PRESETS.keys()))
-        self._preset_combo.pack(side='left', padx=4)
-        self._preset_combo.bind('<<ComboboxSelected>>', self._apply_gait_preset)
-        self._tip(self._preset_combo,
-                  "One-click setup for common runs. Sets the brightness / contour /\n"
-                  "forepaw options for you so you don't have to know their\n"
-                  "dependencies. Fine-tune anything afterward in the tabs below.")
-
-        run_frame = ttk.Frame(top)
-        run_frame.pack(fill='x', pady=(2, 0))
-        self._run_btn = ttk.Button(run_frame, text="▶  Run Analysis",
-                                   command=self._start_analysis, state='disabled')
-        self._run_btn.pack(side='left', padx=2)
-        self._cancel_btn = ttk.Button(run_frame, text="■  Cancel",
-                                      command=self._cancel_analysis,
-                                      state='disabled')
-        self._cancel_btn.pack(side='left', padx=2)
-
-        # Readiness strip — always shows the next actionable step
-        self._readiness_lbl = ttk.Label(
-            top, text='', foreground='grey', wraplength=250,
-            justify='left', font=(FONT_FAMILY, 8))
-        self._readiness_lbl.pack(fill='x', pady=(3, 0))
-
-        # ── Settings notebook: ② Setup · ③ Detection · Advanced ──────
-        settings_nb = ttk.Notebook(parent)
-        settings_nb.pack(fill='both', expand=True, padx=2, pady=(4, 2))
-
-        setup_inner  = self._make_scrollable_tab(settings_nb, "② Setup")
-        detect_inner = self._make_scrollable_tab(settings_nb, "③ Detection")
-        adv_inner    = self._make_scrollable_tab(settings_nb, "Advanced")
+        # Settings flattened into stacked sections in the scrollable rail (the old
+        # Setup/Detection/Advanced sub-tabs). The Quick-setup preset and the
+        # Run/Cancel strip now live in _build_quicksetup / _build_run_panel.
+        setup_inner  = self._rail_section(parent, "Setup")
+        detect_inner = self._rail_section(parent, "Detection")
+        adv_inner    = self._rail_section(parent, "Advanced")
 
         kf_lf = ttk.LabelFrame(setup_inner, text="Key File", padding=5)
         kf_lf.pack(fill='x', pady=(0, 6), padx=2)
@@ -462,16 +538,20 @@ class GaitLimbTab(ttk.Frame):
         ttk.Label(cd_lf, text="Method:").grid(row=0, column=0, sticky='w', pady=2)
         cd_rb_frame = ttk.Frame(cd_lf)
         cd_rb_frame.grid(row=0, column=1, sticky='w', padx=4, pady=2)
-        for txt, val in [("Height", "height"), ("Speed", "speed"), ("Combined", "combined"),
-                         ("Contour area", "contour_area")]:
+        # Contour area first + marked recommended (the formalin default).
+        for txt, val in [("Contour area", "contour_area"), ("Height", "height"),
+                         ("Speed", "speed"), ("Combined", "combined")]:
             ttk.Radiobutton(cd_rb_frame, text=txt, variable=self._contact_method_var,
                             value=val).pack(side='left', padx=(0, 6))
+        ttk.Label(cd_lf, text="Contour area is the recommended method.",
+                  font=(FONT_FAMILY, 8), foreground='#127a12').grid(
+            row=0, column=2, sticky='w', padx=(4, 0))
         self._tip(cd_lf,
+                  "Contour area (recommended): hind-paw contour area above the px^2\n"
+                  "threshold (both hind paws gated together) — the formalin contact gate.\n"
                   "Height: paw height below threshold (original).\n"
                   "Speed: paw speed below threshold (Kumar Lab 2022).\n"
-                  "Combined: both must agree (logical AND).\n"
-                  "Contour area: hind-paw contour area above the px^2 threshold\n"
-                  "(both hind paws gated together) — the formalin contact gate.")
+                  "Combined: both must agree (logical AND).")
 
         ttk.Label(cd_lf, text="Speed thresh (px/s):").grid(row=1, column=0, sticky='w', pady=2)
         speed_ent = ttk.Entry(cd_lf, textvariable=self._speed_thresh_var, width=10)
@@ -555,6 +635,47 @@ class GaitLimbTab(ttk.Frame):
         ttk.Label(tb_lf,
                   text="Video divided into equal bins. 0 = full session only (no bins).",
                   font=(FONT_FAMILY, 8), foreground='gray').pack(anchor='w', pady=(2, 0))
+
+        # Frame selection: exclude licking frames + restrict to 4-paw stance.
+        fs_lf = ttk.LabelFrame(detect_inner, text="Frame Selection", padding=5)
+        fs_lf.pack(fill='x', pady=(0, 6), padx=2)
+
+        lick_row = ttk.Frame(fs_lf)
+        lick_row.pack(fill='x', pady=2)
+        self._exclude_lick_chk = ttk.Checkbutton(
+            lick_row, text="Exclude licking frames",
+            variable=self._exclude_lick_var, command=self._on_lick_toggle)
+        self._exclude_lick_chk.pack(side='left')
+        self._lick_combo = ttk.Combobox(
+            lick_row, textvariable=self._lick_behavior_var, state='disabled',
+            width=16, values=[])
+        self._lick_combo.pack(side='left', padx=(6, 2))
+        ttk.Label(lick_row, text="thr").pack(side='left')
+        self._lick_thr_spin = ttk.Spinbox(
+            lick_row, from_=0.0, to=1.0, increment=0.05,
+            textvariable=self._lick_thresh_var, width=5, state='disabled')
+        self._lick_thr_spin.pack(side='left', padx=(2, 0))
+        self._lick_hint_lbl = ttk.Label(
+            fs_lf, text="", font=(FONT_FAMILY, 8), foreground='gray',
+            wraplength=520, justify='left')
+        self._lick_hint_lbl.pack(anchor='w', pady=(0, 2))
+        self._tip(self._exclude_lick_chk,
+                  "Drop frames the classifier predicts as licking from the\n"
+                  "weight-bearing / contact / brightness metrics (both numerator\n"
+                  "and denominator). Sourced from the project's behavior\n"
+                  "predictions (results/…/*_predictions.csv). Gait timing metrics\n"
+                  "are unaffected. The Formalin preset enables this automatically.")
+
+        self._gate_4paw_chk = ttk.Checkbutton(
+            fs_lf, text="Only analyze frames with all four paws in contact",
+            variable=self._gate_4paw_var, command=self._update_readiness)
+        self._gate_4paw_chk.pack(anchor='w', pady=(2, 0))
+        self._tip(self._gate_4paw_chk,
+                  "Static-weight-bearing gate: restrict the mask-based metrics to\n"
+                  "frames where all four paws are simultaneously in contact.\n"
+                  "Requires fore paws enabled. Note: contact-duration WBI/SI\n"
+                  "become ~50/50 under this gate (every paw is down); the\n"
+                  "brightness / contour-area L/R asymmetry is the valid readout.")
         self._tip(_bin_spx,
                   "Number of minutes (or seconds) per time bin.\n"
                   "0 = output the full session as a single row only.")
@@ -593,10 +714,6 @@ class GaitLimbTab(ttk.Frame):
                    command=self._open_brightness_preview).grid(
             row=len(brt_rows) + 1, column=0, columnspan=2, sticky='w', pady=(4, 0))
 
-        ttk.Button(brt_lf, text="Detect cached brightness…",
-                   command=self._detect_brightness_caches).grid(
-            row=len(brt_rows) + 2, column=0, columnspan=2, sticky='w', pady=(2, 0))
-
         bw_row = ttk.Frame(brt_lf)
         bw_row.grid(row=len(brt_rows) + 3, column=0, columnspan=2, sticky='w', pady=2)
         bw_lbl = ttk.Label(bw_row, text="Brightness weight (0–1):")
@@ -631,11 +748,7 @@ class GaitLimbTab(ttk.Frame):
                    command=self._open_contour_preview).grid(
             row=1, column=0, columnspan=2, sticky='w', pady=(2, 0))
 
-        ttk.Button(contour_lf, text="Detect cached contour…",
-                   command=self._detect_contour_caches).grid(
-            row=2, column=0, columnspan=2, sticky='w', pady=(2, 0))
-
-        ttk.Button(contour_lf, text="Analyze both caches…",
+        ttk.Button(contour_lf, text="🔍 Cache details…",
                    command=self._detect_both_caches).grid(
             row=3, column=0, columnspan=2, sticky='w', pady=(2, 0))
 
@@ -2667,8 +2780,8 @@ class GaitLimbTab(ttk.Frame):
     # ── Right: Results ───────────────────────────────────────────────────────
 
     def _build_results_panel(self, parent):
-        ttk.Label(parent, text="④ Results",
-                  font=(FONT_FAMILY, 10, 'bold')).pack(anchor='w', padx=6, pady=(4, 0))
+        ttk.Label(parent, text="Results",
+                  font=(FONT_FAMILY, 14, 'bold')).pack(anchor='w', padx=12, pady=(10, 2))
 
         btn_row = ttk.Frame(parent)
         btn_row.pack(fill='x', padx=4, pady=(2, 2))
@@ -2689,6 +2802,23 @@ class GaitLimbTab(ttk.Frame):
             btn_row, text="Adjust Contact",
             command=self._open_contact_adjustment, state='disabled')
         self._adjust_contact_btn.pack(side='left', padx=2)
+
+        # Saved sessions — pick a previous run and reload it (no re-analysis).
+        saved_row = ttk.Frame(parent)
+        saved_row.pack(fill='x', padx=4, pady=(0, 2))
+        ttk.Label(saved_row, text="Saved sessions:").pack(side='left')
+        self._saved_combo = ttk.Combobox(saved_row, state='readonly', width=34, values=[])
+        self._saved_combo.pack(side='left', padx=(4, 2))
+        self._saved_load_btn = ttk.Button(saved_row, text="Load",
+                                          command=self._load_selected_session,
+                                          state='disabled')
+        self._saved_load_btn.pack(side='left', padx=2)
+        ttk.Button(saved_row, text="Save…",
+                   command=self._save_current_session_named).pack(side='left', padx=2)
+        self._saved_del_btn = ttk.Button(saved_row, text="Delete",
+                                         command=self._delete_selected_session,
+                                         state='disabled')
+        self._saved_del_btn.pack(side='left', padx=2)
 
         # Run outcome (N analyzed · M skipped/failed) — set by _on_analysis_complete
         self._outcome_lbl = ttk.Label(parent, text='', font=(FONT_FAMILY, 9))
@@ -2824,15 +2954,7 @@ class GaitLimbTab(ttk.Frame):
         self._log_text.config(yscrollcommand=log_sb.set)
         self._log_text.pack(side='left', fill='both', expand=True)
         log_sb.pack(side='right', fill='y')
-
-        # ── Progress bar (hidden until analysis runs) ─────────────
-        self._progress_frame = ttk.Frame(parent)
-        # not packed yet — shown/hidden by _start_analysis / _on_analysis_complete
-        self._progress = ttk.Progressbar(self._progress_frame, mode='determinate')
-        self._progress.pack(fill='x', padx=4, pady=(0, 1))
-        self._sub_progress_label = ttk.Label(
-            self._progress_frame, text="", font=('TkDefaultFont', 8))
-        self._sub_progress_label.pack(fill='x', padx=4, pady=(0, 2))
+        # (Progress bar lives in the left-rail Run panel — see _build_run_panel.)
 
     # ═══════════════════════════════════════════════════════════════════════
     # Summary panel refresh
@@ -2959,6 +3081,8 @@ class GaitLimbTab(ttk.Frame):
     def on_project_changed(self):
         """Called by PixelPawsGUI._on_project_folder_changed."""
         self._scan_sessions()
+        self._refresh_lick_behaviors()
+        self._refresh_saved_sessions()
 
     # ═══════════════════════════════════════════════════════════════════════
     # Session scanning
@@ -2993,8 +3117,9 @@ class GaitLimbTab(ttk.Frame):
         for sess in self._sessions:
             subj = self._resolve_subject(sess['session_name'])
             has_vid = '✓' if (sess.get('video') and os.path.isfile(sess['video'])) else '✗'
+            cache = self._session_cache_status(sess['session_name'], folder)
             self._sess_tree.insert('', 'end',
-                                   values=(sess['session_name'], subj, has_vid))
+                                   values=(sess['session_name'], subj, has_vid, cache))
 
         n = len(self._sessions)
         self._sess_lbl.config(text=f'{n} session{"s" if n != 1 else ""} found')
@@ -3002,6 +3127,32 @@ class GaitLimbTab(ttk.Frame):
             text=os.path.basename(folder) if folder else '')
 
         self._scan_key_files(folder)
+        self._refresh_lick_behaviors()
+
+    def _session_cache_status(self, session_name, folder=None):
+        """Report which extraction caches exist for a session: 'brt+contour',
+        'brt', 'contour', or '—'. Checks both the current and legacy cache dirs."""
+        folder = folder or self._override_folder_var.get() or \
+            self.app.current_project_folder.get()
+        if not folder:
+            return '—'
+        import glob as _glob
+        has_brt = has_ctr = False
+        for _d in ('gait_limb_analysis', 'weight_bearing_analysis'):
+            base = os.path.join(folder, _d)
+            if not os.path.isdir(base):
+                continue
+            if _glob.glob(os.path.join(base, f'{session_name}_brt_*.csv')):
+                has_brt = True
+            if _glob.glob(os.path.join(base, f'{session_name}_contour_*.csv')):
+                has_ctr = True
+        if has_brt and has_ctr:
+            return 'brt+contour'
+        if has_ctr:
+            return 'contour'
+        if has_brt:
+            return 'brt'
+        return '—'
 
     def _select_all(self):
         self._sess_tree.selection_set(self._sess_tree.get_children())
@@ -3037,6 +3188,207 @@ class GaitLimbTab(ttk.Frame):
                 self._log_ui(f"Detected {len(self._bodyparts)} body parts")
                 return
         messagebox.showinfo("No sessions", "Scan sessions first.", parent=self)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Licking-frame exclusion (behavior predictions on disk)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    @staticmethod
+    def _extract_behavior_name(filename):
+        """Behavior name from a prediction filename: strip the pred suffix, then
+        take the tokens after 'PixelPaws' (mirrors the Transitions loader)."""
+        base = os.path.basename(filename)
+        for suf in ('_predictions.csv', '_prediction.csv', '_pred.csv'):
+            if base.endswith(suf):
+                base = base[:-len(suf)]
+                break
+        else:
+            base = os.path.splitext(base)[0]
+        if 'PixelPaws' in base:
+            beh = base.split('PixelPaws', 1)[1].strip('_')
+            if beh:
+                return beh
+        return base
+
+    def _scan_lick_behaviors(self, folder=None):
+        """Behavior names available as predictions in the project's results/ folder.
+        Extracted from prediction filenames (robust to per-session subfolders),
+        with a consolidated per_frame header fallback."""
+        folder = folder or self.app.current_project_folder.get()
+        names = set()
+        if not folder:
+            return []
+        results = os.path.join(folder, 'results')
+        if not os.path.isdir(results):
+            return []
+        import glob as _glob
+        sessions = {s['session_name'] for s in getattr(self, '_sessions', [])}
+
+        def _is_session_named(name):
+            return any(name == sn or name.startswith(sn + '_') or sn in name
+                       for sn in sessions)
+
+        # Preferred: immediate behavior subfolders (results/{behavior}/…) that
+        # actually hold prediction files — this is the canonical batch layout.
+        for entry in os.listdir(results):
+            p = os.path.join(results, entry)
+            if not os.path.isdir(p) or entry.lower() == 'per_frame':
+                continue
+            if _is_session_named(entry):
+                continue
+            if _glob.glob(os.path.join(p, '*_predictions.csv')) or \
+               _glob.glob(os.path.join(p, '**', '*_predictions.csv'), recursive=True):
+                names.add(entry)
+        # Fallback: parse behavior from filenames, dropping session-named noise.
+        if not names:
+            for path in _glob.glob(os.path.join(results, '**', '*_predictions.csv'),
+                                   recursive=True):
+                beh = self._extract_behavior_name(path)
+                if beh and not _is_session_named(beh):
+                    names.add(beh)
+        # Last resort: consolidated per_frame headers.
+        if not names:
+            pf = os.path.join(results, 'per_frame')
+            if os.path.isdir(pf):
+                for fn in os.listdir(pf):
+                    if fn.endswith('_frames.csv'):
+                        try:
+                            cols = pd.read_csv(os.path.join(pf, fn), nrows=0).columns
+                            for c in cols:
+                                if c.endswith('_pred'):
+                                    names.add(c[:-5])
+                        except Exception:
+                            pass
+                        break
+        return sorted(names)
+
+    def _guess_lick_behavior(self):
+        """Best-guess licking behavior from the available list."""
+        for b in getattr(self, '_lick_behaviors', []):
+            if 'lick' in b.lower():
+                return b
+        return self._lick_behaviors[0] if getattr(self, '_lick_behaviors', None) else ''
+
+    def _refresh_lick_behaviors(self):
+        """Populate the licking behavior combo from disk; enable/disable the toggle."""
+        if not hasattr(self, '_lick_combo'):
+            return
+        self._lick_behaviors = self._scan_lick_behaviors()
+        self._lick_combo.config(values=self._lick_behaviors)
+        if self._lick_behaviors and not self._lick_behavior_var.get():
+            self._lick_behavior_var.set(self._guess_lick_behavior())
+        if not self._lick_behaviors:
+            self._exclude_lick_var.set(False)
+            self._exclude_lick_chk.config(state='disabled')
+        else:
+            self._exclude_lick_chk.config(state='normal')
+            # Auto-enable when the active preset requests it and predictions exist.
+            preset = self.GAIT_PRESETS.get(
+                self._preset_var.get() if hasattr(self, '_preset_var') else '', {})
+            if preset.get('exclude_licking') and not self._exclude_lick_var.get():
+                self._exclude_lick_var.set(True)
+                if not self._lick_behavior_var.get():
+                    self._lick_behavior_var.set(self._guess_lick_behavior())
+        self._on_lick_toggle()
+
+    def _on_lick_toggle(self):
+        """Enable/disable the behavior picker + threshold and update the hint."""
+        if not hasattr(self, '_lick_combo'):
+            return
+        on = bool(self._exclude_lick_var.get()) and bool(self._lick_behaviors)
+        self._lick_combo.config(state='readonly' if on else 'disabled')
+        self._lick_thr_spin.config(state='normal' if on else 'disabled')
+        if not self._lick_behaviors:
+            self._lick_hint_lbl.config(
+                text="No behavior predictions found — run classifiers first to "
+                     "enable licking exclusion.")
+        elif on:
+            self._lick_hint_lbl.config(
+                text=f"Excluding frames predicted as '{self._lick_behavior_var.get()}' "
+                     f"(≥ threshold) from weight-bearing/contact metrics.")
+        else:
+            self._lick_hint_lbl.config(text="")
+        try:
+            self._update_readiness()
+        except Exception:
+            pass
+
+    def _load_lick_mask(self, session_name, behavior, thr, n_frames):
+        """Boolean array (len n_frames, True = licking) for a session, from the
+        project's behavior predictions. Returns all-False when unavailable."""
+        out = np.zeros(int(n_frames), dtype=bool)
+        if not behavior:
+            return out
+        folder = self.app.current_project_folder.get()
+        if not folder:
+            return out
+        results = os.path.join(folder, 'results')
+        vals = None
+        # 1) Consolidated per_frame sheet: {session}_frames.csv with {behavior}_pred.
+        pf = os.path.join(results, 'per_frame', f'{session_name}_frames.csv')
+        if os.path.isfile(pf):
+            try:
+                df = pd.read_csv(pf)
+                pred_cols = [c for c in df.columns
+                             if c == f'{behavior}_pred'
+                             or (c.startswith(f'{behavior}_') and c.endswith('_pred'))]
+                if pred_cols:
+                    vals = df[pred_cols[0]].values.astype(float)
+                elif f'{behavior}_prob' in df.columns:
+                    vals = (df[f'{behavior}_prob'].values.astype(float) >= float(thr))
+            except Exception:
+                vals = None
+        # 2) Per-behavior predictions CSV — match files for this session whose
+        #    extracted behavior name equals the chosen behavior.
+        if vals is None:
+            import glob as _glob
+            cands = _glob.glob(os.path.join(
+                results, behavior, f'{session_name}*_predictions.csv'))
+            cands += [p for p in _glob.glob(os.path.join(
+                results, '**', f'{session_name}*_predictions.csv'), recursive=True)
+                if self._extract_behavior_name(p) == behavior]
+            for path in cands:
+                try:
+                    df = pd.read_csv(path)
+                    if behavior in df.columns:
+                        vals = df[behavior].values.astype(float)
+                    elif 'probability' in df.columns:
+                        vals = (df['probability'].values.astype(float) >= float(thr))
+                    if vals is not None:
+                        break
+                except Exception:
+                    continue
+        if vals is None:
+            return out
+        lick = np.asarray(vals).astype(bool)
+        k = min(len(lick), len(out))
+        out[:k] = lick[:k]
+        return out
+
+    @staticmethod
+    def _compute_selection_masks(contact_masks, lick_mask, gate_4paw, n):
+        """Return (analyzed_mask, base_mask, four_mask) as full-length bool arrays.
+
+        base_mask  = licking-excluded frames (the metric denominator when not gating);
+        four_mask  = frames with all four paws in contact (None if <4 paws present);
+        analyzed_mask = base_mask & (four_mask when the 4-paw gate is on).
+        """
+        base = np.ones(int(n), dtype=bool)
+        if lick_mask is not None:
+            lm = np.asarray(lick_mask, dtype=bool)
+            base[:len(lm)] &= ~lm[:n]
+        four = None
+        if all(r in contact_masks for r in ('HL', 'HR', 'FL', 'FR')):
+            four = np.ones(int(n), dtype=bool)
+            for r in ('HL', 'HR', 'FL', 'FR'):
+                mk = contact_masks[r]
+                arr = (mk.values.astype(bool) if hasattr(mk, 'values')
+                       else np.asarray(mk, dtype=bool))
+                four[:len(arr)] &= arr[:n]
+        analyzed = base.copy()
+        if gate_4paw and four is not None:
+            analyzed &= four
+        return analyzed, base, four
 
     # ═══════════════════════════════════════════════════════════════════════
     # Key file handling
@@ -3276,6 +3628,20 @@ class GaitLimbTab(ttk.Frame):
             self._contact_method_var.set(str(preset['contact_method']))
         if 'contour_area_threshold' in preset:
             self._contour_area_thresh_var.set(int(preset['contour_area_threshold']))
+        if 'exclude_licking' in preset:
+            # Only enable if licking predictions are actually available on disk;
+            # otherwise leave the toggle off (the control is disabled with a hint).
+            want = bool(preset['exclude_licking'])
+            if want and getattr(self, '_lick_behaviors', None):
+                self._exclude_lick_var.set(True)
+                if not self._lick_behavior_var.get():
+                    self._lick_behavior_var.set(self._guess_lick_behavior())
+            elif not want:
+                self._exclude_lick_var.set(False)
+        try:
+            self._on_lick_toggle()
+        except Exception:
+            pass
         # keep the fore-paw mapping widgets in sync with the checkbox
         try:
             self._on_use_fore_changed()
@@ -3421,6 +3787,10 @@ class GaitLimbTab(ttk.Frame):
                                    for role in self.ROLES},
             'contour_forelimbs':  self._contour_forelimbs_var.get(),
             'contour_area_threshold': self._contour_area_thresh_var.get(),
+            'exclude_licking':    bool(self._exclude_lick_var.get()),
+            'lick_behavior':      self._lick_behavior_var.get(),
+            'lick_threshold':     float(self._lick_thresh_var.get()),
+            'gate_4paw':          bool(self._gate_4paw_var.get()),
         }
 
         self._cancel_flag.clear()
@@ -4453,22 +4823,63 @@ class GaitLimbTab(ttk.Frame):
                 self._log("  Contour-area contact selected but no hind contour data was "
                           "extracted; keeping the existing contact masks.")
 
+        # ── Frame selection: exclude licking frames + optional 4-paw gate ─────
+        lick_mask = np.zeros(n_frames, dtype=bool)
+        if params.get('exclude_licking') and params.get('lick_behavior'):
+            lick_mask = self._load_lick_mask(
+                sess['session_name'], params['lick_behavior'],
+                params.get('lick_threshold', 0.5), n_frames)
+            self._log(f"  Excluding {int(lick_mask.sum())} licking frame(s) "
+                      f"('{params['lick_behavior']}').")
+        analyzed_mask, base_mask, four_mask = self._compute_selection_masks(
+            contact_masks, lick_mask, bool(params.get('gate_4paw')), n_frames)
+        if params.get('gate_4paw'):
+            if four_mask is not None:
+                self._log(f"  4-paw gate: {int(four_mask.sum())}/{n_frames} "
+                          f"quadrupedal-stance frames (contact-% WBI ~50; use "
+                          f"brightness / contour-area asymmetry).")
+            else:
+                self._log("  4-paw gate requested but fore paws are unavailable; "
+                          "gate skipped.")
+
         # ── Metric computation helper ────────────────────────────────────────
         def _metrics(frame_slice=None):
             if frame_slice is not None:
                 masks = {r: m.iloc[frame_slice].reset_index(drop=True)
                          for r, m in contact_masks.items()}
                 n = len(next(iter(masks.values()))) if masks else 0
+                _am = np.asarray(analyzed_mask[frame_slice], bool)
+                _bm = np.asarray(base_mask[frame_slice], bool)
+                _fm = (np.asarray(four_mask[frame_slice], bool)
+                       if four_mask is not None else None)
             else:
                 masks = contact_masks
                 n = n_frames
+                _am, _bm = analyzed_mask, base_mask
+                _fm = four_mask
+            _am = _am[:n]; _bm = _bm[:n]
+            n_analyzed = int(_am.sum())
 
-            m = {'n_frames': n, 'fps': round(fps, 2),
-                 'fallback_fps_used': _used_fallback_fps}
+            m = {'n_frames': n, 'n_analyzed': n_analyzed,
+                 'analyzed_pct': round(n_analyzed / n * 100, 2) if n else float('nan'),
+                 'fps': round(fps, 2), 'fallback_fps_used': _used_fallback_fps}
 
             for role, mask in masks.items():
-                m[f'contact_pct_{role}'] = round(float(mask.mean()) * 100, 2)
-                m[f'n_contact_{role}']   = int(mask.sum())
+                marr = (mask.values.astype(bool) if hasattr(mask, 'values')
+                        else np.asarray(mask, bool))[:n]
+                inb = marr & _am
+                m[f'contact_pct_{role}'] = (
+                    round(float(inb.sum()) / n_analyzed * 100, 2)
+                    if n_analyzed > 0 else float('nan'))
+                m[f'n_contact_{role}'] = int(inb.sum())
+
+            # Quadrupedal-stance fraction (over licking-excluded frames).
+            if _fm is not None:
+                _fm = _fm[:n]
+                _bden = int(_bm.sum())
+                m['quad_stance_pct'] = (
+                    round(float((_fm & _bm).sum()) / _bden * 100, 2)
+                    if _bden > 0 else float('nan'))
 
             # Hind WBI / SI
             if 'HL' in masks and 'HR' in masks:
@@ -4518,7 +4929,10 @@ class GaitLimbTab(ttk.Frame):
                     brt_slice = brt_full.iloc[frame_slice].reset_index(drop=True)
                 else:
                     brt_slice = brt_full
-                contact_brt = brt_slice.values[mask.values.astype(bool)]
+                _mb = mask.values.astype(bool)
+                _L = min(len(_mb), len(brt_slice), len(_am))
+                _sel = _mb[:_L] & _am[:_L]          # contact ∧ analyzed frames
+                contact_brt = brt_slice.values[:_L][_sel]
                 if len(contact_brt) > 0:
                     m[f'brightness_{role}'] = round(float(np.nanmean(contact_brt)), 4)
                 else:
@@ -4965,6 +5379,7 @@ class GaitLimbTab(ttk.Frame):
             'loco_mask': loco_mask,
             'body_speed': body_speed,
             'frame_displacements': frame_displacements,
+            'lick_mask': lick_mask,
             'params': params,
         }
 
@@ -5020,6 +5435,9 @@ class GaitLimbTab(ttk.Frame):
         if self._session_intermediates:
             self._adjust_contact_btn.config(state='normal')
 
+        # Persist results so the tab can auto-reload them next time (Transitions-style).
+        self._save_last_session()
+
         # Warn about fallback FPS usage
         fallback_sessions = [r.get('session', '?') for r in summary_rows
                              if r.get('fallback_fps_used', False)]
@@ -5029,6 +5447,290 @@ class GaitLimbTab(ttk.Frame):
 
         self._log_ui(f"Done. {len(summary_rows)} session(s) processed.")
         self._update_readiness()
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Results persistence + auto-reload (Transitions-style)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    SESSION_SCHEMA_VERSION = 1
+
+    # Scalar analysis vars persisted with a session (name → attribute).
+    _PERSIST_SCALAR_VARS = (
+        '_contact_thresh_var', '_height_window_var', '_bin_seconds_var',
+        '_bin_unit_var', '_fallback_fps_var', '_use_brightness_var',
+        '_brt_thresh_var', '_brt_weight_var', '_extraction_stride_var',
+        '_crop_x_var', '_crop_y_var', '_contact_method_var', '_speed_thresh_var',
+        '_median_filter_var', '_min_bout_var', '_min_stance_ms_var',
+        '_use_likelihood_var', '_likelihood_thresh_var', '_loco_filter_var',
+        '_loco_thresh_var', '_paw_contour_var', '_contour_forelimbs_var',
+        '_contour_area_thresh_var', '_exclude_lick_var', '_lick_behavior_var',
+        '_lick_thresh_var', '_gate_4paw_var', '_use_fore_var', '_preset_var',
+        '_key_file_var', '_prefix_var',
+    )
+    _PERSIST_DICT_VARS = ('_roi_size_vars', '_contour_roi_size_vars', '_role_vars')
+
+    def _collect_settings(self):
+        s = {}
+        for name in self._PERSIST_SCALAR_VARS:
+            v = getattr(self, name, None)
+            if v is not None:
+                try:
+                    s[name] = v.get()
+                except Exception:
+                    pass
+        for name in self._PERSIST_DICT_VARS:
+            d = getattr(self, name, None)
+            if isinstance(d, dict):
+                s[name] = {k: (var.get() if hasattr(var, 'get') else var)
+                           for k, var in d.items()}
+        return s
+
+    def _apply_settings(self, s):
+        for name in self._PERSIST_SCALAR_VARS:
+            if name in s and getattr(self, name, None) is not None:
+                try:
+                    getattr(self, name).set(s[name])
+                except Exception:
+                    pass
+        for name in self._PERSIST_DICT_VARS:
+            d = getattr(self, name, None)
+            if isinstance(d, dict) and isinstance(s.get(name), dict):
+                for k, val in s[name].items():
+                    if k in d and hasattr(d[k], 'set'):
+                        try:
+                            d[k].set(val)
+                        except Exception:
+                            pass
+
+    def _session_bundle(self):
+        return {
+            'schema_version': self.SESSION_SCHEMA_VERSION,
+            'saved_at': datetime.now().isoformat(timespec='seconds'),
+            'settings': self._collect_settings(),
+            'summary_records': (self._summary_df.to_dict('records')
+                                if self._summary_df is not None else []),
+            'bins_records': (self._bins_df.to_dict('records')
+                             if self._bins_df is not None
+                             and not self._bins_df.empty else []),
+        }
+
+    _SESSION_AUTO_KEEP = 15   # prune older auto_* saves beyond this (named_* kept)
+
+    def _last_session_path(self, proj=None):
+        """Legacy single-file path (still listed in the dropdown if present)."""
+        proj = proj or self.app.current_project_folder.get()
+        if not proj:
+            return None
+        return os.path.join(proj, 'gait_limb_analysis', '_last_session.pkl')
+
+    def _sessions_dir(self, proj=None):
+        proj = proj or self.app.current_project_folder.get()
+        if not proj:
+            return None
+        d = os.path.join(proj, 'gait_limb_analysis', 'sessions')
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            return None
+        return d
+
+    def _save_last_session(self):
+        """Auto-save after a run — unless we're mid-load (loads never spawn one)."""
+        if getattr(self, '_loading_session', False):
+            return
+        self._save_session_file('auto')
+
+    def _save_session_file(self, kind, name=None):
+        if atomic_pickle_save is None:
+            return
+        d = self._sessions_dir()
+        if not d:
+            return
+        n = 0 if self._summary_df is None else len(self._summary_df)
+        ts = datetime.now().strftime('%Y%m%d-%H%M%S-%f')   # μs keeps names unique
+        if kind == 'named' and name:
+            slug = re.sub(r'[^A-Za-z0-9._-]+', '-', name).strip('-') or 'session'
+            fname = f'named_{slug}_{ts}_{n}sess.pkl'
+        else:
+            fname = f'auto_{ts}_{n}sess.pkl'
+        try:
+            atomic_pickle_save(self._session_bundle(), os.path.join(d, fname))
+        except Exception as e:
+            self._log_ui(f"(could not save session: {e})")
+            return
+        self._prune_auto_sessions(d)
+        self._refresh_saved_sessions(select_path=os.path.join(d, fname))
+
+    def _prune_auto_sessions(self, d):
+        try:
+            autos = sorted(
+                [f for f in os.listdir(d) if f.startswith('auto_') and f.endswith('.pkl')])
+        except Exception:
+            return
+        for f in autos[:-self._SESSION_AUTO_KEEP]:
+            try:
+                os.remove(os.path.join(d, f))
+            except OSError:
+                pass
+
+    @staticmethod
+    def _parse_session_fname(fn):
+        """(sort_key, label) for a saved-session filename, or None if unrecognized."""
+        _TS = r'(\d{8}-\d{6}(?:-\d{1,6})?)'
+        m = re.match(r'auto_' + _TS + r'_(\d+)sess\.pkl$', fn)
+        if m:
+            ts, n = m.group(1), int(m.group(2))
+            return ts, f"{GaitLimbTab._fmt_ts(ts)} · {n} session{'s' if n != 1 else ''}"
+        m = re.match(r'named_(.+)_' + _TS + r'_(\d+)sess\.pkl$', fn)
+        if m:
+            slug, ts, n = m.group(1), m.group(2), int(m.group(3))
+            return ts, f"★ {slug} · {n} session{'s' if n != 1 else ''}"
+        return None
+
+    @staticmethod
+    def _fmt_ts(ts):
+        try:
+            return datetime.strptime(ts[:15], '%Y%m%d-%H%M%S').strftime('%Y-%m-%d %H:%M:%S')
+        except Exception:
+            return ts
+
+    def _list_saved_sessions(self):
+        """[(label, path)] newest-first for the current project (+ legacy file)."""
+        items = []
+        d = self._sessions_dir()
+        if d and os.path.isdir(d):
+            for fn in os.listdir(d):
+                parsed = self._parse_session_fname(fn)
+                if parsed:
+                    items.append((parsed[0], parsed[1], os.path.join(d, fn)))
+        legacy = self._last_session_path()
+        if legacy and os.path.isfile(legacy):
+            items.append(('00000000-000000', '(previous)', legacy))
+        items.sort(key=lambda t: t[0], reverse=True)
+        return [(label, path) for _sk, label, path in items]
+
+    def _load_last_session(self, path=None):
+        if path is None:
+            path = self._last_session_path()
+        if not path or not os.path.isfile(path):
+            return False
+        self._loading_session = True   # loads never create a new saved entry
+        try:
+            return self._load_bundle_file(path)
+        finally:
+            self._loading_session = False
+
+    def _load_bundle_file(self, path):
+        try:
+            with open(path, 'rb') as f:
+                bundle = pickle.load(f)
+        except Exception as e:
+            self._log_ui(f"(could not load session cache: {e})")
+            return False
+        if bundle.get('schema_version') != self.SESSION_SCHEMA_VERSION:
+            self._log_ui("(saved session cache is a different version; ignoring)")
+            return False
+        try:
+            self._apply_settings(bundle.get('settings', {}))
+            self._on_lick_toggle()
+        except Exception:
+            pass
+        summ = bundle.get('summary_records') or []
+        bins = bundle.get('bins_records') or []
+        self._summary_df = pd.DataFrame(summ) if summ else None
+        self._bins_df = pd.DataFrame(bins) if bins else pd.DataFrame()
+        self._refresh_results_table()
+        try:
+            self._refresh_summary_panel()
+        except Exception:
+            pass
+        # Enable the result actions that only need the DataFrames.
+        if self._summary_df is not None:
+            self._export_sum_btn.config(state='normal')
+            if self._bins_df is not None and not self._bins_df.empty:
+                self._export_bin_btn.config(state='normal')
+            if _PLOT_OK:
+                self._graphs_btn.config(state='normal')
+        if hasattr(self, '_outcome_lbl'):
+            n = 0 if self._summary_df is None else len(self._summary_df)
+            self._outcome_lbl.config(
+                text=f"Reloaded {n} session(s) from cache "
+                     f"(saved {bundle.get('saved_at', '?')}). Re-run for "
+                     f"contour-shape graphs / Adjust Contact.",
+                foreground='#127a12')
+        self._log_ui(f"Reloaded {0 if self._summary_df is None else len(self._summary_df)} "
+                     f"session(s) from saved cache.")
+        return True
+
+    def _on_tab_shown(self, event=None):
+        """Fires on any main-tab change; refresh the saved-session list when this
+        tab becomes active (no more reload prompt)."""
+        try:
+            label = self.app.notebook.select()
+        except Exception:
+            return
+        if isinstance(label, str) and ('Gait & Limb' in label or label.endswith('Limb Use')):
+            self._refresh_saved_sessions()
+
+    def _refresh_saved_sessions(self, select_path=None):
+        """Repopulate the Saved-sessions combobox from disk (index-keyed, so
+        duplicate labels never collide)."""
+        combo = getattr(self, '_saved_combo', None)
+        if combo is None:
+            return
+        self._saved_items = self._list_saved_sessions()   # [(label, path)]
+        labels = [label for label, _ in self._saved_items]
+        combo.config(values=labels)
+        idx = 0
+        if select_path is not None:
+            idx = next((i for i, (_l, p) in enumerate(self._saved_items)
+                        if os.path.abspath(p) == os.path.abspath(select_path)), 0)
+        if labels:
+            combo.current(idx)
+        else:
+            combo.set('')
+        state = 'normal' if labels else 'disabled'
+        for b in ('_saved_load_btn', '_saved_del_btn'):
+            w = getattr(self, b, None)
+            if w is not None:
+                w.config(state=state)
+
+    def _selected_session_path(self):
+        combo = getattr(self, '_saved_combo', None)
+        items = getattr(self, '_saved_items', [])
+        if combo is None or not items:
+            return None
+        i = combo.current()
+        return items[i][1] if 0 <= i < len(items) else None
+
+    def _load_selected_session(self):
+        path = self._selected_session_path()
+        if not path:
+            messagebox.showinfo("Load session", "No saved session selected.", parent=self)
+            return
+        self._load_last_session(path)
+
+    def _save_current_session_named(self):
+        if self._summary_df is None:
+            messagebox.showinfo("Save session", "Run an analysis first.", parent=self)
+            return
+        name = simpledialog.askstring(
+            "Save session", "Name for this saved session:", parent=self)
+        if name:
+            self._save_session_file('named', name)
+
+    def _delete_selected_session(self):
+        path = self._selected_session_path()
+        if not path:
+            return
+        label = self._saved_combo.get()
+        if messagebox.askyesno("Delete session",
+                               f"Delete this saved session?\n\n{label}", parent=self):
+            try:
+                os.remove(path)
+            except OSError as e:
+                self._log_ui(f"(could not delete: {e})")
+            self._refresh_saved_sessions()
 
     # ═══════════════════════════════════════════════════════════════════════
     # Post-analysis contact re-adjustment
@@ -5232,6 +5934,13 @@ class GaitLimbTab(ttk.Frame):
             # Update stored intermediates with new contact masks
             inter['contact_masks'] = contact_masks
 
+            # Frame selection (mirror _analyze_session): reuse the original run's
+            # licking mask + gate flag; recompute the 4-paw mask from the new masks.
+            _orig_params = inter.get('params', {})
+            _readj_analyzed, _readj_base, _readj_four = self._compute_selection_masks(
+                contact_masks, inter.get('lick_mask'),
+                bool(_orig_params.get('gate_4paw')), n_frames)
+
             # Metric computation (mirrors _metrics in _analyze_session)
             def _metrics(frame_slice=None,
                          _cm=contact_masks, _nf=n_frames, _fps=fps,
@@ -5239,22 +5948,44 @@ class GaitLimbTab(ttk.Frame):
                          _pxy=paw_xy, _pcd=paw_contour_data,
                          _conf=confidence_mask, _loco=loco_mask,
                          _ap=active_paws,
-                         _fd=frame_displacements, _bs_spd=body_speed):
+                         _fd=frame_displacements, _bs_spd=body_speed,
+                         _analyzed=_readj_analyzed, _base=_readj_base,
+                         _four=_readj_four):
                 if frame_slice is not None:
                     masks = {r: m.iloc[frame_slice].reset_index(drop=True)
                              for r, m in _cm.items()}
                     n = len(next(iter(masks.values()))) if masks else 0
+                    _am = np.asarray(_analyzed[frame_slice], bool)
+                    _bm = np.asarray(_base[frame_slice], bool)
+                    _fm = (np.asarray(_four[frame_slice], bool)
+                           if _four is not None else None)
                 else:
                     masks = _cm
                     n = _nf
+                    _am, _bm = _analyzed, _base
+                    _fm = _four
+                _am = _am[:n]; _bm = _bm[:n]
+                n_analyzed = int(_am.sum())
 
-                m = {'n_frames': n, 'fps': round(_fps, 2),
-                     'fallback_fps_used': _ufps}
+                m = {'n_frames': n, 'n_analyzed': n_analyzed,
+                     'analyzed_pct': round(n_analyzed / n * 100, 2) if n else float('nan'),
+                     'fps': round(_fps, 2), 'fallback_fps_used': _ufps}
 
                 for role, mask in masks.items():
-                    m[f'contact_pct_{role}'] = round(
-                        float(mask.mean()) * 100, 2)
-                    m[f'n_contact_{role}'] = int(mask.sum())
+                    marr = (mask.values.astype(bool) if hasattr(mask, 'values')
+                            else np.asarray(mask, bool))[:n]
+                    inb = marr & _am
+                    m[f'contact_pct_{role}'] = (
+                        round(float(inb.sum()) / n_analyzed * 100, 2)
+                        if n_analyzed > 0 else float('nan'))
+                    m[f'n_contact_{role}'] = int(inb.sum())
+
+                if _fm is not None:
+                    _fm = _fm[:n]
+                    _bden = int(_bm.sum())
+                    m['quad_stance_pct'] = (
+                        round(float((_fm & _bm).sum()) / _bden * 100, 2)
+                        if _bden > 0 else float('nan'))
 
                 if 'HL' in masks and 'HR' in masks:
                     cHL, cHR = m['contact_pct_HL'], m['contact_pct_HR']
@@ -5298,7 +6029,10 @@ class GaitLimbTab(ttk.Frame):
                             drop=True)
                     else:
                         brt_slice = brt_full
-                    contact_brt = brt_slice.values[mask.values.astype(bool)]
+                    _mb = mask.values.astype(bool)
+                    _L = min(len(_mb), len(brt_slice), len(_am))
+                    _sel = _mb[:_L] & _am[:_L]
+                    contact_brt = brt_slice.values[:_L][_sel]
                     if len(contact_brt) > 0:
                         m[f'brightness_{role}'] = round(
                             float(np.nanmean(contact_brt)), 4)
@@ -10721,7 +11455,8 @@ class GaitLimbTab(ttk.Frame):
                                 'print_position_L', 'print_position_R',
                                 'support_0paw_pct', 'support_1paw_pct',
                                 'support_2paw_pct', 'support_3paw_pct',
-                                'support_4paw_pct']
+                                'support_4paw_pct', 'quad_stance_pct',
+                                'analyzed_pct']
         contour_metrics = [f'paw_area_{r}' for r in ('HL', 'HR')]
         contour_metrics += [f'paw_spread_{r}' for r in ('HL', 'HR')]
         contour_metrics += ['paw_area_ratio_hind']

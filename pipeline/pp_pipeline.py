@@ -25,34 +25,75 @@ Usage:
                  [--delete-source-after-transcode]
 """
 from __future__ import annotations
-import argparse, json, os, pickle, subprocess, sys, time, uuid
+import argparse, json, os, pickle, subprocess, sys, time, traceback, uuid
 from pathlib import Path
 
 # --- import all cohort-agnostic constants from the single source of truth -----
 sys.path.insert(0, str(Path(__file__).resolve().parent))      # pp_config beside us
 from pp_config import (  # noqa: E402
-    PROCESSING_WEBHOOK, FEATURE_HASH, FEATURE_CFG, EXPECTED_FEATURE_COLS,
-    DLC_CONFIG, DLC_PYTHON, SHUFFLE, DLC_BATCH, CODEC, CRF, PRESET, REPO, post,
+    PROCESSING_WEBHOOK, FEATURE_HASH, FILTERED_FEATURE_HASH, FEATURE_CFG,
+    EXPECTED_FEATURE_COLS, DLC_CONFIG, DLC_PYTHON, SHUFFLE, DLC_BATCH,
+    CODEC, CRF, PRESET, REPO, post,
 )
 
 ALL_STAGES = ("transcode", "dlc", "features")
 MIN_TRANSCODE_BYTES = 1_000_000      # >1 MB sanity floor for a "good" transcode
 
+# --- persistent run log -------------------------------------------------------
+# Every step() line is mirrored, append-only with a full date+time stamp, into
+# <proj>/_run/pipeline.log so a silent overnight death is diagnosable after the
+# fact (stdout from a backgrounded run is otherwise lost). Set once per run().
+_LOG_FH = None          # open append handle for <proj>/_run/pipeline.log, or None
+_LOG_PATH = None        # its Path, for reporting
+
+
+def open_run_log(proj: Path):
+    """Open (append) <proj>/_run/pipeline.log for the lifetime of this process.
+    Best-effort: if it can't be opened, step() simply falls back to stdout-only."""
+    global _LOG_FH, _LOG_PATH
+    try:
+        rd = proj / "_run"
+        rd.mkdir(parents=True, exist_ok=True)
+        _LOG_PATH = rd / "pipeline.log"
+        _LOG_FH = open(_LOG_PATH, "a", encoding="utf-8", errors="replace")
+    except Exception as e:
+        _LOG_FH, _LOG_PATH = None, None
+        print(f"[{time.strftime('%H:%M:%S')}] ! could not open run log: {e}", flush=True)
+    return _LOG_PATH
+
 
 def step(m: str) -> None:
     print(f'[{time.strftime("%H:%M:%S")}] {m}', flush=True)
+    if _LOG_FH is not None:
+        try:
+            _LOG_FH.write(f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] {m}\n')
+            _LOG_FH.flush()          # survive a process kill (OS keeps flushed bytes)
+        except Exception:
+            pass
 
 
 # --- per-video output resolvers (mirror the template's helpers) ---------------
+def _snap_num(name: str) -> int:
+    """Snapshot number from a DLC h5 name (e.g. ...best-660... -> 660), else -1."""
+    import re as _re
+    m = _re.search(r"best-(\d+)", name)
+    return int(m.group(1)) if m else -1
+
+
 def find_h5(video: Path):
-    """The unfiltered DLC h5 for a transcoded video, or None."""
+    """The raw DLC analyze h5 for a transcoded video, or None. Excludes the DLC
+    `_filtered.h5` and our pose-filter `_ppfilt.h5`. When several snapshots exist
+    for the same video (e.g. best-460 and best-660), prefer the HIGHEST snapshot
+    so downstream uses the most recent model."""
     c = [x for x in video.parent.glob(f"{video.stem}*shuffle{SHUFFLE}*.h5")
-         if not x.name.endswith("_filtered.h5")]
-    return c[0] if c else None
+         if not x.name.endswith("_filtered.h5") and not x.name.endswith("_ppfilt.h5")]
+    if not c:
+        return None
+    return max(c, key=lambda x: _snap_num(x.name))
 
 
-def feature_pkl(features_dir: Path, video: Path) -> Path:
-    return features_dir / f"{video.stem}_features_{FEATURE_HASH}.pkl"
+def feature_pkl(features_dir: Path, video: Path, feat_hash: str = FEATURE_HASH) -> Path:
+    return features_dir / f"{video.stem}_features_{feat_hash}.pkl"
 
 
 def _duration(p: Path) -> float:
@@ -142,12 +183,16 @@ def resolve_sources(proj: Path, portal: Path | None, sources_json: Path | None):
 # --- stage state --------------------------------------------------------------
 class Ctx:
     def __init__(self, proj: Path, cohort: str, webhook: str, dry: bool,
-                 delete_source: bool = False):
+                 delete_source: bool = False, filtered: bool = False):
         self.proj = proj
         self.cohort = cohort
         self.webhook = webhook
         self.dry = dry
         self.delete_source = delete_source
+        # When True, stage_features runs pose_filter.filter_pose on the DLC h5 before
+        # extraction and writes to the FILTERED_FEATURE_HASH cache (opt-in --filter).
+        self.filtered = filtered
+        self.feat_hash = FILTERED_FEATURE_HASH if filtered else FEATURE_HASH
         self.videos = proj / "videos"
         self.features = proj / "features"
         self.stage_file = proj / "_stage.json"
@@ -201,7 +246,15 @@ def stage_transcode(ctx: Ctx, pairs):
                 pass
         step(f"transcode {i}/{n}: {src.name} -> {dst.name}")
         t0 = time.time()
-        p = subprocess.run(["ffmpeg", "-y", "-i", str(src), "-c:v", CODEC, "-crf", CRF,
+        # -map_metadata 0 + -movflags use_metadata_tags: preserve the source's
+        # CUSTOM container tags through the transcode. PawCapture videos carry
+        # spatial-calibration tags (mm_per_pixel, pixelpaws_calibrated,
+        # pixelpaws_ref_length_mm/ref_pixels) that the classifier mm-per-pixel
+        # path consumes; without these flags ffmpeg silently drops all arbitrary
+        # MP4 tags. No-op for sources that have none.
+        p = subprocess.run(["ffmpeg", "-y", "-i", str(src),
+                            "-map_metadata", "0", "-movflags", "use_metadata_tags",
+                            "-c:v", CODEC, "-crf", CRF,
                             "-preset", PRESET, "-an", "-progress", str(ctx.prog),
                             "-stats_period", "2", str(dst)], capture_output=True, text=True)
         if p.returncode != 0:
@@ -244,6 +297,15 @@ def stage_dlc(ctx: Ctx, pairs):
     ip = Path(os.environ.get("TEMP", ".")) / f"dlc_{uuid.uuid4().hex}.py"
     ip.write_text(inner)
     dprog = ctx.videos / ".dlcprog.txt"          # per-video DLC tqdm capture -> tracker reads it/s
+    # .dlcprog.txt is reset every video (the tracker needs the frame count to
+    # restart), so the DLC console output of any single video — including a crash
+    # traceback — would otherwise vanish. Mirror each video's full output into an
+    # append-only _run/dlc.log that survives both the per-video reset and reruns.
+    dlclog = ctx.proj / "_run" / "dlc.log"
+    try:
+        dlclog.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
     failed = []
     try:
         for j, v in enumerate(pending, 1):
@@ -253,14 +315,34 @@ def stage_dlc(ctx: Ctx, pairs):
                 dprog.write_text("")             # reset so the frame count restarts per video
             except Exception:
                 pass
+            t0 = time.time()
             with open(dprog, "w", encoding="utf-8", errors="replace") as pf:
                 r = subprocess.run([DLC_PYTHON, str(ip), json.dumps([str(v)])],
                                    cwd=str(REPO), env={**os.environ, "PYTHONIOENCODING": "utf-8"},
                                    stdout=pf, stderr=subprocess.STDOUT)
-            if r.returncode != 0 or not find_h5(v):
-                step(f"! DLC FAILED: {v.name} (exit {r.returncode}, "
+            dt = (time.time() - t0) / 60
+            ok = r.returncode == 0 and find_h5(v)
+            # Archive this video's captured output into the persistent dlc.log.
+            try:
+                cap = dprog.read_text(encoding="utf-8", errors="replace")
+                with open(dlclog, "a", encoding="utf-8", errors="replace") as lf:
+                    lf.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} "
+                             f"{v.stem} (exit {r.returncode}, {dt:.1f} min, "
+                             f"{'OK' if ok else 'FAIL'}) =====\n{cap}\n")
+            except Exception:
+                pass
+            if not ok:
+                step(f"! DLC FAILED: {v.name} (exit {r.returncode}, {dt:.1f} min, "
                      f"h5={'yes' if find_h5(v) else 'NO'})")
+                # Surface the tail of the failure into the main pipeline.log too.
+                try:
+                    tail = dprog.read_text(encoding="utf-8", errors="replace")[-1500:]
+                    step(f"  DLC output tail [{v.stem}]:\n{tail}")
+                except Exception:
+                    pass
                 failed.append(v.name)
+            else:
+                step(f"  DLC ok {v.stem} ({dt:.1f} min)")
     finally:
         ip.unlink(missing_ok=True)
     if failed:
@@ -299,18 +381,23 @@ def stage_features(ctx: Ctx, pairs):
     vids = sorted({o for (_, o) in pairs if o.is_file()})
     n = len(vids)
     ctx.features.mkdir(parents=True, exist_ok=True)
-    pending = [v for v in vids if not feature_pkl(ctx.features, v).is_file()]
-    ctx.note(f"▶ **[{ctx.cohort}] features** — {len(pending)} pending (of {n} transcoded).")
+    pending = [v for v in vids if not feature_pkl(ctx.features, v, ctx.feat_hash).is_file()]
+    ftag = " _[pose-FILTERED]_" if ctx.filtered else ""
+    ctx.note(f"▶ **[{ctx.cohort}] features** — {len(pending)} pending (of {n} transcoded).{ftag}")
     if ctx.dry:
-        step(f"[dry] would extract features for {len(pending)} video(s)")
+        step(f"[dry] would extract features ({ctx.feat_hash}) for {len(pending)} video(s)")
         return
     sys.path.insert(0, str(REPO))
     import contextlib
     from prediction_pipeline import PixelPaws_ExtractFeatures
+    _filter_pose = None
+    if ctx.filtered:
+        from pose_filter import filter_pose as _filter_pose   # jump-gate defaults
+        import pandas as _pd
     fprog = ctx.videos / ".featprog.txt"          # extractor tqdm capture -> tracker reads frames/s
     first_new: Path | None = None
     for i, v in enumerate(vids, 1):
-        cache = feature_pkl(ctx.features, v)
+        cache = feature_pkl(ctx.features, v, ctx.feat_hash)
         if cache.is_file():
             step(f"features exist: {cache.name}")
             continue
@@ -319,11 +406,24 @@ def stage_features(ctx: Ctx, pairs):
             step(f"! no h5 for {v.name}, skip features")
             continue
         ctx.set_stage(stage="features", video=v.stem, idx=i, total=n)
-        step(f"features {i}/{n}: {v.stem}")
-        with open(fprog, "w", encoding="utf-8", errors="replace") as _fp, \
-                contextlib.redirect_stdout(_fp), contextlib.redirect_stderr(_fp):
-            X = PixelPaws_ExtractFeatures(pose_data_file=str(h5), video_file_path=str(v),
-                                          bp_include_list=None, config_yaml_path=None, **FEATURE_CFG)
+        step(f"features {i}/{n}: {v.stem}{' [filtered]' if ctx.filtered else ''}")
+        pose_path = str(h5)
+        tmp_h5 = None
+        if ctx.filtered:                          # clean the pose into a temp _ppfilt.h5 first
+            df = _pd.read_hdf(h5)
+            cleaned, _st = _filter_pose(df)
+            tmp_h5 = Path(str(h5)[:-3] + "_ppfilt.h5")
+            cleaned.to_hdf(tmp_h5, key="df_with_missing", mode="w")
+            pose_path = str(tmp_h5)
+        try:
+            with open(fprog, "w", encoding="utf-8", errors="replace") as _fp, \
+                    contextlib.redirect_stdout(_fp), contextlib.redirect_stderr(_fp):
+                X = PixelPaws_ExtractFeatures(pose_data_file=pose_path, video_file_path=str(v),
+                                              bp_include_list=None, config_yaml_path=None, **FEATURE_CFG)
+        finally:
+            if tmp_h5 is not None:                # don't leave the temp pose in videos/ (find_h5 excludes it anyway)
+                try: tmp_h5.unlink(missing_ok=True)
+                except Exception: pass
         tmp = cache.with_suffix(".pkl.tmp")
         with open(tmp, "wb") as f:
             pickle.dump(X, f)
@@ -333,8 +433,8 @@ def stage_features(ctx: Ctx, pairs):
     # Verify the first pkl PRODUCED this run; if none produced, verify any existing.
     target = first_new
     if target is None:
-        existing = [feature_pkl(ctx.features, v) for v in vids
-                    if feature_pkl(ctx.features, v).is_file()]
+        existing = [feature_pkl(ctx.features, v, ctx.feat_hash) for v in vids
+                    if feature_pkl(ctx.features, v, ctx.feat_hash).is_file()]
         target = existing[0] if existing else None
     if target is not None:
         ok = _verify_pkl(target)
@@ -347,12 +447,22 @@ def stage_features(ctx: Ctx, pairs):
 # --- orchestration ------------------------------------------------------------
 def run(cohort: str, proj, portal=None, sources=None,
         stages=ALL_STAGES, webhook: str = PROCESSING_WEBHOOK, dry: bool = False,
-        delete_source: bool = False):
+        delete_source: bool = False, filtered: bool = False):
     """Importable entry point. Returns the resolved (src, out) pairs."""
     proj = Path(proj)
-    ctx = Ctx(proj, cohort, webhook, dry, delete_source=delete_source)
+    lp = open_run_log(proj)
+    ctx = Ctx(proj, cohort, webhook, dry, delete_source=delete_source, filtered=filtered)
     pairs = resolve_sources(proj, portal, sources)
     stages = tuple(s for s in stages if s in ALL_STAGES)
+    step("=" * 70)
+    step(f"RUN START cohort={cohort} pid={os.getpid()} dry={dry} "
+         f"stages={','.join(stages)} sources={len(pairs)} "
+         f"del_source={delete_source} filtered={filtered}")
+    step(f"  proj={proj}")
+    step(f"  DLC python={DLC_PYTHON} | config={DLC_CONFIG} | shuffle={SHUFFLE} "
+         f"batch={DLC_BATCH} | feature_hash={ctx.feat_hash}")
+    if lp:
+        step(f"  log -> {lp}")
 
     if dry:
         step(f"=== DRY PLAN [{cohort}] — {len(pairs)} source(s), stages={','.join(stages)} ===")
@@ -367,7 +477,7 @@ def run(cohort: str, proj, portal=None, sources=None,
             if "dlc" in stages:
                 acts.append(f"dlc={'SKIP' if find_h5(out) else 'RUN'}")
             if "features" in stages:
-                acts.append(f"features={'SKIP' if feature_pkl(ctx.features, out).is_file() else 'RUN'}")
+                acts.append(f"features={'SKIP' if feature_pkl(ctx.features, out, ctx.feat_hash).is_file() else 'RUN'}")
             step(f"  {out.name:42s} | " + "  ".join(acts))
         step("=== DRY PLAN DONE (no compute run) ===")
         return pairs
@@ -378,15 +488,27 @@ def run(cohort: str, proj, portal=None, sources=None,
         except Exception:
             pass
     ctx.set_stage(stage="starting")
-    if "transcode" in stages:
-        step("=== TRANSCODE ===")
-        stage_transcode(ctx, pairs)
-    if "dlc" in stages:
-        step("=== DLC ===")
-        stage_dlc(ctx, pairs)
-    if "features" in stages:
-        step("=== FEATURES ===")
-        stage_features(ctx, pairs)
+    try:
+        if "transcode" in stages:
+            step("=== TRANSCODE ===")
+            stage_transcode(ctx, pairs)
+        if "dlc" in stages:
+            step("=== DLC ===")
+            stage_dlc(ctx, pairs)
+        if "features" in stages:
+            step("=== FEATURES ===")
+            stage_features(ctx, pairs)
+    except BaseException as e:
+        # Record the crash before it propagates — the whole point of the run log.
+        step(f"!!! RUN CRASHED ({type(e).__name__}): {e}")
+        step(traceback.format_exc())
+        ctx.set_stage(stage="crashed", error=f"{type(e).__name__}: {e}")
+        try:
+            ctx.note(f"💥 **[{cohort}] pipeline CRASHED** — {type(e).__name__}: {e}. "
+                     f"See `_run/pipeline.log`.")
+        except Exception:
+            pass
+        raise
     ctx.set_stage(stage="done")
     ctx.done.write_text(time.strftime("%Y-%m-%d %H:%M:%S"))
     step("PIPELINE DONE")
@@ -416,14 +538,44 @@ def _parse_args(argv=None):
                     help="OPT-IN: delete each original source file inline immediately after its "
                          "transcode output is verified (exists, >1MB, ffprobe-valid). Never deletes "
                          "~syncthing~/.tmp files. Default OFF so other cohorts are unaffected.")
+    ap.add_argument("--filter", dest="filtered", action="store_true",
+                    help="OPT-IN: run pose_filter (jump/teleport gate) on each DLC h5 before feature "
+                         "extraction, writing to the FILTERED_FEATURE_HASH cache "
+                         "(<stem>_features_8aed1c22f.pkl). Leaves the canonical 8aed1c22 cache untouched.")
+    ap.add_argument("--dlc-config", dest="dlc_config",
+                    help="OPT-IN: run the DLC stage against this config.yaml instead of pp_config's "
+                         "DLC_CONFIG. Use with --shuffle to select a non-default network for one "
+                         "cohort without changing the default for every other cohort.")
+    ap.add_argument("--shuffle", type=int,
+                    help="OPT-IN: DLC shuffle index, overriding pp_config's SHUFFLE. Also selects "
+                         "which *shuffle<N>*.h5 find_h5 treats as this run's output, so a cohort "
+                         "analyzed under two networks keeps both sets of tracks distinct.")
     return ap.parse_args(argv)
+
+
+def apply_dlc_override(dlc_config=None, shuffle=None):
+    """Rebind the module-level DLC_CONFIG / SHUFFLE used by stage_dlc and find_h5.
+
+    Both are read at call time, so rebinding here is enough. Kept as a function
+    (rather than threading them through run()) so the tracker and any importing
+    caller get the same override semantics as the CLI."""
+    global DLC_CONFIG, SHUFFLE
+    if dlc_config:
+        p = Path(dlc_config)
+        if not p.is_file():
+            raise SystemExit(f"--dlc-config not found: {p}")
+        DLC_CONFIG = str(p)
+    if shuffle is not None:
+        SHUFFLE = int(shuffle)
 
 
 def main(argv=None):
     a = _parse_args(argv)
+    apply_dlc_override(a.dlc_config, a.shuffle)
     stages = tuple(s.strip() for s in a.stages.split(",") if s.strip())
     run(cohort=a.cohort, proj=a.proj, portal=a.portal, sources=a.sources,
-        stages=stages, webhook=a.webhook, dry=a.dry, delete_source=a.delete_source)
+        stages=stages, webhook=a.webhook, dry=a.dry, delete_source=a.delete_source,
+        filtered=a.filtered)
 
 
 if __name__ == "__main__":

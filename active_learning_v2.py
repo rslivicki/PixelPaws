@@ -2230,11 +2230,16 @@ class BoutLabelingInterface:
     MAX_CLIP_FRAMES = 600   # cap to avoid memory issues on long clips
 
     def __init__(self, video_path: str, bouts: List[BoutCandidate],
-                 probas: np.ndarray, behavior_name: str, fps: float):
+                 probas: np.ndarray, behavior_name: str, fps: float,
+                 log_cb=None):
         self.video_path = video_path
         self.bouts = bouts
         self.probas = probas
         self.behavior_name = behavior_name
+        # Optional callback (msg:str)->None to mirror per-label confirmations into the
+        # main AL log. Wrapped so a failing/None callback never breaks labeling.
+        self._log_cb = log_cb
+        self._n_labeled = 0   # running count of bouts/spans labeled this session (for progress)
 
         self.cap = cv2.VideoCapture(video_path)
         self._total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -2257,6 +2262,7 @@ class BoutLabelingInterface:
         self._trace_ax = None
         self._trace_canvas_wgt = None
         self._cursor_line = None
+        self._goto_entry = None                # "Go to frame" input (set in _build_window)
         # Multi-span selection within ONE bout: a list of committed (start,end) spans
         # plus a single PENDING open mark. Mark In opens a span (sets _mark_in); Mark Out
         # closes it (appends to _mark_spans, clears _mark_in). Marking In→Out repeatedly —
@@ -2287,6 +2293,26 @@ class BoutLabelingInterface:
         return self._result_labels
 
     # ------------------------------------------------------------------
+    def _log(self, msg: str):
+        """Mirror a confirmation line into the main AL log (if a callback was given)."""
+        cb = self._log_cb
+        if cb is None:
+            return
+        try:
+            cb(msg)
+        except Exception:
+            pass
+
+    def _update_progress(self):
+        """Refresh the top-right progress readout: current bout, total, and running
+        count of labels committed this session."""
+        if self._progress_label is None:
+            return
+        idx = self._current_idx
+        self._progress_label.config(
+            text=f"Bout {idx + 1} / {len(self.bouts)}   ·   {self._n_labeled} labeled")
+
+    # ------------------------------------------------------------------
     def _build_window(self):
         try:
             root = tk._default_root
@@ -2310,7 +2336,7 @@ class BoutLabelingInterface:
         self._header_label = ttk.Label(hdr, text=f"Active Learning — {self.behavior_name}",
                                        font=(FONT_FAMILY, 13, 'bold'))
         self._header_label.pack(side='left')
-        self._progress_label = ttk.Label(hdr, text="", font=(FONT_FAMILY, 10))
+        self._progress_label = ttk.Label(hdr, text="", font=(FONT_FAMILY, 12, 'bold'))
         self._progress_label.pack(side='right')
 
         ttk.Separator(self._window, orient='horizontal').pack(fill='x', padx=8, pady=2)
@@ -2364,6 +2390,13 @@ class BoutLabelingInterface:
                    command=lambda: self._step_frame(-1)).pack(side='left', padx=6)
         ttk.Button(step_frame, text="Step (→) ▶", width=12,
                    command=lambda: self._step_frame(1)).pack(side='left', padx=6)
+        # Jump to an exact (absolute) frame number within the current clip.
+        ttk.Label(step_frame, text="Go to frame [G]:").pack(side='left', padx=(18, 3))
+        self._goto_entry = ttk.Entry(step_frame, width=8)
+        self._goto_entry.pack(side='left')
+        self._goto_entry.bind('<Return>', lambda e: (self._goto_frame(), 'break')[1])
+        ttk.Button(step_frame, text="Go",
+                   command=self._goto_frame).pack(side='left', padx=6)
 
         # Mark In / Mark Out row
         mark_frame = ttk.Frame(self._window)
@@ -2389,30 +2422,50 @@ class BoutLabelingInterface:
                   font=(FONT_FAMILY, 9), foreground='darkorange').pack(pady=1)
 
         ttk.Label(self._window,
-                  text="Shortcuts: Enter=save marked span as YES & next  Y=Yes (stay)  N=No  S=Skip  P=Prev bout  Space=Pause  ←/→=Step  I=Mark In  O=Mark Out  C=Clear",
+                  text="Shortcuts: Enter=save marked span as YES & next  Y=Yes (stay)  "
+                       "N=No (record negative)  S=Skip (record nothing, just advance)  "
+                       "P=Prev bout  Space=Pause  ←/→=Step  G=Go to frame  "
+                       "I=Mark In  O=Mark Out (again = extend span)  U/Bksp=Undo last mark  C=Clear all",
                   font=(FONT_FAMILY, 9), foreground='gray').pack(pady=2)
 
-        self._window.bind('y', lambda e: self._label_bout(1))
-        self._window.bind('Y', lambda e: self._label_bout(1))
-        self._window.bind('n', lambda e: self._label_bout(0))
-        self._window.bind('N', lambda e: self._label_bout(0))
-        self._window.bind('s', lambda e: self._skip_bout())
-        self._window.bind('S', lambda e: self._skip_bout())
-        self._window.bind('<space>', lambda e: self._toggle_pause())
-        self._window.bind('<Left>',  lambda e: self._step_frame(-1))
-        self._window.bind('<Right>', lambda e: self._step_frame(1))
-        self._window.bind('i', lambda e: self._set_mark_in())
-        self._window.bind('I', lambda e: self._set_mark_in())
-        self._window.bind('o', lambda e: self._set_mark_out())
-        self._window.bind('O', lambda e: self._set_mark_out())
-        self._window.bind('c', lambda e: self._clear_marks())
-        self._window.bind('C', lambda e: self._clear_marks())
-        self._window.bind('p', lambda e: self._previous_bout())
-        self._window.bind('P', lambda e: self._previous_bout())
-        self._window.bind('<Prior>', lambda e: self._previous_bout())  # PageUp
-        self._window.bind('<Return>', lambda e: self._on_enter())
-        self._window.bind('d', lambda e: self._toggle_dlc(flip=True))
-        self._window.bind('D', lambda e: self._toggle_dlc(flip=True))
+        # Wrap window-level shortcuts so they DON'T fire while the "Go to frame" box has
+        # focus (otherwise typing/Enter in the entry would also trigger label/step keys).
+        def g(fn):
+            def _h(e):
+                try:
+                    if isinstance(self._window.focus_get(), (tk.Entry, ttk.Entry)):
+                        return
+                except Exception:
+                    pass
+                return fn()
+            return _h
+
+        self._window.bind('y', g(lambda: self._label_bout(1)))
+        self._window.bind('Y', g(lambda: self._label_bout(1)))
+        self._window.bind('n', g(lambda: self._label_bout(0)))
+        self._window.bind('N', g(lambda: self._label_bout(0)))
+        self._window.bind('s', g(lambda: self._skip_bout()))
+        self._window.bind('S', g(lambda: self._skip_bout()))
+        self._window.bind('<space>', g(lambda: self._toggle_pause()))
+        self._window.bind('<Left>',  g(lambda: self._step_frame(-1)))
+        self._window.bind('<Right>', g(lambda: self._step_frame(1)))
+        self._window.bind('i', g(lambda: self._set_mark_in()))
+        self._window.bind('I', g(lambda: self._set_mark_in()))
+        self._window.bind('o', g(lambda: self._set_mark_out()))
+        self._window.bind('O', g(lambda: self._set_mark_out()))
+        self._window.bind('c', g(lambda: self._clear_marks()))
+        self._window.bind('C', g(lambda: self._clear_marks()))
+        self._window.bind('u', g(lambda: self._undo_last_mark()))
+        self._window.bind('U', g(lambda: self._undo_last_mark()))
+        self._window.bind('<BackSpace>', g(lambda: self._undo_last_mark()))
+        self._window.bind('p', g(lambda: self._previous_bout()))
+        self._window.bind('P', g(lambda: self._previous_bout()))
+        self._window.bind('<Prior>', g(lambda: self._previous_bout()))  # PageUp
+        self._window.bind('<Return>', g(lambda: self._on_enter()))
+        self._window.bind('d', g(lambda: self._toggle_dlc(flip=True)))
+        self._window.bind('D', g(lambda: self._toggle_dlc(flip=True)))
+        self._window.bind('g', lambda e: self._focus_goto())
+        self._window.bind('G', lambda e: self._focus_goto())
 
     # ------------------------------------------------------------------
     def _load_bout(self, idx: int):
@@ -2442,7 +2495,7 @@ class BoutLabelingInterface:
             self._total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
             self._current_video_path = bout.video_path
 
-        self._progress_label.config(text=f"Bout {idx + 1} of {len(self.bouts)}")
+        self._update_progress()
         if bout.video_path:
             vname = os.path.basename(bout.video_path)
             self._header_label.config(
@@ -2681,6 +2734,52 @@ class BoutLabelingInterface:
         self._loop_pos = max(0, min(len(self._loop_frames) - 1, target))
         self._render_loop_pos()
 
+    def _focus_goto(self):
+        """Put the cursor in the Go-to-frame box (pauses playback so the jump is visible)."""
+        if not self._window_open or getattr(self, '_goto_entry', None) is None:
+            return
+        self._paused = True
+        try:
+            self._goto_entry.focus_set()
+            self._goto_entry.select_range(0, 'end')
+        except Exception:
+            pass
+
+    def _goto_frame(self):
+        """Seek the clip to an absolute frame number typed in the Go-to-frame box. The
+        target is clamped to the current bout's clip range and playback is paused."""
+        if not self._window_open or not self._loop_frames:
+            return
+        if not (0 <= self._current_idx < len(self.bouts)):
+            return
+        raw = ''
+        try:
+            raw = self._goto_entry.get().strip()
+        except Exception:
+            pass
+        if not raw:
+            return
+        try:
+            target_abs = int(round(float(raw)))
+        except ValueError:
+            if self._sel_var:
+                self._sel_var.set(f"Go to frame: '{raw}' is not a number")
+            return
+        bout = self.bouts[self._current_idx]
+        clip_lo = bout.clip_start
+        clip_hi = bout.clip_start + len(self._loop_frames) - 1
+        clamped = max(clip_lo, min(clip_hi, target_abs))
+        self._paused = True
+        self._loop_pos = clamped - bout.clip_start
+        self._render_loop_pos()
+        try:
+            self._window.focus_set()   # release the entry so shortcuts work again
+        except Exception:
+            pass
+        if clamped != target_abs and self._sel_var:
+            self._sel_var.set(f"Go to frame: {target_abs} outside clip "
+                              f"[{clip_lo}–{clip_hi}] → jumped to {clamped}")
+
     def _set_mark_in(self):
         if not self._window_open or not self._loop_frames:
             return
@@ -2694,16 +2793,39 @@ class BoutLabelingInterface:
         if not self._window_open or not self._loop_frames:
             return
         bout = self.bouts[self._current_idx]
+        cur = bout.clip_start + self._loop_pos
         if self._mark_in is None:
-            # No open span — Mark In must come first.
-            if self._sel_var:
+            # No open span. If a span is already committed, pressing Out again EXTENDS the
+            # most recent span to the current frame (so you can grow/shrink it without
+            # re-marking In). With nothing marked at all, prompt for Mark In first.
+            if self._mark_spans:
+                last_s, last_e = self._mark_spans[-1]
+                # Anchor on whichever end of the last span is farther from the cursor so
+                # the span always spans from that anchor to the current frame.
+                anchor = last_s if abs(cur - last_s) >= abs(cur - last_e) else last_e
+                s, e = sorted((anchor, cur))
+                self._mark_spans[-1] = (s, e)
+                self._update_mark_display(bout)
+            elif self._sel_var:
                 self._sel_var.set("Selection: press Mark In [i] first")
             return
-        cur = bout.clip_start + self._loop_pos
         s, e = sorted((self._mark_in, cur))
         self._mark_spans.append((s, e))   # commit the span
         self._mark_in = None              # close it; ready for the next Mark In
         self._update_mark_display(bout)
+
+    def _undo_last_mark(self):
+        """Clear just the most recent mark: cancel a pending open Mark In, or if none is
+        open, remove the last committed span (so you can re-mark its Out) — unlike
+        Clear [C] which wipes every span on the bout."""
+        if not self._window_open:
+            return
+        if self._mark_in is not None:
+            self._mark_in = None
+        elif self._mark_spans:
+            self._mark_spans.pop()
+        if self._current_idx < len(self.bouts):
+            self._update_mark_display(self.bouts[self._current_idx])
 
     def _clear_marks(self):
         self._mark_in = None
@@ -2744,11 +2866,19 @@ class BoutLabelingInterface:
                 self._result_labels.pop(_k, None)
             self._bout_keys[self._current_idx] = []
             self._bout_fresh = False
+        _tag = "YES (positive)" if label == 1 else "NO (negative)"
+        _vname = os.path.basename(bout.video_path) if bout.video_path else ""
+        _vpart = f"{_vname} " if _vname else ""
         if not spans:
             # Full-bout label — record the whole core bout, then advance immediately.
             key = (bout.session_idx, bout.start_frame, bout.end_frame)
             self._result_labels[key] = label
             self._bout_keys.setdefault(self._current_idx, []).append(key)
+            self._n_labeled += 1
+            _nf = bout.end_frame - bout.start_frame + 1
+            self._log(f"Bout {self._current_idx + 1}/{len(self.bouts)}: marked {_tag} — "
+                      f"{_vpart}frames {bout.start_frame}–{bout.end_frame} ({_nf} frames).")
+            self._update_progress()
             self._advance_bout()
         else:
             # One label per marked span; stay on this bout so more spans can be added.
@@ -2756,6 +2886,10 @@ class BoutLabelingInterface:
                 key = (bout.session_idx, s, e)
                 self._result_labels[key] = label
                 self._bout_keys.setdefault(self._current_idx, []).append(key)
+                self._n_labeled += 1
+                self._log(f"Bout {self._current_idx + 1}/{len(self.bouts)}: marked {_tag} — "
+                          f"{_vpart}span {s}–{e} ({e - s + 1} frames).")
+            self._update_progress()
             self._clear_marks()
 
     def _skip_bout(self):
@@ -5148,6 +5282,7 @@ class ActiveLearningTabV2(ttk.Frame):
             probas=probas,
             behavior_name=bname,
             fps=fps,
+            log_cb=self._log_msg,
         )
         new_labels = interface.run()  # {(start, end): 0 or 1}
 

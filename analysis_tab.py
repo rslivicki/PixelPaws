@@ -13,7 +13,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import seaborn as sns
 from datetime import datetime
 
-from ui_utils import _bind_tight_layout_on_resize, _draw_canvas_fit, FONT_FAMILY
+from ui_utils import _bind_tight_layout_on_resize, _draw_canvas_fit, FONT_FAMILY, ToolTip, bind_mousewheel
 class AnalysisTab(ttk.Frame):
     """
     Analysis tab for batch processing results
@@ -23,7 +23,28 @@ class AnalysisTab(ttk.Frame):
     - Generate graphs
     - Export results
     """
-    
+
+    # Named analysis presets — one click fills bins / phases / stats for common paradigms.
+    # Sparse: only keys present are applied (mirrors the Gait/Limb GAIT_PRESETS pattern).
+    ANALYSIS_PRESETS = {
+        'Default': dict(bin_size=5, bin_unit='minutes', no_time_bins=False, fps=60,
+                        enable_phase=False, enable_stats=False),
+        'Formalin (2-phase)': dict(
+            bin_size=5, bin_unit='minutes', no_time_bins=False, fps=60,
+            enable_phase=True, acute_start=0, acute_end=10, phase2_start=10, phase2_end=60,
+            enable_stats=True, stats_test='auto', stats_paradigm='auto', timecourse_posthoc=True),
+    }
+
+    # Metric dropdown for the value graphs (Time Course / Individual Traces / Total Time):
+    # (label, results_df column, per-subject aggregation, y-axis label).
+    _GW_METRICS = [
+        ('Time in behavior (s)',   'Total_Time_s',          'sum',  'Time in Behavior (seconds)'),
+        ('Number of bouts',        'N_Bouts',               'sum',  'Number of Bouts'),
+        ('Mean bout duration (s)', 'Mean_Bout_Duration_s',  'mean', 'Mean Bout Duration (s)'),
+        ('Bout frequency (/min)',  'Bout_Frequency_per_min', 'mean', 'Bout Frequency (bouts/min)'),
+        ('% time',                 'Percent_Time',          'mean', 'Percent Time (%)'),
+    ]
+
     def __init__(self, parent, main_gui):
         super().__init__(parent)
         self.main_gui = main_gui
@@ -33,7 +54,13 @@ class AnalysisTab(ttk.Frame):
         self.key_df = None
         self.prediction_files = []
         self.results_df = None
-        
+        self.results_tree = None   # built lazily by the Results "individual" view
+        self._graph_win = None     # single reusable pop-out graph window
+        self._gw_axis = {}   # per-graph axis overrides: {view_label: {xmin,xmax,ymin,ymax}}
+        self._gw_metric_col = 'Total_Time_s'
+        self._gw_metric_agg = 'sum'
+        self._gw_metric_label = 'Time in Behavior (seconds)'
+
         # Multi-behavior support
         self.available_behaviors = {}  # {behavior_name: [file_info1, file_info2, ...]}
         self.selected_behaviors = []   # List of selected behavior names
@@ -45,133 +72,307 @@ class AnalysisTab(ttk.Frame):
         self.setup_ui()
     
     def setup_ui(self):
-        """Setup the Analysis tab UI"""
-        # Main container with scrollbar
-        canvas = tk.Canvas(self)
-        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        
-        # Title
-        title_frame = ttk.Frame(scrollable_frame)
-        title_frame.pack(fill='x', padx=20, pady=10)
-        
-        ttk.Label(
-            title_frame,
-            text="📊 Batch Analysis & Graphing",
-            font=(FONT_FAMILY, 16, 'bold')
-        ).pack(side='left')
-        
-        ttk.Button(
-            title_frame,
-            text="❓ Help",
-            command=self.show_help
-        ).pack(side='right')
-        
-        # Data Input Section
-        self.create_data_input_section(scrollable_frame)
-        
-        # Settings Section
-        self.create_settings_section(scrollable_frame)
-        
-        # Analysis Section
-        self.create_analysis_section(scrollable_frame)
-        
-        # Results Section
-        self.create_results_section(scrollable_frame)
+        """Dashboard layout: a scrollable control rail (subjects → key file → behaviors →
+        settings → Run Analysis) on the left, and an inline graph pane (+ results table) on the
+        right. Graph views render in place; the Statistics detail view opens in its own window."""
+        paned = ttk.Panedwindow(self, orient='horizontal')
+        paned.pack(fill='both', expand=True)
+
+        # ── LEFT: scrollable control rail ──
+        left_host = ttk.Frame(paned)
+        paned.add(left_host, weight=0)
+        lcanvas = tk.Canvas(left_host, width=560, highlightthickness=0)
+        lscroll = ttk.Scrollbar(left_host, orient='vertical', command=lcanvas.yview)
+        rail = ttk.Frame(lcanvas)
+        rail.bind('<Configure>', lambda e: lcanvas.configure(scrollregion=lcanvas.bbox('all')))
+        lcanvas.create_window((0, 0), window=rail, anchor='nw')
+        lcanvas.configure(yscrollcommand=lscroll.set)
+        lcanvas.pack(side='left', fill='both', expand=True)
+        lscroll.pack(side='right', fill='y')
+        try:
+            bind_mousewheel(lcanvas)
+        except Exception:
+            pass
+
+        title_frame = ttk.Frame(rail)
+        title_frame.pack(fill='x', padx=12, pady=(10, 2))
+        ttk.Label(title_frame, text="📈 Analysis",
+                  font=(FONT_FAMILY, 14, 'bold')).pack(side='left')
+        ttk.Button(title_frame, text="❓ Help", command=self.show_help).pack(side='right')
+
+        # Key file first — the main input; loading it fills the Subjects groups below.
+        self.create_data_input_section(rail)
+
+        # Subjects overview — every subject and its treatment group (grouped by treatment;
+        # click a column header to sort).
+        subj_lf = ttk.LabelFrame(rail, text="Subjects", padding=15)
+        subj_lf.pack(fill='x', padx=10, pady=6)
+        _stf = ttk.Frame(subj_lf); _stf.pack(fill='x')
+        self._an_sort_state = {}
+        _scols = ('subject', 'group')
+        self._an_tree = ttk.Treeview(_stf, columns=_scols, show='headings', height=7)
+        for _c, _t, _w, _a in (('subject', 'Subject', 260, 'w'), ('group', 'Group', 150, 'w')):
+            self._an_tree.heading(_c, text=_t, command=lambda c=_c: self._an_sort(c))
+            self._an_tree.column(_c, width=_w, anchor=_a)
+        _svsb = ttk.Scrollbar(_stf, orient='vertical', command=self._an_tree.yview)
+        self._an_tree.configure(yscrollcommand=_svsb.set)
+        self._an_tree.pack(side='left', fill='both', expand=True)
+        _svsb.pack(side='right', fill='y')
+        _sbar = ttk.Frame(subj_lf); _sbar.pack(fill='x', pady=(6, 0))
+        ttk.Button(_sbar, text="🔍 Rescan", command=self._dash_subjects_overview).pack(side='left')
+        ttk.Button(_sbar, text="Select all",
+                   command=lambda: self._an_tree.selection_set(self._an_tree.get_children())
+                   ).pack(side='left', padx=(6, 0))
+        ttk.Button(_sbar, text="Clear",
+                   command=lambda: self._an_tree.selection_remove(self._an_tree.get_children())
+                   ).pack(side='left', padx=(4, 0))
+        self._an_status = ttk.Label(_sbar, text="", foreground='#555')
+        self._an_status.pack(side='right')
+
+        # Settings · analysis actions.
+        self.create_settings_section(rail)
+        self.create_analysis_section(rail)
+
+        # ── RIGHT: Results / statistics table (graphs open in their own pop-out window) ──
+        right = ttk.Frame(paned)
+        paned.add(right, weight=1)
+        self.create_results_section(right)
+
+        # Fill the subjects overview for the current project.
+        try:
+            self._dash_subjects_overview()
+        except Exception:
+            pass
+
+    def _dash_show_graphs(self):
+        """Open (or refocus) the single reusable graph window and render into it. Safe no-op
+        until run_analysis has produced results_df; called automatically after Run Analysis and
+        by the "📈 Open Graphs" button."""
+        if self.results_df is None or len(self.results_df) == 0:
+            return
+        behaviors = self._gw_prepare_defaults()
+        if not behaviors:
+            return
+
+        win = getattr(self, '_graph_win', None)
+        if win is None or not win.winfo_exists():
+            win = tk.Toplevel(self.winfo_toplevel())
+            win.title("PixelPaws — Graphs")
+            sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+            w, h = int(sw * 0.60), int(sh * 0.80)
+            win.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+            win.minsize(760, 520)
+            self._graph_win = win
+
+            def _on_close():
+                self._graph_win = None
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
+            win.protocol("WM_DELETE_WINDOW", _on_close)
+        else:
+            win.deiconify()
+
+        for c in win.winfo_children():
+            c.destroy()
+        try:
+            self._gw_build(win, behaviors, show_close=False)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            ttk.Label(win, text=f"Could not render graphs:\n{e}",
+                      foreground='crimson', justify='left').pack(padx=10, pady=10)
+        win.lift()
+        try:
+            win.focus_force()
+        except Exception:
+            pass
+
+    def _dash_subjects_overview(self):
+        """Populate the Subjects table: every subject (project video), its group (from the key
+        file), and which classifier(s) have produced results in <project>/results/."""
+        tree = getattr(self, '_an_tree', None)
+        if tree is None:
+            return
+        for _i in tree.get_children():
+            tree.delete(_i)
+        proj = ''
+        if self.main_gui is not None:
+            try:
+                proj = self.main_gui.current_project_folder.get()
+            except Exception:
+                proj = ''
+        if not proj or not os.path.isdir(proj):
+            if hasattr(self, '_an_status'):
+                self._an_status.config(text="no project")
+            return
+
+        import glob as _g
+        # Subjects = video basenames under <project>/videos.
+        subjects = []
+        vdir = os.path.join(proj, 'videos')
+        if os.path.isdir(vdir):
+            for _ext in ('*.mp4', '*.avi', '*.mov', '*.wmv', '*.mkv'):
+                for vf in _g.glob(os.path.join(vdir, _ext)):
+                    _name = os.path.splitext(os.path.basename(vf))[0]
+                    _low = _name.lower()
+                    # skip DLC/overlay outputs (e.g. *_labeled, *DLC_Resnet*) — not real subjects
+                    if '_labeled' in _low or 'dlc_' in _low or 'dlc_resnet' in _low:
+                        continue
+                    subjects.append(_name)
+        subjects = sorted(set(subjects))
+        # Longest-first so prefix matching picks the most specific subject.
+        subjects_by_len = sorted(subjects, key=len, reverse=True)
+
+        # Group map — prefer the currently-loaded key file, else any Subject/Treatment sheet in
+        # the project (real projects name their key files variously, e.g. 2512_FormOxy_key.xlsx,
+        # not just key_file.csv).
+        group_map = {}
+        kdf = None
+        if getattr(self, 'key_df', None) is not None:
+            kdf = self.key_df
+        else:
+            def _first_key(paths):
+                # prefer files whose name mentions "key", then shortest path
+                for c in sorted(set(paths),
+                                key=lambda p: (0 if 'key' in os.path.basename(p).lower() else 1, len(p))):
+                    try:
+                        _d = (pd.read_excel(c, nrows=500) if c.lower().endswith('.xlsx')
+                              else pd.read_csv(c, nrows=500))
+                    except Exception:
+                        continue
+                    _cl = {col.lower(): col for col in _d.columns}
+                    if 'subject' in _cl and 'treatment' in _cl:
+                        return _d
+                return None
+            # Cheap first: project top level. Only walk the tree (key-named files) if needed.
+            kdf = _first_key(_g.glob(os.path.join(proj, '*.csv')) +
+                             _g.glob(os.path.join(proj, '*.xlsx')))
+            if kdf is None:
+                kdf = _first_key(_g.glob(os.path.join(proj, '**', '*key*.csv'), recursive=True) +
+                                 _g.glob(os.path.join(proj, '**', '*key*.xlsx'), recursive=True))
+        if kdf is not None:
+            try:
+                _cl = {col.lower(): col for col in kdf.columns}
+                sc, tc = _cl.get('subject'), _cl.get('treatment')
+                if sc and tc:
+                    group_map = {str(s): str(t) for s, t in zip(kdf[sc], kdf[tc])}
+            except Exception:
+                pass
+
+        rows = []
+        for subj in subjects:
+            grp = group_map.get(subj, '')
+            if not grp and group_map:
+                for s, t in group_map.items():
+                    if s and s in subj:
+                        grp = t
+                        break
+            rows.append((subj, grp or '—'))
+
+        # Default: grouped by treatment (sort by group, then subject).
+        rows.sort(key=lambda r: (r[1], r[0]))
+        for r in rows:
+            tree.insert('', 'end', values=r)
+
+        n_groups = len({g for _, g in rows if g and g != '—'})
+        if hasattr(self, '_an_status'):
+            self._an_status.config(text=f"{len(subjects)} subject(s) · {n_groups} group(s)")
+
+    def _an_sort(self, col):
+        """Sort the Subjects table by a column (toggles asc/desc on repeat clicks)."""
+        tree = getattr(self, '_an_tree', None)
+        if tree is None:
+            return
+        descending = self._an_sort_state.get(col, False)
+        items = [(tree.set(i, col), i) for i in tree.get_children('')]
+        items.sort(key=lambda t: t[0].lower(), reverse=descending)
+        for pos, (_v, i) in enumerate(items):
+            tree.move(i, '', pos)
+        self._an_sort_state[col] = not descending
     
     def create_data_input_section(self, parent):
-        """Create data input section"""
+        """Create data input section — key file up front; project rescan + prediction-folder /
+        filename-prefix fallbacks tucked behind an 'Advanced sources' toggle."""
         frame = ttk.LabelFrame(parent, text="📁 Data Input", padding=15)
         frame.pack(fill='x', padx=20, pady=10)
 
-        # ── Project folder row ────────────────────────────────────────────
-        proj_frame = ttk.Frame(frame)
-        proj_frame.pack(fill='x', pady=(5, 2))
+        self.analysis_project_var = tk.StringVar()   # internal; mirrors current_project_folder
 
-        ttk.Label(proj_frame, text="Project Folder:", width=15).pack(side='left')
-        self.analysis_project_var = tk.StringVar()
-        ttk.Entry(proj_frame, textvariable=self.analysis_project_var, width=38).pack(side='left', padx=5)
-        ttk.Button(proj_frame, text="Browse",
-                   command=self._browse_project_folder).pack(side='left')
-        ttk.Button(proj_frame, text="🔍 Scan All",
-                   command=lambda: self.scan_project_folder()).pack(side='left', padx=(6, 0))
-
-        ttk.Label(
-            frame,
-            text="Scan All recursively finds every prediction folder and key file in the project.",
-            font=(FONT_FAMILY, 9), foreground='gray'
-        ).pack(anchor='w', pady=(0, 6))
-
-        ttk.Separator(frame, orient='horizontal').pack(fill='x', pady=(0, 8))
-
-        # ── Key file ─────────────────────────────────────────────────────
+        # ── Key file (the one input users actually set) ──────────────────
         key_frame = ttk.Frame(frame)
         key_frame.pack(fill='x', pady=(0, 2))
-
-        ttk.Label(key_frame, text="Key File:", width=15).pack(side='left')
+        ttk.Label(key_frame, text="Key File:", width=13).pack(side='left')
         self.key_file_var = tk.StringVar()
         self.key_file_combo = ttk.Combobox(
-            key_frame, textvariable=self.key_file_var, state='normal', width=55,
-            values=['(use Scan All or browse manually)']
+            key_frame, textvariable=self.key_file_var, state='normal', width=26,
+            values=['(use Rescan or browse manually)']
         )
         self.key_file_combo.pack(side='left', padx=5)
         self.key_file_combo.bind('<<ComboboxSelected>>', self._on_key_file_combo_selected)
         ttk.Button(key_frame, text="Browse", command=self.browse_key_file).pack(side='left')
-        ttk.Button(key_frame, text="Generate…",
-                   command=self.generate_key_file).pack(side='left', padx=(4, 0))
+        _gen_btn = ttk.Button(key_frame, text="Generate…", command=self.generate_key_file)
+        _gen_btn.pack(side='left', padx=(4, 0))
+        ToolTip(self.key_file_combo, "CSV/XLSX with Subject, Treatment columns. "
+                "Auto-loaded from the project if present.")
+        ToolTip(_gen_btn, "Create a key_file.csv for this project (assign each subject a treatment).")
 
-        ttk.Label(
-            frame,
-            text="Key file must have columns: Subject, Treatment (CSV or XLSX).",
-            font=(FONT_FAMILY, 9), foreground='gray'
-        ).pack(anchor='w', pady=(0, 8))
+        # ── Advanced sources (rescan + predictions folder + filename prefix) ──
+        self._adv_src_shown = tk.BooleanVar(value=False)
+        adv_btn = ttk.Label(frame, text="▸ Advanced sources", foreground='#3a6ea5',
+                            cursor='hand2', font=(FONT_FAMILY, 9))
+        adv_btn.pack(anchor='w', pady=(6, 0))
+        adv_holder = ttk.Frame(frame)
 
-        # ── Predictions folder ────────────────────────────────────────────
-        pred_frame = ttk.Frame(frame)
-        pred_frame.pack(fill='x', pady=(0, 2))
+        def _toggle_adv(_e=None):
+            if self._adv_src_shown.get():
+                adv_holder.pack_forget()
+                adv_btn.config(text="▸ Advanced sources")
+                self._adv_src_shown.set(False)
+            else:
+                adv_holder.pack(fill='x', pady=(4, 0))
+                adv_btn.config(text="▾ Advanced sources")
+                self._adv_src_shown.set(True)
+        adv_btn.bind('<Button-1>', _toggle_adv)
 
-        ttk.Label(pred_frame, text="Predictions:", width=15).pack(side='left')
+        # Project rescan
+        rescan_frame = ttk.Frame(adv_holder)
+        rescan_frame.pack(fill='x', pady=(2, 2))
+        ttk.Label(rescan_frame, text="Project data:", width=13).pack(side='left')
+        self._analysis_proj_label = ttk.Label(rescan_frame, text="(current project)",
+                                              foreground='gray')
+        self._analysis_proj_label.pack(side='left', padx=5)
+        _rescan_btn = ttk.Button(rescan_frame, text="🔍 Rescan",
+                                 command=lambda: self.scan_project_folder())
+        _rescan_btn.pack(side='left', padx=(6, 0))
+        ToolTip(_rescan_btn, "Find every prediction folder and key file in the current project.")
+
+        # Predictions folder
+        pred_frame = ttk.Frame(adv_holder)
+        pred_frame.pack(fill='x', pady=(2, 2))
+        ttk.Label(pred_frame, text="Predictions:", width=13).pack(side='left')
         self.pred_folder_var = tk.StringVar()
         self.pred_folder_combo = ttk.Combobox(
-            pred_frame, textvariable=self.pred_folder_var, state='normal', width=55,
-            values=['(use Scan All or browse manually)']
+            pred_frame, textvariable=self.pred_folder_var, state='normal', width=28,
+            values=['(use Rescan or browse manually)']
         )
         self.pred_folder_combo.pack(side='left', padx=5)
         self.pred_folder_combo.bind('<<ComboboxSelected>>', self._on_pred_folder_combo_selected)
-        ttk.Button(pred_frame, text="Browse Folder", command=self.browse_predictions).pack(side='left')
+        ttk.Button(pred_frame, text="Browse", command=self.browse_predictions).pack(side='left')
+        ToolTip(self.pred_folder_combo, "Folder of prediction CSVs from batch processing "
+                "(auto-detected; usually the project's results/ folder).")
 
-        ttk.Label(
-            frame,
-            text="Folder containing prediction CSV files from batch processing.",
-            font=(FONT_FAMILY, 9), foreground='gray'
-        ).pack(anchor='w', pady=(0, 8))
-
-        # ── Filename prefix ───────────────────────────────────────────────
-        prefix_frame = ttk.Frame(frame)
-        prefix_frame.pack(fill='x', pady=(0, 4))
-
-        ttk.Label(prefix_frame, text="Filename Prefix:", width=15).pack(side='left')
-        ttk.Entry(prefix_frame, textvariable=self.filename_prefix_var, width=35).pack(side='left', padx=5)
+        # Filename prefix (fallback only)
+        prefix_frame = ttk.Frame(adv_holder)
+        prefix_frame.pack(fill='x', pady=(2, 2))
+        ttk.Label(prefix_frame, text="Filename Prefix:", width=13).pack(side='left')
+        _pfx = ttk.Entry(prefix_frame, textvariable=self.filename_prefix_var, width=24)
+        _pfx.pack(side='left', padx=5)
         ttk.Button(prefix_frame, text="Clear",
                    command=lambda: self.filename_prefix_var.set('')).pack(side='left')
-
-        ttk.Label(
-            frame,
-            text="Fallback only: strip this prefix then take the next token as subject ID. "
-                 "Key-file token matching is tried first.",
-            font=(FONT_FAMILY, 9), foreground='gray'
-        ).pack(anchor='w', pady=2)
+        ToolTip(_pfx, "Fallback only: strip this prefix, then take the next token as the subject "
+                "ID. Key-file token matching is tried first.")
 
         # ── Status ────────────────────────────────────────────────────────
         self.data_status_label = ttk.Label(frame, text="", foreground='gray')
@@ -189,7 +390,20 @@ class AnalysisTab(ttk.Frame):
         """Create settings section"""
         frame = ttk.LabelFrame(parent, text="⚙️ Analysis Settings", padding=15)
         frame.pack(fill='x', padx=20, pady=10)
-        
+
+        # Preset selector — fills bins / phases / stats below in one click.
+        preset_frame = ttk.Frame(frame)
+        preset_frame.pack(fill='x', pady=(0, 6))
+        ttk.Label(preset_frame, text="Preset:", width=15).pack(side='left')
+        self.analysis_preset_var = tk.StringVar(value='Default')
+        _preset_combo = ttk.Combobox(
+            preset_frame, textvariable=self.analysis_preset_var,
+            values=list(self.ANALYSIS_PRESETS.keys()), state='readonly', width=22)
+        _preset_combo.pack(side='left', padx=5)
+        _preset_combo.bind('<<ComboboxSelected>>', self._apply_analysis_preset)
+        ttk.Label(preset_frame, text="(fills bins / phases / stats below)",
+                  font=(FONT_FAMILY, 9), foreground='gray').pack(side='left', padx=6)
+
         # Time binning
         bin_frame = ttk.Frame(frame)
         bin_frame.pack(fill='x', pady=5)
@@ -218,124 +432,34 @@ class AnalysisTab(ttk.Frame):
             command=self._toggle_bin_size_spinbox
         )
         self.no_bins_check.pack(side='left', padx=(15, 0))
+        ToolTip(self.bin_size_spinbox,
+                "Each video is divided into bins of this duration for time-course analysis.")
 
-        ttk.Label(
-            frame,
-            text="Video will be divided into bins of this duration",
-            font=(FONT_FAMILY, 9),
-            foreground='gray'
-        ).pack(anchor='w', pady=2)
-        
         # FPS setting
         fps_frame = ttk.Frame(frame)
         fps_frame.pack(fill='x', pady=5)
-        
+
         ttk.Label(fps_frame, text="Video FPS:", width=15).pack(side='left')
         self.fps_var = tk.IntVar(value=60)
-        ttk.Spinbox(
-            fps_frame,
-            from_=1,
-            to=120,
-            textvariable=self.fps_var,
-            width=10
-        ).pack(side='left', padx=5)
+        _fps_spin = ttk.Spinbox(fps_frame, from_=1, to=120,
+                                textvariable=self.fps_var, width=10)
+        _fps_spin.pack(side='left', padx=5)
         ttk.Label(fps_frame, text="frames/second").pack(side='left', padx=5)
-        ttk.Button(
-            fps_frame,
-            text="Auto-Detect",
-            command=self.auto_detect_fps
-        ).pack(side='left')
-        
-        ttk.Label(
-            frame,
-            text="Frame rate of videos (used for time calculations)",
-            font=(FONT_FAMILY, 9),
-            foreground='gray'
-        ).pack(anchor='w', pady=2)
+        ttk.Button(fps_frame, text="Auto-Detect",
+                   command=self.auto_detect_fps).pack(side='left')
+        ToolTip(_fps_spin, "Frame rate of the videos, used for all time calculations. "
+                "Use Auto-Detect to read it from a video.")
 
-        # Statistical Testing
-        ttk.Separator(frame, orient='horizontal').pack(fill='x', pady=10)
-        
-        ttk.Label(
-            frame,
-            text="Statistical Testing (Optional)",
-            font=(FONT_FAMILY, 11, 'bold')
-        ).pack(anchor='w', pady=5)
-        
+        # ── Stats + metrics state (no UI) ────────────────────────────────
+        # All metrics are auto-computed; significance markers are toggled in the graph pane
+        # ("Sig. markers") and full group comparisons live in the Results panel, so these need
+        # no left-rail controls — just their backing variables with sensible defaults.
         self.enable_stats_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            frame,
-            text="Add significance markers to graphs",
-            variable=self.enable_stats_var,
-            command=self.toggle_stats_settings
-        ).pack(anchor='w', pady=5)
-        
-        # Stats settings (initially hidden)
-        self.stats_settings_frame = ttk.Frame(frame)
-        
-        # Test type selection
-        test_frame = ttk.Frame(self.stats_settings_frame)
-        test_frame.pack(fill='x', pady=5)
-        ttk.Label(test_frame, text="Test Type:", width=15).pack(side='left')
         self.stats_test_var = tk.StringVar(value='auto')
-        ttk.Radiobutton(test_frame, text="Auto (2 groups: t-test, >2 groups: ANOVA)", 
-                       variable=self.stats_test_var, value='auto').pack(anchor='w', padx=20)
-        ttk.Radiobutton(test_frame, text="T-test (unpaired)", 
-                       variable=self.stats_test_var, value='ttest').pack(anchor='w', padx=20)
-        ttk.Radiobutton(test_frame, text="ANOVA with post-hoc", 
-                       variable=self.stats_test_var, value='anova').pack(anchor='w', padx=20)
-        
-        # Significance level
-        alpha_frame = ttk.Frame(self.stats_settings_frame)
-        alpha_frame.pack(fill='x', pady=5)
-        ttk.Label(alpha_frame, text="Significance level:", width=15).pack(side='left')
         self.stats_alpha_var = tk.DoubleVar(value=0.05)
-        ttk.Radiobutton(alpha_frame, text="p < 0.05", variable=self.stats_alpha_var, value=0.05).pack(side='left', padx=5)
-        ttk.Radiobutton(alpha_frame, text="p < 0.01", variable=self.stats_alpha_var, value=0.01).pack(side='left', padx=5)
-        ttk.Radiobutton(alpha_frame, text="p < 0.001", variable=self.stats_alpha_var, value=0.001).pack(side='left', padx=5)
-
-        # Paradigm
-        par_frame = ttk.Frame(self.stats_settings_frame)
-        par_frame.pack(fill='x', pady=5)
-        ttk.Label(par_frame, text="Paradigm:", width=15).pack(side='left')
-        self.stats_paradigm_var = tk.StringVar(value='parametric')
-        ttk.Radiobutton(par_frame, text="Parametric",
-                        variable=self.stats_paradigm_var, value='parametric').pack(anchor='w', padx=20)
-        ttk.Radiobutton(par_frame, text="Non-parametric",
-                        variable=self.stats_paradigm_var, value='nonparametric').pack(anchor='w', padx=20)
-        ttk.Radiobutton(par_frame, text="Auto (Shapiro-Wilk)",
-                        variable=self.stats_paradigm_var, value='auto').pack(anchor='w', padx=20)
-
-        # Time course specific option
-        ttk.Separator(self.stats_settings_frame, orient='horizontal').pack(fill='x', pady=5)
-        ttk.Label(self.stats_settings_frame, text="Time Course Options:", font=(FONT_FAMILY, 9, 'bold')).pack(anchor='w')
-        
+        self.stats_paradigm_var = tk.StringVar(value='auto')
         self.timecourse_posthoc_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            self.stats_settings_frame,
-            text="Show pairwise post-hoc at each timepoint (adds detail to Statistics tab)",
-            variable=self.timecourse_posthoc_var
-        ).pack(anchor='w', padx=20, pady=2)
-        
-        ttk.Label(
-            self.stats_settings_frame,
-            text="Note: Graph markers show overall ANOVA result. Post-hoc details in Statistics tab.",
-            font=(FONT_FAMILY, 8),
-            foreground='gray'
-        ).pack(anchor='w', padx=20, pady=2)
-        
-        ttk.Label(
-            self.stats_settings_frame,
-            text="* p<0.05, ** p<0.01, *** p<0.001, ns = not significant",
-            font=(FONT_FAMILY, 9),
-            foreground='gray'
-        ).pack(anchor='w', pady=2)
-
-        # Metrics selection
-        ttk.Label(frame, text="Metrics to Calculate:", font=(FONT_FAMILY, 10, 'bold')).pack(anchor='w', pady=(10, 5))
-        
-        metrics_frame = ttk.Frame(frame)
-        metrics_frame.pack(fill='x', pady=5)
+        self.stats_settings_frame = ttk.Frame(frame)   # kept (unpacked) for toggle_stats_settings
 
         self.metric_time = tk.BooleanVar(value=True)
         self.metric_bouts = tk.BooleanVar(value=True)
@@ -344,64 +468,45 @@ class AnalysisTab(ttk.Frame):
         self.metric_percent = tk.BooleanVar(value=True)
         self.metric_frequency = tk.BooleanVar(value=True)
 
-        ttk.Checkbutton(metrics_frame, text="Total Time (s)", variable=self.metric_time).grid(row=0, column=0, sticky='w', padx=(0, 20))
-        ttk.Checkbutton(metrics_frame, text="Number of Bouts", variable=self.metric_bouts).grid(row=0, column=1, sticky='w')
-        ttk.Checkbutton(metrics_frame, text="Mean Bout Duration", variable=self.metric_mean_bout).grid(row=1, column=0, sticky='w', padx=(0, 20))
-        ttk.Checkbutton(metrics_frame, text="AUC (Cumulative)", variable=self.metric_auc).grid(row=1, column=1, sticky='w')
-        ttk.Checkbutton(metrics_frame, text="Percentage of Time", variable=self.metric_percent).grid(row=2, column=0, sticky='w', padx=(0, 20))
-        ttk.Checkbutton(metrics_frame, text="Bout Frequency (bouts/min)", variable=self.metric_frequency).grid(row=2, column=1, sticky='w')
-        
-        # Formalin Phase Analysis
-        ttk.Separator(frame, orient='horizontal').pack(fill='x', pady=15)
-        ttk.Label(frame, text="🧪 Phase Analysis (Optional):", font=(FONT_FAMILY, 10, 'bold')).pack(anchor='w', pady=(5, 5))
-        
+        # ── Phase Analysis — revealed only when the Formalin preset is selected ─────────
+        self.phase_section = ttk.Frame(frame)   # packed by _apply_analysis_preset for Formalin
+        ttk.Separator(self.phase_section, orient='horizontal').pack(fill='x', pady=(10, 6))
+        ttk.Label(self.phase_section, text="\U0001f9ea Phase Analysis (Formalin)",
+                  font=(FONT_FAMILY, 10, 'bold')).pack(anchor='w', pady=(0, 4))
         self.enable_phase_analysis = tk.BooleanVar(value=False)
         ttk.Checkbutton(
-            frame, 
+            self.phase_section,
             text="Enable phase-specific analysis (Acute & Phase II)",
             variable=self.enable_phase_analysis,
             command=self.toggle_phase_settings
-        ).pack(anchor='w', pady=5)
-        
-        # Phase settings container
-        self.phase_settings_frame = ttk.Frame(frame)
-        
-        # Acute Phase
+        ).pack(anchor='w', pady=(0, 4))
+
+        # Phase settings container (spinboxes)
+        self.phase_settings_frame = ttk.Frame(self.phase_section)
         acute_frame = ttk.LabelFrame(self.phase_settings_frame, text="Acute Phase", padding=10)
         acute_frame.grid(row=0, column=0, padx=5, pady=5, sticky='ew')
-        
         ttk.Label(acute_frame, text="Start Time:").grid(row=0, column=0, sticky='w', padx=2)
         self.acute_start_var = tk.IntVar(value=0)
         ttk.Spinbox(acute_frame, from_=0, to=60, textvariable=self.acute_start_var, width=8).grid(row=0, column=1, padx=2)
         ttk.Label(acute_frame, text="min").grid(row=0, column=2, sticky='w', padx=2)
-        
         ttk.Label(acute_frame, text="End Time:").grid(row=1, column=0, sticky='w', padx=2, pady=5)
         self.acute_end_var = tk.IntVar(value=10)
         ttk.Spinbox(acute_frame, from_=0, to=60, textvariable=self.acute_end_var, width=8).grid(row=1, column=1, padx=2, pady=5)
         ttk.Label(acute_frame, text="min").grid(row=1, column=2, sticky='w', padx=2)
-        
-        # Phase II
         phase2_frame = ttk.LabelFrame(self.phase_settings_frame, text="Phase II", padding=10)
         phase2_frame.grid(row=0, column=1, padx=5, pady=5, sticky='ew')
-        
         ttk.Label(phase2_frame, text="Start Time:").grid(row=0, column=0, sticky='w', padx=2)
         self.phase2_start_var = tk.IntVar(value=10)
         ttk.Spinbox(phase2_frame, from_=0, to=120, textvariable=self.phase2_start_var, width=8).grid(row=0, column=1, padx=2)
         ttk.Label(phase2_frame, text="min").grid(row=0, column=2, sticky='w', padx=2)
-        
         ttk.Label(phase2_frame, text="End Time:").grid(row=1, column=0, sticky='w', padx=2, pady=5)
         self.phase2_end_var = tk.IntVar(value=60)
         ttk.Spinbox(phase2_frame, from_=0, to=120, textvariable=self.phase2_end_var, width=8).grid(row=1, column=1, padx=2, pady=5)
         ttk.Label(phase2_frame, text="min").grid(row=1, column=2, sticky='w', padx=2)
-        
-        ttk.Label(
-            self.phase_settings_frame,
-            text="Phase analysis calculates total time in each phase period",
-            font=(FONT_FAMILY, 9),
-            foreground='gray'
-        ).grid(row=1, column=0, columnspan=2, sticky='w', pady=5)
-        
-        # Initially hidden
+        ttk.Label(self.phase_settings_frame,
+                  text="Phase analysis calculates total time in each phase period",
+                  font=(FONT_FAMILY, 9), foreground='gray').grid(row=1, column=0, columnspan=2, sticky='w', pady=5)
+        # phase_section stays unpacked here; the preset drives its visibility.
         self.toggle_phase_settings()
 
     def toggle_phase_settings(self):
@@ -418,6 +523,43 @@ class AnalysisTab(ttk.Frame):
         else:
             self.bin_size_spinbox.config(state='normal')
 
+    def _apply_analysis_preset(self, event=None):
+        """Fill analysis settings from the selected named preset. Only keys present in the
+        preset are applied, so sparse presets don't clobber unrelated settings."""
+        p = self.ANALYSIS_PRESETS.get(self.analysis_preset_var.get())
+        if not p:
+            return
+        _map = [
+            ('bin_size', 'bin_size_var'), ('bin_unit', 'bin_unit_var'),
+            ('no_time_bins', 'no_time_bins_var'), ('fps', 'fps_var'),
+            ('enable_phase', 'enable_phase_analysis'),
+            ('acute_start', 'acute_start_var'), ('acute_end', 'acute_end_var'),
+            ('phase2_start', 'phase2_start_var'), ('phase2_end', 'phase2_end_var'),
+            ('enable_stats', 'enable_stats_var'), ('stats_test', 'stats_test_var'),
+            ('stats_paradigm', 'stats_paradigm_var'),
+            ('timecourse_posthoc', 'timecourse_posthoc_var'),
+        ]
+        for key, attr in _map:
+            if key in p and hasattr(self, attr):
+                try:
+                    getattr(self, attr).set(p[key])
+                except Exception:
+                    pass
+        # Refresh dependent frames / enabled states.
+        for fn in ('toggle_phase_settings', 'toggle_stats_settings', '_toggle_bin_size_spinbox'):
+            try:
+                getattr(self, fn)()
+            except Exception:
+                pass
+        # Reveal the Phase Analysis section only when the preset enables phases (Formalin).
+        try:
+            if self.enable_phase_analysis.get():
+                self.phase_section.pack(fill='x', padx=0, pady=(4, 6))
+            else:
+                self.phase_section.pack_forget()
+        except Exception:
+            pass
+
     def create_analysis_section(self, parent):
         """Create analysis section"""
         frame = ttk.LabelFrame(parent, text="📊 Analysis", padding=15)
@@ -428,12 +570,20 @@ class AnalysisTab(ttk.Frame):
         
         self.run_btn = ttk.Button(
             btn_frame,
-            text="🚀 Run Analysis",
+            text="▶ RUN ANALYSIS",
             command=self.run_analysis,
             style='Accent.TButton'
         )
         self.run_btn.pack(side='left', padx=5)
-        
+
+        self.analysis_stop_btn = ttk.Button(
+            btn_frame,
+            text="■ Stop",
+            command=self._cancel_analysis,
+            state='disabled'
+        )
+        self.analysis_stop_btn.pack(side='left', padx=5)
+
         self.export_btn = ttk.Button(
             btn_frame,
             text="💾 Export Results",
@@ -444,8 +594,8 @@ class AnalysisTab(ttk.Frame):
         
         self.graph_btn = ttk.Button(
             btn_frame,
-            text="📈 Generate Graphs",
-            command=self.generate_graphs,
+            text="📈 Open Graphs",
+            command=self._dash_show_graphs,
             state='disabled'
         )
         self.graph_btn.pack(side='left', padx=5)
@@ -455,32 +605,88 @@ class AnalysisTab(ttk.Frame):
         self.progress_label.pack(anchor='w', pady=5)
     
     def create_results_section(self, parent):
-        """Create results display section"""
+        """Create results display section — a view dropdown (statistical comparisons /
+        individual subject results) over a swappable content holder."""
         frame = ttk.LabelFrame(parent, text="📋 Results", padding=15)
         frame.pack(fill='both', expand=True, padx=20, pady=10)
-        
-        # Create treeview for results
-        tree_frame = ttk.Frame(frame)
+
+        header = ttk.Frame(frame)
+        header.pack(fill='x', pady=(0, 6))
+        ttk.Label(header, text="Show:").pack(side='left')
+        self.results_view_var = tk.StringVar(value='Statistical comparisons')
+        self.results_view_combo = ttk.Combobox(
+            header, textvariable=self.results_view_var, state='readonly', width=26,
+            values=['Statistical comparisons', 'Individual subject results'])
+        self.results_view_combo.pack(side='left', padx=6)
+        self.results_view_combo.bind('<<ComboboxSelected>>', lambda e: self._render_results_view())
+
+        self._results_holder = ttk.Frame(frame)
+        self._results_holder.pack(fill='both', expand=True)
+        self._results_placeholder = ttk.Label(
+            self._results_holder,
+            text="Run analysis to see statistics and per-subject metrics here.",
+            foreground='gray')
+        self._results_placeholder.pack(expand=True, pady=20)
+
+    def _build_results_tree(self, parent):
+        """Build the per-bin per-subject Treeview (individual view) inside parent."""
+        tree_frame = ttk.Frame(parent)
         tree_frame.pack(fill='both', expand=True)
-        
-        # Scrollbars
         vsb = ttk.Scrollbar(tree_frame, orient="vertical")
         hsb = ttk.Scrollbar(tree_frame, orient="horizontal")
-        
         self.results_tree = ttk.Treeview(
-            tree_frame,
-            yscrollcommand=vsb.set,
-            xscrollcommand=hsb.set,
-            show='headings'
-        )
-        
+            tree_frame, yscrollcommand=vsb.set, xscrollcommand=hsb.set, show='headings')
         vsb.config(command=self.results_tree.yview)
         hsb.config(command=self.results_tree.xview)
-        
         vsb.pack(side='right', fill='y')
         hsb.pack(side='bottom', fill='x')
         self.results_tree.pack(fill='both', expand=True)
-    
+
+    def _render_results_view(self):
+        """Render the selected Results view (stats comparisons or individual table) for the
+        behavior currently selected in the graph pane."""
+        holder = getattr(self, '_results_holder', None)
+        if holder is None:
+            return
+        for w in holder.winfo_children():
+            w.destroy()
+        self._results_placeholder = None
+
+        if self.results_df is None or len(self.results_df) == 0:
+            ttk.Label(holder, text="Run analysis to see statistics and per-subject metrics here.",
+                      foreground='gray').pack(expand=True, pady=20)
+            return
+
+        # Behavior follows the graph pane's selector; fall back to the first behavior.
+        beh = None
+        if getattr(self, '_gw_behavior_var', None) is not None:
+            beh = self._gw_behavior_var.get()
+        behaviors = sorted(self.results_df['Behavior'].dropna().unique())
+        if beh not in behaviors:
+            beh = behaviors[0] if behaviors else None
+
+        view = self.results_view_var.get()
+        if view == 'Individual subject results' or beh is None:
+            self._build_results_tree(holder)
+            self.display_results()
+        else:
+            # Statistical comparisons for the selected behavior (exclude phase-aggregate rows).
+            bdf = self.results_df[self.results_df['Behavior'] == beh]
+            if 'Bin_Index' in bdf.columns:
+                bdf = bdf[bdf['Bin_Index'] != -1]
+            # Honour the graph's Window control so stats match what's plotted.
+            _w = getattr(self, 'time_window', None)
+            if _w and 'Bin_Start_Min' in bdf.columns:
+                bdf = bdf[bdf['Bin_Start_Min'] <= _w]
+            try:
+                self.create_statistics_tab(None, beh, bdf.copy(),
+                                           graph_rebuild_fns=[], container=holder)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                ttk.Label(holder, text=f"Could not build statistics:\n{e}",
+                          foreground='crimson', justify='left').pack(padx=10, pady=10)
+
     def browse_key_file(self):
         """Browse for key file"""
         filepath = filedialog.askopenfilename(
@@ -552,6 +758,11 @@ class AnalysisTab(ttk.Frame):
             if os.path.isfile(saved_path):
                 self.key_file_var.set(saved_path)
                 self.load_key_file(saved_path)
+            # Refresh the merged Batch tab's group column now that groups are assigned.
+            try:
+                self.main_gui._ba_scan_sessions()
+            except Exception:
+                pass
 
         KeyFileGeneratorDialog(
             self.winfo_toplevel(), folder, basenames,
@@ -631,11 +842,18 @@ class AnalysisTab(ttk.Frame):
             except Exception:
                 pass
         if not project_folder or not os.path.isdir(project_folder):
-            messagebox.showwarning(
-                "Scan", "Please set a project folder first (or open a project in the main window).")
+            try:
+                self.data_status_label.config(text="No project loaded.", foreground='gray')
+            except Exception:
+                pass
             return
 
         self.analysis_project_var.set(project_folder)
+        try:
+            self._analysis_proj_label.config(
+                text=os.path.basename(project_folder.rstrip('/\\')) or project_folder)
+        except Exception:
+            pass
         self.data_status_label.config(text="Scanning…", foreground='blue')
         self.update_idletasks()
 
@@ -704,9 +922,6 @@ class AnalysisTab(ttk.Frame):
                 for p, n in sorted_pred
             ]
             self.pred_folder_combo.configure(values=pred_labels)
-            if len(sorted_pred) == 1:
-                self.pred_folder_combo.current(0)
-                self._on_pred_folder_combo_selected()
         else:
             self.pred_folder_combo.configure(values=['(no prediction files found)'])
             self._pred_scan_paths = []
@@ -734,6 +949,25 @@ class AnalysisTab(ttk.Frame):
             text=f"Scan complete: {n_pred} prediction folder(s), {n_key} key file candidate(s)",
             foreground=colour
         )
+
+        # Auto-load predictions so the tab is runnable without opening Advanced sources. Prefer a
+        # top-level results/ folder (covers the old per-subject *_PixelPaws_Results layout, where
+        # each subject is its own folder and none would otherwise be auto-selected); scan_predictions
+        # walks it (both old + new formats) and refreshes the status.
+        _auto_pred = None
+        for _cand in ('results', 'Results', 'PixelPaws_Results'):
+            _rp = os.path.join(project_folder, _cand)
+            if os.path.isdir(_rp):
+                _auto_pred = _rp
+                break
+        if _auto_pred is None and len(sorted_pred) == 1:
+            _auto_pred = sorted_pred[0][0]
+        if _auto_pred:
+            try:
+                self.pred_folder_var.set(_auto_pred)
+                self.scan_predictions(_auto_pred)
+            except Exception:
+                pass
 
     def _on_pred_folder_combo_selected(self, event=None):
         """Called when user picks a predictions folder from the dropdown."""
@@ -973,13 +1207,15 @@ class AnalysisTab(ttk.Frame):
         # Split into parts
         parts = name.split('_')
         
-        # Find "PixelPaws" marker - behavior comes after it
-        if 'PixelPaws' in parts:
-            pixelpaws_idx = parts.index('PixelPaws')
-            # Everything after PixelPaws is the behavior name
-            behavior_parts = parts[pixelpaws_idx + 1:]
-            if behavior_parts:
-                return '_'.join(behavior_parts)
+        # Behavior is whatever follows the source/classifier marker (PixelPaws, BAREfoot, …).
+        # This groups e.g. "<subject>_BAREfoot_Flinching" → "Flinching" for every subject,
+        # instead of fragmenting into one behavior per subject.
+        for _marker in ('PixelPaws', 'BAREfoot'):
+            if _marker in parts:
+                _idx = len(parts) - 1 - parts[::-1].index(_marker)  # last occurrence
+                behavior_parts = parts[_idx + 1:]
+                if behavior_parts:
+                    return '_'.join(behavior_parts)
         
         # Fallback: Try to extract after classifier name pattern
         # Look for patterns like "Left_licking", "Right_licking", "Scratching"
@@ -991,8 +1227,12 @@ class AnalysisTab(ttk.Frame):
             # Skip if it's a date (6 digits) or subject ID (4 digits)
             if part.isdigit() and len(part) in [4, 6]:
                 continue
-            # Skip common experiment/metadata words
-            if part.lower() in ['pixelpaws', 'results', 'formalin', 'formoxy']:
+            # Skip common experiment/metadata words + source markers
+            if part.lower() in ['pixelpaws', 'barefoot', 'results', 'formalin', 'formoxy']:
+                continue
+            # Skip subject-like tokens (e.g. S1, S10, sub03)
+            import re as _re
+            if _re.fullmatch(r'(?i)(s|sub|subject)?\d{1,3}', part):
                 continue
             filtered_parts.append(part)
         
@@ -1077,122 +1317,156 @@ class AnalysisTab(ttk.Frame):
         """Log message (helper method for compatibility)"""
         print(message)
     
-    def run_analysis(self):
-        """Run the batch analysis"""
+    def _cancel_analysis(self):
+        """Request cancellation of an in-progress run_analysis (checked between files)."""
+        self._analysis_cancel = True
+        try:
+            self.progress_label.config(text="Stopping…")
+        except Exception:
+            pass
+
+    def run_analysis(self, silent=False):
+        """Run the batch analysis. Runs on the main thread but stays cancellable: a Stop button
+        sets self._analysis_cancel, and self.update() is pumped between files so the click lands.
+        (Full background threading isn't used because analyze_single_file reads Tk phase vars.)
+
+        silent=True suppresses the completion/confirm dialogs (used by the batch→analysis
+        auto-handoff, which shows its own unified message)."""
+        if getattr(self, '_analysis_running', False):
+            return
         # Validate inputs
         if self.key_df is None:
-            messagebox.showerror("Error", "Please load a key file first")
+            if not silent:
+                messagebox.showerror("Error", "Please load a key file first")
             return
-        
         if not self.prediction_files:
-            messagebox.showerror("Error", "Please select a predictions folder")
+            if not silent:
+                messagebox.showerror("Error", "Please select a predictions folder")
             return
-        
-        # Get selected behaviors
         selected_behaviors = self.get_selected_behaviors()
         if not selected_behaviors:
-            messagebox.showerror("Error", "Please select at least one behavior to analyze")
+            if not silent:
+                messagebox.showerror("Error", "Please select at least one behavior to analyze")
             return
-        
-        try:
-            self.progress_label.config(text="🔄 Running analysis...")
-            self.run_btn.config(state='disabled')
-            self.update_idletasks()
-            
-            # Get settings (with validation)
-            whole_session = self.no_time_bins_var.get()
-            bin_size_min = self.bin_size_var.get()
-            if self.bin_unit_var.get() == 'seconds':
-                bin_size_min = bin_size_min / 60.0
-            if not whole_session and bin_size_min <= 0:
-                messagebox.showwarning("Invalid Bin Size",
-                                       "Bin size must be a positive number.")
-                self.run_btn.config(state='normal')
-                return
-            fps = self.fps_var.get()
-            if not fps or fps <= 0:
-                fps = 60.0
-                self.fps_var.set(60.0)
-                print("Warning: FPS was 0 or negative, defaulting to 60")
-            analysis_mode = self.analyze_mode.get()
-            
-            # Filter prediction files to only selected behaviors
-            filtered_files = [f for f in self.prediction_files if f['behavior'] in selected_behaviors]
 
-            # Initialize per-frame data storage for timecourse graph
+        # Settings (validated on the main thread before any looping).
+        whole_session = self.no_time_bins_var.get()
+        bin_size_min = self.bin_size_var.get()
+        if self.bin_unit_var.get() == 'seconds':
+            bin_size_min = bin_size_min / 60.0
+        if not whole_session and bin_size_min <= 0:
+            if not silent:
+                messagebox.showwarning("Invalid Bin Size", "Bin size must be a positive number.")
+            return
+        fps = self.fps_var.get()
+        if not fps or fps <= 0:
+            fps = 60.0
+            self.fps_var.set(60.0)
+            print("Warning: FPS was 0 or negative, defaulting to 60")
+        analysis_mode = self.analyze_mode.get()
+        filtered_files = [f for f in self.prediction_files if f['behavior'] in selected_behaviors]
+
+        # Confirm large runs (they block the UI, though Stop stays responsive).
+        if not silent and len(filtered_files) > 25:
+            if not messagebox.askyesno(
+                    "Run analysis",
+                    f"Analyze {len(filtered_files)} prediction file(s) across "
+                    f"{len(selected_behaviors)} behavior(s)?\n\nThis can take a while; "
+                    f"use Stop to cancel."):
+                return
+
+        self._analysis_running = True
+        self._analysis_cancel = False
+        self.run_btn.config(state='disabled')
+        if hasattr(self, 'analysis_stop_btn'):
+            self.analysis_stop_btn.config(state='normal')
+        self.progress_label.config(text="🔄 Running analysis…", foreground='')
+
+        def _pump():
+            # Process pending events so a Stop click is handled; cheap between files.
+            try:
+                self.update()
+            except Exception:
+                pass
+
+        all_results = []
+        try:
             self.perframe_data = {}  # {(subject, treatment, behavior): sec_predictions_array}
 
-            # Process based on analysis mode
-            all_results = []
-            
             if analysis_mode in ['separate', 'both']:
-                # Analyze each behavior separately
                 for behavior in selected_behaviors:
+                    if self._analysis_cancel:
+                        break
                     behavior_files = [f for f in filtered_files if f['behavior'] == behavior]
-                    
-                    self.progress_label.config(text=f"🔄 Analyzing {behavior}...")
-                    self.update_idletasks()
-                    
-                    results = []
-                    for i, pred_file_info in enumerate(behavior_files, 1):
-                        result = self.analyze_single_file(pred_file_info, bin_size_min, fps, behavior, whole_session=whole_session)
+                    self.progress_label.config(text=f"🔄 Analyzing {behavior}…")
+                    _pump()
+                    for pred_file_info in behavior_files:
+                        if self._analysis_cancel:
+                            break
+                        result = self.analyze_single_file(
+                            pred_file_info, bin_size_min, fps, behavior, whole_session=whole_session)
                         if result is not None:
-                            results.extend(result)
-                    
-                    all_results.extend(results)
-            
-            if analysis_mode in ['combined', 'both']:
-                # Analyze combined (sum all behaviors)
-                self.progress_label.config(text="🔄 Analyzing combined behaviors...")
-                self.update_idletasks()
-                
-                combined_results = self.analyze_combined_behaviors(
-                    filtered_files, selected_behaviors, bin_size_min, fps, whole_session=whole_session
-                )
-                all_results.extend(combined_results)
-            
-            if not all_results:
-                messagebox.showerror("Error", "No valid data processed")
+                            all_results.extend(result)
+                        _pump()
+
+            if not self._analysis_cancel and analysis_mode in ['combined', 'both']:
+                self.progress_label.config(text="🔄 Analyzing combined behaviors…")
+                _pump()
+                all_results.extend(self.analyze_combined_behaviors(
+                    filtered_files, selected_behaviors, bin_size_min, fps, whole_session=whole_session))
+
+            if self._analysis_cancel:
+                self.progress_label.config(text="Analysis cancelled.", foreground='')
                 return
-            
-            # Create results dataframe
+
+            if not all_results:
+                self.progress_label.config(text="")
+                if not silent:
+                    messagebox.showerror("Error", "No valid data processed")
+                return
+
             self.results_df = pd.DataFrame(all_results)
-            
-            # Display results
-            self.display_results()
-            
-            # Enable buttons
             self.export_btn.config(state='normal')
             self.graph_btn.config(state='normal')
-            
-            behavior_text = f"{len(selected_behaviors)} behavior(s)" if len(selected_behaviors) > 1 else selected_behaviors[0]
-            mode_text = {
-                'separate': 'separately',
-                'combined': 'combined',
-                'both': 'separately + combined'
-            }[analysis_mode]
-            
+            # Build the graphs first (sets the graph behavior selector), then the Results view,
+            # which follows that selector.
+            try:
+                self._dash_show_graphs()
+            except Exception:
+                pass
+            try:
+                self._render_results_view()
+            except Exception:
+                pass
+
+            behavior_text = (f"{len(selected_behaviors)} behavior(s)"
+                             if len(selected_behaviors) > 1 else selected_behaviors[0])
+            mode_text = {'separate': 'separately', 'combined': 'combined',
+                         'both': 'separately + combined'}[analysis_mode]
             self.progress_label.config(
                 text=f"✓ Analysis complete! {behavior_text} analyzed {mode_text}",
-                foreground='green'
-            )
-            
-            messagebox.showinfo(
-                "Analysis Complete",
-                f"Successfully analyzed:\n"
-                f"• {len(selected_behaviors)} behavior(s)\n"
-                f"• {len(filtered_files)} file(s)\n"
-                f"• Mode: {mode_text}\n\n"
-                f"Generated {len(all_results)} data points"
-            )
-            
+                foreground='green')
+
+            if not silent:
+                messagebox.showinfo(
+                    "Analysis Complete",
+                    f"Successfully analyzed:\n"
+                    f"• {len(selected_behaviors)} behavior(s)\n"
+                    f"• {len(filtered_files)} file(s)\n"
+                    f"• Mode: {mode_text}\n\n"
+                    f"Generated {len(all_results)} data points")
+
         except Exception as e:
-            messagebox.showerror("Analysis Error", f"An error occurred:\n\n{e}")
+            self.progress_label.config(text="")
+            if not silent:
+                messagebox.showerror("Analysis Error", f"An error occurred:\n\n{e}")
             import traceback
             traceback.print_exc()
-        
         finally:
+            self._analysis_running = False
             self.run_btn.config(state='normal')
+            if hasattr(self, 'analysis_stop_btn'):
+                self.analysis_stop_btn.config(state='disabled')
     
     def analyze_single_file(self, pred_file_info, bin_size_min, fps, behavior_name=None, whole_session=False):
         """Analyze a single prediction file"""
@@ -1590,7 +1864,9 @@ class AnalysisTab(ttk.Frame):
     
     
     def display_results(self):
-        """Display results in treeview"""
+        """Populate the per-bin results Treeview (individual-results view)."""
+        if getattr(self, 'results_tree', None) is None:
+            return
         # Clear existing
         for item in self.results_tree.get_children():
             self.results_tree.delete(item)
@@ -1799,7 +2075,7 @@ class AnalysisTab(ttk.Frame):
         # Generate graphs for all selected behaviors in one window
         self.generate_multi_behavior_graphs(selected_behaviors)
     
-    def generate_multi_behavior_graphs(self, selected_behaviors):
+    def generate_multi_behavior_graphs(self, selected_behaviors, on_apply=None):
         """Generate graphs for multiple behaviors in a single window"""
         # Filter to selected behaviors
         filtered_df = self.results_df[self.results_df['Behavior'].isin(selected_behaviors)].copy()
@@ -1822,8 +2098,9 @@ class AnalysisTab(ttk.Frame):
         # Get max time available
         max_time = filtered_df['Bin_End_Min'].max()
         
-        # Ask user for treatment order, colors, AND time window (ONE TIME for all behaviors)
-        order_dialog = tk.Toplevel(self)
+        # Parent to the graph window (if open) so the dialog stays in front of it.
+        _dlg_parent = getattr(self, '_graph_win', None) or self.winfo_toplevel()
+        order_dialog = tk.Toplevel(_dlg_parent)
         order_dialog.title(f"Graph Settings - {len(selected_behaviors)} Behavior(s)")
         # Screen-proportional sizing
         _sw = order_dialog.winfo_screenwidth()
@@ -1832,6 +2109,7 @@ class AnalysisTab(ttk.Frame):
         _dh = int(_sh * 0.68)
         order_dialog.geometry(f"{_dw}x{_dh}+{(_sw-_dw)//2}+{(_sh-_dh)//2}")
         order_dialog.resizable(True, True)
+        order_dialog.transient(_dlg_parent)
         order_dialog.grab_set()
 
         behavior_list = ", ".join(selected_behaviors) if len(selected_behaviors) <= 3 else f"{len(selected_behaviors)} behaviors"
@@ -1874,45 +2152,16 @@ class AnalysisTab(ttk.Frame):
                 pass
         order_dialog.bind('<Destroy>', lambda e: _cleanup_mousewheel() if e.widget is order_dialog else None)
 
-        # Time window section
-        ttk.Label(_scroll_body, text="1. Time Window", font=(FONT_FAMILY, 12, 'bold')).pack(anchor='w', padx=20, pady=(10,5))
-        time_frame = ttk.Frame(_scroll_body)
-        time_frame.pack(fill='x', padx=20, pady=5)
-        ttk.Label(time_frame, text="Show data up to:").pack(side='left')
-        _max_t_display = round(max_time, 2) if max_time != int(max_time) else int(max_time)
-        time_var = tk.DoubleVar(value=round(max_time, 2))
-        ttk.Spinbox(time_frame, from_=0.1, to=round(max_time, 2), increment=0.1,
-                     textvariable=time_var, width=10).pack(side='left', padx=5)
-        ttk.Label(time_frame, text=f"minutes (max: {_max_t_display} min)").pack(side='left')
-        
-        # Error bar type section
-        ttk.Label(_scroll_body, text="2. Error Bar Type", font=(FONT_FAMILY, 12, 'bold')).pack(anchor='w', padx=20, pady=(10,5))
-        error_frame = ttk.Frame(_scroll_body)
-        error_frame.pack(fill='x', padx=20, pady=5)
-        ttk.Label(error_frame, text="Display:").pack(side='left')
-        error_var = tk.StringVar(value='SEM')
-        ttk.Radiobutton(error_frame, text="SEM (Standard Error)", variable=error_var, value='SEM').pack(side='left', padx=5)
-        ttk.Radiobutton(error_frame, text="SD (Standard Deviation)", variable=error_var, value='SD').pack(side='left', padx=5)
-        ttk.Label(
-            _scroll_body,
-            text="SEM = SD / √n  (shows precision of the mean)",
-            font=(FONT_FAMILY, 9),
-            foreground='gray'
-        ).pack(anchor='w', padx=20, pady=2)
+        # Time window, error-bar type, and heatmap palette are controlled in the graph window
+        # (Window spinbox + Error dropdown in the top bar; Palette dropdown on the Heatmap view),
+        # so this dialog only customizes groups + order + colors. Keep the vars from the current
+        # state so on_ok preserves them.
+        time_var = tk.DoubleVar(value=float(getattr(self, 'time_window', max_time) or max_time))
+        error_var = tk.StringVar(value=getattr(self, 'error_type', 'SEM') or 'SEM')
+        palette_var = tk.StringVar(value=getattr(self, 'heatmap_palette', 'YlOrRd') or 'YlOrRd')
 
-        # Heatmap color palette section
-        ttk.Label(_scroll_body, text="3. Heatmap Color Palette", font=(FONT_FAMILY, 12, 'bold')).pack(anchor='w', padx=20, pady=(10,5))
-        palette_frame = ttk.Frame(_scroll_body)
-        palette_frame.pack(fill='x', padx=20, pady=5)
-        ttk.Label(palette_frame, text="Palette:").pack(side='left')
-        palette_var = tk.StringVar(value='YlOrRd')
-        palette_options = ['YlOrRd', 'viridis', 'plasma', 'Blues', 'Reds', 'Greens', 'RdYlBu_r', 'coolwarm']
-        ttk.Combobox(palette_frame, textvariable=palette_var, values=palette_options, 
-                    state='readonly', width=15).pack(side='left', padx=5)
-        ttk.Label(palette_frame, text="(for heatmap only)", font=(FONT_FAMILY, 9), foreground='gray').pack(side='left')
-        
         # Groups to include section
-        ttk.Label(_scroll_body, text="4. Groups to Include",
+        ttk.Label(_scroll_body, text="1. Groups to Include",
                   font=(FONT_FAMILY, 12, 'bold')).pack(anchor='w', padx=20, pady=(10, 5))
         include_frame = ttk.Frame(_scroll_body)
         include_frame.pack(fill='x', padx=20, pady=5)
@@ -1925,7 +2174,7 @@ class AnalysisTab(ttk.Frame):
                 row=i // 3, column=i % 3, sticky='w', padx=(0, 20))
 
         # Treatment order section
-        ttk.Label(_scroll_body, text="5. Treatment Order", font=(FONT_FAMILY, 12, 'bold')).pack(anchor='w', padx=20, pady=(10,5))
+        ttk.Label(_scroll_body, text="2. Treatment Order", font=(FONT_FAMILY, 12, 'bold')).pack(anchor='w', padx=20, pady=(10,5))
         ttk.Label(_scroll_body, text="(Left to right, or top to bottom)", font=(FONT_FAMILY, 9), foreground='gray').pack(anchor='w', padx=20)
 
         # Create listbox with treatments
@@ -1943,7 +2192,7 @@ class AnalysisTab(ttk.Frame):
             listbox.insert('end', treatment)
         
         # ── Section 6: Colors ────────────────────────────────────────────────
-        ttk.Label(_scroll_body, text="6. Colors (for graphs, not heatmap)",
+        ttk.Label(_scroll_body, text="3. Colors (for graphs, not heatmap)",
                   font=(FONT_FAMILY, 12, 'bold')).pack(anchor='w', padx=20, pady=(10, 5))
 
         color_options = {
@@ -2273,16 +2522,13 @@ class AnalysisTab(ttk.Frame):
         
         # Filter data to time window and included treatments
         self.filtered_results_df = filtered_df[
-            (filtered_df['Bin_Start_Min'] < self.time_window) &
+            (filtered_df['Bin_Start_Min'] <= self.time_window) &
             (filtered_df['Treatment'].isin(self.treatment_order))
         ].copy()
         
-        # Build the new single-canvas graph window (transitions-tab-style):
-        # persistent Figure/Canvas + behavior dropdown + view-selector Notebook +
-        # overlay toggles.  Every setting change triggers _gw_refresh_plot() which
-        # calls fig.clear() and dispatches to the retrofitted create_*_graph
-        # methods with _fig=self._gw_fig so they draw into the shared figure.
-        self._gw_open_graph_window(selected_behaviors)
+        # Apply the settings: either re-render the embedded dashboard graph in place
+        # (on_apply, from the "⚙ Graph settings…" button) or open the legacy pop-out window.
+        (on_apply or self._gw_open_graph_window)(selected_behaviors)
 
     # ------------------------------------------------------------------
     # New graph-window infrastructure (single persistent Figure/Canvas,
@@ -2333,7 +2579,7 @@ class AnalysisTab(ttk.Frame):
         return m.get(view_label)
 
     def _gw_open_graph_window(self, selected_behaviors):
-        """Create the single-canvas graph window."""
+        """Legacy: open the single-canvas graph UI in its own Toplevel."""
         gw_win = tk.Toplevel(self)
         behaviors_text = (" + ".join(selected_behaviors)
                           if len(selected_behaviors) <= 3
@@ -2342,9 +2588,14 @@ class AnalysisTab(ttk.Frame):
         sw, sh = gw_win.winfo_screenwidth(), gw_win.winfo_screenheight()
         ww, wh = int(sw * 0.92), int(sh * 0.92)
         gw_win.geometry(f"{ww}x{wh}+{(sw-ww)//2}+{(sh-wh)//2}")
+        self._gw_build(gw_win, selected_behaviors, show_close=True)
 
+    def _gw_build(self, host, selected_behaviors, show_close=True):
+        """Build the single-canvas graph UI (behavior + view selectors, one shared Figure/Canvas,
+        action bar) into `host` — a Toplevel (legacy) OR any embedded frame (the dashboard).
+        Requires graph-time state set first (see _gw_prepare_defaults)."""
         # State
-        self._gw_win            = gw_win
+        self._gw_win            = host
         self._gw_behaviors      = list(selected_behaviors)
         self._gw_behavior_var   = tk.StringVar(value=selected_behaviors[0])
         self._gw_view_var       = tk.StringVar(value='Time Course')
@@ -2352,37 +2603,87 @@ class AnalysisTab(ttk.Frame):
         # Snapshot of full multi-behavior df; per-behavior slicing happens in _gw_refresh_plot
         self._gw_all_df         = self.filtered_results_df.copy()
 
-        # ── Top settings bar ─────────────────────────────────────────────
-        top_bar = ttk.Frame(gw_win, padding=(10, 8, 10, 4))
+        # ── Top bar, row 1: Behavior + Graph-type dropdowns · Sig markers · settings ─────
+        top_bar = ttk.Frame(host, padding=(10, 8, 10, 2))
         top_bar.pack(fill='x')
         ttk.Label(top_bar, text="Behavior:").pack(side='left')
         beh_combo = ttk.Combobox(top_bar, values=selected_behaviors,
                                   textvariable=self._gw_behavior_var,
-                                  state='readonly', width=22)
+                                  state='readonly', width=20)
         beh_combo.pack(side='left', padx=(4, 12))
-        beh_combo.bind('<<ComboboxSelected>>', lambda e: self._gw_refresh_plot())
+        beh_combo.bind('<<ComboboxSelected>>', lambda e: self._gw_on_behavior_changed())
 
-        ttk.Label(top_bar, text=f"Window: {self.time_window:g} min").pack(side='left', padx=(0, 12))
-        ttk.Label(top_bar, text=f"Error: {self.error_type}").pack(side='left', padx=(0, 12))
+        ttk.Label(top_bar, text="Graph:").pack(side='left')
+        _view_labels = [label for label, _ in self._gw_view_registry()]
+        self._gw_view_combo = ttk.Combobox(top_bar, values=_view_labels,
+                                           textvariable=self._gw_view_var,
+                                           state='readonly', width=20)
+        self._gw_view_combo.pack(side='left', padx=(4, 8))
+        self._gw_view_combo.bind('<<ComboboxSelected>>', lambda e: self._gw_on_graph_changed())
 
         sig_cb = ttk.Checkbutton(top_bar, text="Sig. markers",
                                   variable=self._gw_show_sig_var,
                                   command=self._gw_on_sig_toggle)
-        sig_cb.pack(side='left', padx=(0, 4))
+        sig_cb.pack(side='left', padx=(0, 12))
+        self._gw_sig_cb = sig_cb
 
-        # ── View selector (empty-frame Notebook used as a tab-strip) ──────
-        selector = ttk.Notebook(gw_win)
-        selector.pack(fill='x', padx=10, pady=(0, 4))
-        self._gw_selector = selector
-        self._gw_view_frames = []   # parallel with _gw_view_registry
-        for label, _fn in self._gw_view_registry():
-            f = ttk.Frame(selector)
-            selector.add(f, text=label)
-            self._gw_view_frames.append((label, f))
-        selector.bind('<<NotebookTabChanged>>', self._gw_on_view_changed)
+        # Metric — shown only for the value graphs (Time Course / Individual Traces / Total Time).
+        self._gw_metric_frame = ttk.Frame(top_bar)
+        ttk.Label(self._gw_metric_frame, text="Metric:").pack(side='left', padx=(0, 3))
+        self._gw_metric_var = tk.StringVar(value=self._gw_metric_current_label())
+        _mcombo = ttk.Combobox(self._gw_metric_frame, textvariable=self._gw_metric_var,
+                               values=[m[0] for m in self._GW_METRICS], state='readonly', width=18)
+        _mcombo.pack(side='left')
+        _mcombo.bind('<<ComboboxSelected>>', lambda e: self._gw_on_metric_changed())
+
+        # Heatmap palette — shown only when a Heatmap view is selected.
+        self._gw_palette_frame = ttk.Frame(top_bar)
+        ttk.Label(self._gw_palette_frame, text="Palette:").pack(side='left', padx=(0, 3))
+        self._gw_palette_var = tk.StringVar(value=getattr(self, 'heatmap_palette', 'YlOrRd') or 'YlOrRd')
+        _pal = ttk.Combobox(self._gw_palette_frame, textvariable=self._gw_palette_var,
+                            values=['YlOrRd', 'viridis', 'plasma', 'Blues', 'Reds', 'Greens', 'RdYlBu_r', 'coolwarm'],
+                            state='readonly', width=10)
+        _pal.pack(side='left')
+        _pal.bind('<<ComboboxSelected>>', lambda e: self._gw_on_palette_changed())
+        self._gw_toggle_view_controls()
+
+        # Colors / dose-response / order / palette dialog — right-aligned, always visible.
+        ttk.Button(top_bar, text="⚙ Graph settings…",
+                   command=self._gw_open_settings).pack(side='right', padx=(0, 4))
+        ttk.Button(top_bar, text="Axis…",
+                   command=self._gw_open_axis_dialog).pack(side='right', padx=(0, 6))
+
+        # ── Top bar, row 2 (under Behavior): Window · Bin size · Error → Update ──────────
+        # These don't apply on change — the user tweaks them and clicks ↻ Update (or hits Enter).
+        top_bar2 = ttk.Frame(host, padding=(10, 0, 10, 4))
+        top_bar2.pack(fill='x')
+        ttk.Label(top_bar2, text="Window:").pack(side='left')
+        self._gw_window_var = tk.StringVar()
+        _wspin = ttk.Spinbox(top_bar2, from_=1, to=100000, width=6, increment=5,
+                             textvariable=self._gw_window_var)
+        _wspin.pack(side='left', padx=(3, 0))
+        _wspin.bind('<Return>', lambda e: self._gw_update())
+        ttk.Label(top_bar2, text="min").pack(side='left', padx=(1, 14))
+
+        ttk.Label(top_bar2, text="Bin size:").pack(side='left')
+        self._gw_bins_var = tk.StringVar()
+        _bspin = ttk.Spinbox(top_bar2, from_=1, to=100000, width=5, increment=1,
+                             textvariable=self._gw_bins_var)
+        _bspin.pack(side='left', padx=(3, 0))
+        _bspin.bind('<Return>', lambda e: self._gw_update())
+        self._gw_bins_unit_lbl = ttk.Label(top_bar2, text="min")
+        self._gw_bins_unit_lbl.pack(side='left', padx=(1, 14))
+
+        ttk.Label(top_bar2, text="Error:").pack(side='left')
+        self._gw_error_var = tk.StringVar(value=getattr(self, 'error_type', 'SEM') or 'SEM')
+        ttk.Combobox(top_bar2, textvariable=self._gw_error_var, values=['SEM', 'SD'],
+                     state='readonly', width=5).pack(side='left', padx=(3, 8))
+        ttk.Button(top_bar2, text="↻ Update",
+                   command=self._gw_update).pack(side='left', padx=(0, 4))
+        self._gw_update_setting_labels()
 
         # ── Single Figure/Canvas ─────────────────────────────────────────
-        canvas_frame = ttk.Frame(gw_win)
+        canvas_frame = ttk.Frame(host)
         canvas_frame.pack(fill='both', expand=True, padx=10, pady=(0, 4))
         self._gw_fig = plt.figure(figsize=(10, 6), constrained_layout=True)
         self._gw_canvas = FigureCanvasTkAgg(self._gw_fig, canvas_frame)
@@ -2390,19 +2691,220 @@ class AnalysisTab(ttk.Frame):
         _bind_tight_layout_on_resize(self._gw_canvas, self._gw_fig)
 
         # ── Action bar ───────────────────────────────────────────────────
-        action_bar = ttk.Frame(gw_win, padding=(10, 2, 10, 8))
+        action_bar = ttk.Frame(host, padding=(10, 2, 10, 8))
         action_bar.pack(fill='x')
         ttk.Button(action_bar, text="💾 Save Figure",
                    command=lambda: self.save_figure(self._gw_fig)).pack(side='left', padx=4)
         ttk.Button(action_bar, text="📊 Export Data",
                    command=self._gw_export_data).pack(side='left', padx=4)
-        ttk.Button(action_bar, text="📈 Statistics",
-                   command=self._gw_open_statistics).pack(side='left', padx=4)
-        ttk.Button(action_bar, text="✕ Close",
-                   command=gw_win.destroy).pack(side='right', padx=4)
+        if show_close:
+            ttk.Button(action_bar, text="✕ Close",
+                       command=host.destroy).pack(side='right', padx=4)
 
         # Initial render — after geometry settles so canvas has real size
-        gw_win.after(50, self._gw_refresh_plot)
+        host.after(50, self._gw_refresh_plot)
+
+    def _gw_update_setting_labels(self):
+        """Sync the top-bar Window / Bins / Error controls from current state."""
+        try:
+            if getattr(self, '_gw_window_var', None) is not None:
+                self._gw_window_var.set(f"{self.time_window:g}")
+        except Exception:
+            pass
+        try:
+            if getattr(self, '_gw_bins_var', None) is not None:
+                self._gw_bins_var.set(f"{self.bin_size_var.get():g}")
+            if getattr(self, '_gw_bins_unit_lbl', None) is not None:
+                _u = (self.bin_unit_var.get() or 'min')[:3]
+                self._gw_bins_unit_lbl.config(text=_u)
+        except Exception:
+            pass
+        try:
+            if getattr(self, '_gw_error_var', None) is not None:
+                self._gw_error_var.set(getattr(self, 'error_type', 'SEM') or 'SEM')
+        except Exception:
+            pass
+
+    def _gw_update(self):
+        """Apply the top-bar Window / Bin size / Error controls (the ↻ Update button, or Enter in
+        a spinbox). Error + Window are a cheap re-render + stats refresh; a changed Bin size needs
+        re-binning, so it re-runs the analysis (which rebuilds the graph + stats)."""
+        # Error type
+        try:
+            self.error_type = self._gw_error_var.get() or 'SEM'
+        except Exception:
+            pass
+        # Window
+        try:
+            w = float(self._gw_window_var.get())
+            if w > 0:
+                self.time_window = w
+        except Exception:
+            pass
+        # Bin size — re-run analysis only if it actually changed.
+        try:
+            b = float(self._gw_bins_var.get())
+        except Exception:
+            b = None
+        try:
+            cur_bin = float(self.bin_size_var.get())
+        except Exception:
+            cur_bin = None
+        if b and b > 0 and (cur_bin is None or abs(b - cur_bin) > 1e-9):
+            self.bin_size_var.set(b)
+            # Deferred so the spinbox isn't destroyed mid-callback when the graph host rebuilds.
+            self.after(0, lambda: self.run_analysis(silent=True))
+            return
+        # Window/Error only → re-slice to the window and re-render + refresh stats.
+        df = getattr(self, 'results_df', None)
+        if df is not None and 'Bin_Start_Min' in df.columns:
+            keep = df['Bin_Start_Min'] <= self.time_window
+            if 'Bin_Index' in df.columns:
+                keep = keep | (df['Bin_Index'] == -1)
+            if getattr(self, 'treatment_order', None) and 'Treatment' in df.columns:
+                keep = keep & df['Treatment'].isin(self.treatment_order)
+            self._gw_all_df = df[keep].copy()
+        self._gw_update_setting_labels()
+        self._gw_refresh_plot()
+        try:
+            if getattr(self, 'results_view_var', None) is not None:
+                self._render_results_view()
+        except Exception:
+            pass
+
+    def _gw_on_behavior_changed(self):
+        """Behavior dropdown changed → re-render graph and keep the Results view in sync."""
+        self._gw_refresh_plot()
+        try:
+            if getattr(self, 'results_view_var', None) is not None:
+                self._render_results_view()
+        except Exception:
+            pass
+
+    def _gw_on_graph_changed(self):
+        """Graph-type dropdown changed → show/hide the Metric + Palette controls, then re-render."""
+        self._gw_toggle_view_controls()
+        self._gw_refresh_plot()
+
+    def _gw_toggle_view_controls(self):
+        """Show the Metric dropdown only for value graphs and the Palette dropdown only for
+        heatmaps."""
+        view = self._gw_view_var.get()
+        mf = getattr(self, '_gw_metric_frame', None)
+        if mf is not None:
+            if view in ('Time Course', 'Individual Traces', 'Total Time'):
+                mf.pack(side='left', padx=(0, 12), before=self._gw_sig_cb)
+            else:
+                mf.pack_forget()
+        pf = getattr(self, '_gw_palette_frame', None)
+        if pf is not None:
+            if view in ('Heatmap', 'Heatmap (Bouts)'):
+                pf.pack(side='left', padx=(0, 12))
+            else:
+                pf.pack_forget()
+
+    def _gw_metric_current_label(self):
+        """Return the metric dropdown label matching the current metric column."""
+        col = getattr(self, '_gw_metric_col', 'Total_Time_s')
+        for lbl, mcol, _agg, _ylab in self._GW_METRICS:
+            if mcol == col:
+                return lbl
+        return self._GW_METRICS[0][0]
+
+    def _gw_on_metric_changed(self):
+        """Metric dropdown changed → update the plotted column/aggregation/label and re-render."""
+        sel = self._gw_metric_var.get()
+        for lbl, mcol, agg, ylab in self._GW_METRICS:
+            if lbl == sel:
+                self._gw_metric_col, self._gw_metric_agg, self._gw_metric_label = mcol, agg, ylab
+                break
+        self._gw_refresh_plot()
+
+    def _gw_on_palette_changed(self):
+        """Heatmap palette dropdown changed → re-render the heatmap with the new colormap."""
+        self.heatmap_palette = self._gw_palette_var.get()
+        self._gw_refresh_plot()
+
+    def _gw_open_settings(self):
+        """Open the full graph-customization dialog (colors, dose-response gradient, treatment
+        order, heatmap palette, time window, error type) and re-render the inline graph on OK."""
+        behaviors = getattr(self, '_gw_behaviors', None)
+        if not behaviors:
+            if self.results_df is None or len(self.results_df) == 0:
+                messagebox.showinfo("Graph settings", "Run analysis first.")
+                return
+            behaviors = sorted(self.results_df['Behavior'].dropna().unique())
+        self.generate_multi_behavior_graphs(list(behaviors), on_apply=self._gw_reapply_settings)
+
+    def _gw_reapply_settings(self, selected_behaviors):
+        """Apply settings chosen in the dialog to the embedded graph (no pop-out window).
+        The dialog has already set treatment_order/colors/time_window/error_type +
+        filtered_results_df; refresh the shared snapshot and re-render in place."""
+        self._gw_all_df = self.filtered_results_df.copy()
+        # Groups may have been excluded → keep the behavior selector valid.
+        try:
+            behs = sorted(self._gw_all_df['Behavior'].dropna().unique())
+            self._gw_view_combo  # touch to ensure host is built
+            if behs:
+                self._gw_behavior_var.set(
+                    self._gw_behavior_var.get() if self._gw_behavior_var.get() in behs else behs[0])
+        except Exception:
+            pass
+        self._gw_update_setting_labels()
+        self._gw_refresh_plot()
+        try:
+            if getattr(self, 'results_view_var', None) is not None:
+                self._render_results_view()
+        except Exception:
+            pass
+
+    def _gw_prepare_defaults(self):
+        """Prepare graph-time state (treatment order/colors, time window, error type,
+        filtered_results_df) from self.results_df. First render seeds sensible defaults; on later
+        re-renders (e.g. a bin-size change re-runs the analysis) it PRESERVES the user's window /
+        colors / order / error so they don't reset. Returns the behaviors present (or [])."""
+        df = self.results_df
+        if df is None or len(df) == 0:
+            return []
+        treatments = ([str(t) for t in sorted(df['Treatment'].dropna().unique())]
+                      if 'Treatment' in df.columns else [])
+
+        # Treatment order — keep the user's (from ⚙ settings) unless it references groups that no
+        # longer exist (a genuinely different analysis); then reseed to the default order.
+        cur_order = getattr(self, 'treatment_order', None)
+        if not cur_order or (set(cur_order) - set(treatments)):
+            self.treatment_order = treatments
+
+        # Treatment colors — keep unless a current treatment is missing a color.
+        _palette = ['#4C72B0', '#DD8452', '#55A868', '#C44E52', '#8172B3',
+                    '#937860', '#DA8BC3', '#8C8C8C', '#CCB974', '#64B5CD']
+        cur_colors = getattr(self, 'treatment_colors', None)
+        if not cur_colors or (set(treatments) - set(cur_colors.keys())):
+            self.treatment_colors = {t: _palette[i % len(_palette)] for i, t in enumerate(treatments)}
+
+        # Time window — seed to full range only if unset; otherwise keep the user's value.
+        if not getattr(self, 'time_window', None):
+            try:
+                self.time_window = float(df['Bin_End_Min'].max()) if 'Bin_End_Min' in df.columns else 60.0
+            except Exception:
+                self.time_window = 60.0
+        if not getattr(self, 'error_type', None):
+            self.error_type = 'SEM'
+
+        # Apply the (preserved) window + group filter to the snapshot the graphs read.
+        if 'Bin_Start_Min' in df.columns:
+            keep = df['Bin_Start_Min'] <= self.time_window
+            if 'Bin_Index' in df.columns:
+                keep = keep | (df['Bin_Index'] == -1)
+            if self.treatment_order and 'Treatment' in df.columns:
+                keep = keep & df['Treatment'].isin(self.treatment_order)
+            self.filtered_results_df = df[keep].copy()
+        else:
+            self.filtered_results_df = df.copy()
+
+        behaviors = ([str(b) for b in sorted(df['Behavior'].dropna().unique())]
+                     if 'Behavior' in df.columns else [])
+        return behaviors
 
     def _gw_on_view_changed(self, event=None):
         idx = self._gw_selector.index('current')
@@ -2428,8 +2930,13 @@ class AnalysisTab(ttk.Frame):
         # so the existing create_*_graph methods see the right data.
         prev_df = self.filtered_results_df
         try:
-            self.filtered_results_df = self._gw_all_df[
-                self._gw_all_df['Behavior'] == behavior].copy()
+            sliced = self._gw_all_df[self._gw_all_df['Behavior'] == behavior].copy()
+            # Phase-analysis rows (Bin_Index == -1) are 10-min aggregates that live in the same
+            # table as the per-bin rows. Every view except "Phase Analysis" sums/plots across
+            # bins, so leaving them in double-counts totals — drop them for those views.
+            if view != 'Phase Analysis' and 'Bin_Index' in sliced.columns:
+                sliced = sliced[sliced['Bin_Index'] != -1]
+            self.filtered_results_df = sliced
             for label, fn in self._gw_view_registry():
                 if label == view:
                     fn(self._gw_fig, behavior)
@@ -2446,7 +2953,99 @@ class AnalysisTab(ttk.Frame):
                     fontsize=10, color='crimson')
         finally:
             self.filtered_results_df = prev_df
+        self._gw_apply_axis_limits()
         self._gw_canvas.draw_idle()
+
+    def _gw_apply_axis_limits(self):
+        """Apply the CURRENT graph's X/Y axis-limit overrides (blank = auto). Limits are stored
+        per graph view so each graph keeps its own. Single cartesian axes only (heatmaps left)."""
+        if getattr(self, '_gw_fig', None) is None:
+            return
+        view = self._gw_view_var.get() if getattr(self, '_gw_view_var', None) else None
+        lim = (getattr(self, '_gw_axis', None) or {}).get(view)
+        if not lim:
+            return
+        axes = [a for a in self._gw_fig.axes if not a.images]
+        if len(axes) != 1:
+            return
+        ax = axes[0]
+        try:
+            if lim.get('xmin') is not None or lim.get('xmax') is not None:
+                x0, x1 = ax.get_xlim()
+                ax.set_xlim(left=lim.get('xmin') if lim.get('xmin') is not None else x0,
+                            right=lim.get('xmax') if lim.get('xmax') is not None else x1)
+            if lim.get('ymin') is not None or lim.get('ymax') is not None:
+                y0, y1 = ax.get_ylim()
+                ax.set_ylim(bottom=lim.get('ymin') if lim.get('ymin') is not None else y0,
+                            top=lim.get('ymax') if lim.get('ymax') is not None else y1)
+        except Exception:
+            pass
+
+    def _gw_open_axis_dialog(self):
+        """Dialog to set X/Y axis limits for the CURRENT graph only (blank = auto). Persists per
+        graph across re-renders until reset."""
+        if getattr(self, '_gw_fig', None) is None:
+            messagebox.showinfo("Axis", "Run analysis and open a graph first.")
+            return
+        view = self._gw_view_var.get()
+        alld = getattr(self, '_gw_axis', None)
+        if not isinstance(alld, dict):
+            alld = {}
+        self._gw_axis = alld
+        lim = alld.get(view) or {'xmin': None, 'xmax': None, 'ymin': None, 'ymax': None}
+        alld[view] = lim
+        # Parent to the graph window so it stays in front of it (not the main app window).
+        parent = getattr(self, '_graph_win', None) or self.winfo_toplevel()
+        win = tk.Toplevel(parent)
+        win.title(f"Axis limits — {view}")
+        win.transient(parent)
+        win.grab_set()
+        win.resizable(False, False)
+        frm = ttk.Frame(win, padding=14)
+        frm.pack(fill='both', expand=True)
+        ttk.Label(frm, text=f"Axis limits for “{view}” (blank = auto):",
+                  font=(FONT_FAMILY, 10, 'bold')).grid(row=0, column=0, columnspan=5, sticky='w', pady=(0, 8))
+        vars_ = {}
+
+        def _row(r, label, kmin, kmax):
+            ttk.Label(frm, text=label).grid(row=r, column=0, sticky='w', padx=(0, 8), pady=3)
+            v1 = tk.StringVar(value='' if lim.get(kmin) is None else f"{lim[kmin]:g}")
+            v2 = tk.StringVar(value='' if lim.get(kmax) is None else f"{lim[kmax]:g}")
+            ttk.Label(frm, text="min").grid(row=r, column=1, sticky='e')
+            ttk.Entry(frm, textvariable=v1, width=9).grid(row=r, column=2, padx=(2, 10))
+            ttk.Label(frm, text="max").grid(row=r, column=3, sticky='e')
+            ttk.Entry(frm, textvariable=v2, width=9).grid(row=r, column=4, padx=2)
+            vars_[kmin] = v1
+            vars_[kmax] = v2
+        _row(1, "X axis:", 'xmin', 'xmax')
+        _row(2, "Y axis:", 'ymin', 'ymax')
+
+        def _parse(v):
+            s = v.get().strip()
+            if not s:
+                return None
+            try:
+                return float(s)
+            except Exception:
+                return None
+
+        def _apply():
+            for k, v in vars_.items():
+                lim[k] = _parse(v)
+            self._gw_refresh_plot()
+
+        def _auto():
+            for k in list(lim.keys()):
+                lim[k] = None
+            for v in vars_.values():
+                v.set('')
+            self._gw_refresh_plot()
+
+        btns = ttk.Frame(frm)
+        btns.grid(row=3, column=0, columnspan=5, pady=(12, 0), sticky='w')
+        ttk.Button(btns, text="Apply", command=_apply, style='Accent.TButton').pack(side='left', padx=4)
+        ttk.Button(btns, text="Auto (reset)", command=_auto).pack(side='left', padx=4)
+        ttk.Button(btns, text="Close", command=win.destroy).pack(side='left', padx=4)
 
     def _gw_export_data(self):
         """Call the export function matching the current view."""
@@ -2509,17 +3108,23 @@ class AnalysisTab(ttk.Frame):
         
         # Use filtered data
         df = self.filtered_results_df if hasattr(self, 'filtered_results_df') else self.results_df
-        
+
+        # Metric to plot (from the Metric dropdown); falls back to time-in-behavior.
+        mcol = getattr(self, '_gw_metric_col', 'Total_Time_s')
+        if df is None or mcol not in df.columns:
+            mcol = 'Total_Time_s'
+        mlabel = getattr(self, '_gw_metric_label', 'Time in Behavior (seconds)')
+
         # Group by treatment and bin
-        if 'Total_Time_s' in df.columns:
+        if mcol in df.columns:
             # Calculate error based on user selection
             error_type = self.error_type if hasattr(self, 'error_type') else 'SEM'
-            
+
             if error_type == 'SD':
-                grouped = df.groupby(['Treatment', 'Bin_Start_Min'])['Total_Time_s'].agg(['mean', 'std']).reset_index()
+                grouped = df.groupby(['Treatment', 'Bin_Start_Min'])[mcol].agg(['mean', 'std']).reset_index()
                 grouped.rename(columns={'std': 'error'}, inplace=True)
             else:  # SEM
-                grouped = df.groupby(['Treatment', 'Bin_Start_Min'])['Total_Time_s'].agg(['mean', 'sem']).reset_index()
+                grouped = df.groupby(['Treatment', 'Bin_Start_Min'])[mcol].agg(['mean', 'sem']).reset_index()
                 grouped.rename(columns={'sem': 'error'}, inplace=True)
             
             # Use stored treatment order and colors
@@ -2534,7 +3139,10 @@ class AnalysisTab(ttk.Frame):
                     treat_df = df[df['Treatment'] == treatment]
                     for _subj, _animal_df in treat_df.groupby('Subject'):
                         _animal_df = _animal_df.sort_values('Bin_Start_Min')
-                        ax.plot(_animal_df['Bin_Start_Min'], _animal_df['Total_Time_s'],
+                        # .to_numpy(): pandas Series with a non-range index breaks matplotlib's
+                        # internal x[:, None] reshape (pandas 2.x multi-dim indexing error).
+                        ax.plot(_animal_df['Bin_Start_Min'].to_numpy(),
+                                _animal_df[mcol].to_numpy(),
                                 color=line_color, alpha=0.18, linewidth=0.8, zorder=1)
 
             for treatment in treatments:
@@ -2574,9 +3182,11 @@ class AnalysisTab(ttk.Frame):
                     )
 
             ax.set_xlabel('Time (minutes)', fontsize=12)
-            ylabel = f'Time in Behavior (seconds) ± {error_type}'
+            ylabel = f'{mlabel} ± {error_type}'
             ax.set_ylabel(ylabel, fontsize=12)
-            title = f'{behavior_name} - Behavior Over Time by Treatment' if behavior_name else 'Behavior Over Time by Treatment'
+            _mtitle = mlabel.split(' (')[0]
+            title = (f'{behavior_name} - {_mtitle} Over Time by Treatment' if behavior_name
+                     else f'{_mtitle} Over Time by Treatment')
             ax.set_title(title, fontsize=14, fontweight='bold')
             ax.legend(fontsize=10)
             ax.grid(True, alpha=0.3)
@@ -2602,12 +3212,12 @@ class AnalysisTab(ttk.Frame):
                     from statsmodels.formula.api import ols
                     
                     # Prepare data for two-way ANOVA
-                    anova_df = df[['Subject', 'Treatment', 'Bin_Start_Min', 'Total_Time_s']].copy()
+                    anova_df = df[['Subject', 'Treatment', 'Bin_Start_Min', mcol]].copy()
                     anova_df['Time'] = anova_df['Bin_Start_Min'].astype('category')
                     anova_df['Treatment'] = anova_df['Treatment'].astype('category')
-                    
+
                     # Two-way repeated measures ANOVA
-                    model = ols('Total_Time_s ~ C(Treatment) + C(Time) + C(Treatment):C(Time)', data=anova_df).fit()
+                    model = ols(f'{mcol} ~ C(Treatment) + C(Time) + C(Treatment):C(Time)', data=anova_df).fit()
                     anova_table = sm.stats.anova_lm(model, typ=2)
                     
                     # Check for interaction effect
@@ -2632,7 +3242,7 @@ class AnalysisTab(ttk.Frame):
                             groups = []
                             group_means = []
                             for treatment in treatments:
-                                treat_data = bin_df[bin_df['Treatment'] == treatment]['Total_Time_s'].values
+                                treat_data = bin_df[bin_df['Treatment'] == treatment][mcol].values
                                 if len(treat_data) > 0:
                                     groups.append(treat_data)
                                     group_means.append(np.mean(treat_data))
@@ -2764,9 +3374,9 @@ class AnalysisTab(ttk.Frame):
                         bin_df = df[df['Bin_Start_Min'] == bin_start]
                         groups = []
                         group_means = []
-                        
+
                         for treatment in treatments:
-                            treat_data = bin_df[bin_df['Treatment'] == treatment]['Total_Time_s'].values
+                            treat_data = bin_df[bin_df['Treatment'] == treatment][mcol].values
                             if len(treat_data) > 0:
                                 groups.append(treat_data)
                                 group_means.append(np.mean(treat_data))
@@ -3314,23 +3924,31 @@ class AnalysisTab(ttk.Frame):
         # Use filtered data (specific to this behavior)
         df = self.filtered_results_df if hasattr(self, 'filtered_results_df') else self.results_df
         
-        if 'Total_Time_s' in df.columns:
-            # Sum total time per subject
-            total_per_subject = df.groupby(['Subject', 'Treatment'])['Total_Time_s'].sum().reset_index()
-            
+        # Metric to plot (from the Metric dropdown). Aggregate per subject with the metric's
+        # natural method: sum for additive metrics (time, #bouts), mean for rates/durations.
+        mcol = getattr(self, '_gw_metric_col', 'Total_Time_s')
+        if df is None or mcol not in df.columns:
+            mcol = 'Total_Time_s'
+        magg = getattr(self, '_gw_metric_agg', 'sum')
+        mlabel = getattr(self, '_gw_metric_label', 'Time in Behavior (seconds)')
+
+        if mcol in df.columns:
+            # Per-subject metric (summed or averaged across bins)
+            total_per_subject = df.groupby(['Subject', 'Treatment'])[mcol].agg(magg).reset_index()
+
             # Use stored treatment order and colors
             treatments = self.treatment_order if hasattr(self, 'treatment_order') else total_per_subject['Treatment'].unique()
             treatment_colors = self.treatment_colors if hasattr(self, 'treatment_colors') else {}
-            
+
             # Calculate positions for bars
             treatment_positions = {t: i for i, t in enumerate(treatments)}
-            
+
             # Plot individual subjects as scatter points
             for treatment in treatments:
                 data = total_per_subject[total_per_subject['Treatment'] == treatment]
                 x_pos = treatment_positions[treatment]
                 color = treatment_colors.get(treatment, 'gray')
-                
+
                 # Handle white with black outline
                 if color == 'white_black':
                     # Individual subjects as points with jitter
@@ -3338,7 +3956,7 @@ class AnalysisTab(ttk.Frame):
                     jitter = np.random.normal(0, 0.05, len(data))
                     ax.scatter(
                         [x_pos] * len(data) + jitter,
-                        data['Total_Time_s'],
+                        data[mcol],
                         alpha=0.8,
                         s=80,
                         facecolors='white',
@@ -3352,7 +3970,7 @@ class AnalysisTab(ttk.Frame):
                     jitter = np.random.normal(0, 0.05, len(data))
                     ax.scatter(
                         [x_pos] * len(data) + jitter,
-                        data['Total_Time_s'],
+                        data[mcol],
                         alpha=0.6,
                         s=80,
                         color=color,
@@ -3360,19 +3978,19 @@ class AnalysisTab(ttk.Frame):
                         linewidth=1,
                         zorder=3
                     )
-            
+
             # Add bar plot with mean and error (SEM or SD)
             error_type = self.error_type if hasattr(self, 'error_type') else 'SEM'
-            
+
             x = np.arange(len(treatments))
-            means = [total_per_subject[total_per_subject['Treatment'] == t]['Total_Time_s'].mean() 
+            means = [total_per_subject[total_per_subject['Treatment'] == t][mcol].mean()
                     for t in treatments]
-            
+
             if error_type == 'SD':
-                errors = [total_per_subject[total_per_subject['Treatment'] == t]['Total_Time_s'].std() 
+                errors = [total_per_subject[total_per_subject['Treatment'] == t][mcol].std()
                          for t in treatments]
             else:  # SEM
-                errors = [total_per_subject[total_per_subject['Treatment'] == t]['Total_Time_s'].sem() 
+                errors = [total_per_subject[total_per_subject['Treatment'] == t][mcol].sem()
                          for t in treatments]
             
             # Handle white_black for bars
@@ -3401,9 +4019,17 @@ class AnalysisTab(ttk.Frame):
             
             ax.set_xticks(x)
             ax.set_xticklabels(treatments, fontsize=11)
-            ylabel = f'Total Time in Behavior (seconds) ± {error_type}'
+            _mword = mlabel.split(' (')[0]
+            # "Total" prefix only for summed metrics; mean-metric labels already read naturally.
+            if magg == 'sum':
+                ylabel = f'Total {mlabel} ± {error_type}'
+                _tword = f'Total {_mword}'
+            else:
+                ylabel = f'{mlabel} ± {error_type}'
+                _tword = _mword
             ax.set_ylabel(ylabel, fontsize=12)
-            title = f'{behavior_name} - Total Behavior Time by Treatment' if behavior_name else 'Total Behavior Time by Treatment'
+            title = (f'{behavior_name} - {_tword} by Treatment' if behavior_name
+                     else f'{_tword} by Treatment')
             ax.set_title(title, fontsize=14, fontweight='bold')
             ax.grid(axis='y', alpha=0.3, zorder=1)
             ax.spines['top'].set_visible(False)
@@ -3411,7 +4037,7 @@ class AnalysisTab(ttk.Frame):
             
             # Add statistical testing
             if self.enable_stats_var.get():
-                data_by_treatment = {t: total_per_subject[total_per_subject['Treatment'] == t]['Total_Time_s'].values
+                data_by_treatment = {t: total_per_subject[total_per_subject['Treatment'] == t][mcol].values
                                     for t in treatments}
                 stats_results = self.perform_statistical_test(data_by_treatment, treatments)
                 if stats_results:
@@ -4104,14 +4730,19 @@ class AnalysisTab(ttk.Frame):
         return frame
 
     def create_statistics_tab(self, notebook, behavior_name, behavior_df,
-                              graph_rebuild_fns=None):
-        """Create statistics summary tab with tables of all statistical comparisons.
+                              graph_rebuild_fns=None, container=None):
+        """Create statistics summary of all statistical comparisons.
 
         A time-window control at the top lets the user re-run all stats over a
-        different window without regenerating the graphs.
+        different window without regenerating the graphs. When `container` is given the
+        content is built directly into it (embedded Results view); otherwise a new
+        "Statistics" tab is added to `notebook` (legacy pop-out path).
         """
-        frame = ttk.Frame(notebook)
-        notebook.add(frame, text="Statistics")
+        if container is not None:
+            frame = container
+        else:
+            frame = ttk.Frame(notebook)
+            notebook.add(frame, text="Statistics")
 
         # Full (unfiltered) data for this behavior — used when recalculating
         if (hasattr(self, 'results_df') and self.results_df is not None
@@ -4122,20 +4753,22 @@ class AnalysisTab(ttk.Frame):
 
         max_time = int(full_df['Bin_End_Min'].max()) if 'Bin_End_Min' in full_df.columns else 120
         current_window = getattr(self, 'time_window', max_time)
+        embedded = container is not None
+        stats_time_var = tk.IntVar(value=int(current_window))
 
-        # ── Control bar ───────────────────────────────────────────────────
-        ctrl_frame = ttk.Frame(frame)
-        ctrl_frame.pack(fill='x', padx=10, pady=(8, 4))
-
-        ttk.Label(ctrl_frame, text="Statistics time window:").pack(side='left')
-        stats_time_var = tk.IntVar(value=current_window)
-        ttk.Spinbox(ctrl_frame, from_=1, to=max_time,
-                    textvariable=stats_time_var, width=8).pack(side='left', padx=5)
-        ttk.Label(ctrl_frame, text="min").pack(side='left')
-
-        status_lbl = ttk.Label(ctrl_frame, text=f"(showing 0–{current_window} min)",
-                               font=(FONT_FAMILY, 9), foreground='gray')
-        status_lbl.pack(side='left', padx=10)
+        # ── Control bar (window + recalculate) — only in the legacy pop-out. In the embedded
+        #    Results view the graph's Window control up top drives the stats window instead. ──
+        status_lbl = None
+        if not embedded:
+            ctrl_frame = ttk.Frame(frame)
+            ctrl_frame.pack(fill='x', padx=10, pady=(8, 4))
+            ttk.Label(ctrl_frame, text="Statistics time window:").pack(side='left')
+            ttk.Spinbox(ctrl_frame, from_=1, to=max_time,
+                        textvariable=stats_time_var, width=8).pack(side='left', padx=5)
+            ttk.Label(ctrl_frame, text="min").pack(side='left')
+            status_lbl = ttk.Label(ctrl_frame, text=f"(showing 0–{current_window} min)",
+                                   font=(FONT_FAMILY, 9), foreground='gray')
+            status_lbl.pack(side='left', padx=10)
 
         # ── Scrollable content holder (rebuilt on recalculate) ────────────
         content_holder = ttk.Frame(frame)
@@ -4150,15 +4783,17 @@ class AnalysisTab(ttk.Frame):
                           else list(df['Treatment'].unique()))
 
             # Scrollable canvas
-            canvas = tk.Canvas(content_holder, bg='white')
-            sb = ttk.Scrollbar(content_holder, orient='vertical', command=canvas.yview)
+            scroll_area = ttk.Frame(content_holder)
+            canvas = tk.Canvas(scroll_area, bg='white', highlightthickness=0)
+            sb = ttk.Scrollbar(scroll_area, orient='vertical', command=canvas.yview)
+            hsb = ttk.Scrollbar(scroll_area, orient='horizontal', command=canvas.xview)
             scrollable_frame = ttk.Frame(canvas)
             scrollable_frame.bind(
                 '<Configure>',
                 lambda e: canvas.configure(scrollregion=canvas.bbox('all'))
             )
             canvas.create_window((0, 0), window=scrollable_frame, anchor='nw')
-            canvas.configure(yscrollcommand=sb.set)
+            canvas.configure(yscrollcommand=sb.set, xscrollcommand=hsb.set)
 
             title = (f'Statistical Analysis Summary — {behavior_name} '
                      f'(0–{stats_time_var.get()} min)')
@@ -4220,40 +4855,47 @@ class AnalysisTab(ttk.Frame):
                     f"{section_num+1}. Phase II ({phase2_start}–{phase2_end} min)",
                     phase_df, treatments, 'Phase2_Time', 'value')
 
-            canvas.pack(side='left', fill='both', expand=True, padx=10, pady=10)
-            sb.pack(side='right', fill='y')
-
-            # Export button inside content_holder so it scrolls with sizing
+            # Export button pinned at the bottom (packed first so it isn't squeezed out).
             export_frame = ttk.Frame(content_holder)
             export_frame.pack(side='bottom', fill='x', padx=10, pady=5)
             ttk.Button(export_frame, text="📊 Export Statistics to CSV",
                        command=lambda: self.export_statistics(behavior_name)).pack()
 
-        def on_recalculate():
-            new_window = stats_time_var.get()
-            filtered = full_df[full_df['Bin_Start_Min'] < new_window].copy()
-            treatments = (self.treatment_order if hasattr(self, 'treatment_order')
-                          else list(filtered['Treatment'].unique()))
+            # Scroll area with BOTH scrollbars so wide stats tables aren't clipped.
+            scroll_area.pack(side='top', fill='both', expand=True, padx=10, pady=(10, 4))
+            canvas.grid(row=0, column=0, sticky='nsew')
+            sb.grid(row=0, column=1, sticky='ns')
+            hsb.grid(row=1, column=0, sticky='ew')
+            scroll_area.rowconfigure(0, weight=1)
+            scroll_area.columnconfigure(0, weight=1)
 
-            # Recompute ANOVA for the new time window
-            self._compute_timecourse_anova(filtered, treatments)
+        if not embedded:
+            def on_recalculate():
+                new_window = stats_time_var.get()
+                filtered = full_df[full_df['Bin_Start_Min'] < new_window].copy()
+                treatments = (self.treatment_order if hasattr(self, 'treatment_order')
+                              else list(filtered['Treatment'].unique()))
 
-            # Update shared filtered df so graph functions read new data
-            self.filtered_results_df = filtered
+                # Recompute ANOVA for the new time window
+                self._compute_timecourse_anova(filtered, treatments)
 
-            # Rebuild all graph tabs in the same notebook
-            if graph_rebuild_fns:
-                for graph_frame, rebuild_fn in graph_rebuild_fns:
-                    try:
-                        rebuild_fn(graph_frame)
-                    except Exception as e:
-                        print(f"Graph rebuild error: {e}")
+                # Update shared filtered df so graph functions read new data
+                self.filtered_results_df = filtered
 
-            status_lbl.config(text=f"(showing 0–{new_window} min)")
-            build_content(filtered)
+                # Rebuild all graph tabs in the same notebook
+                if graph_rebuild_fns:
+                    for graph_frame, rebuild_fn in graph_rebuild_fns:
+                        try:
+                            rebuild_fn(graph_frame)
+                        except Exception as e:
+                            print(f"Graph rebuild error: {e}")
 
-        ttk.Button(ctrl_frame, text="↺ Recalculate",
-                   command=on_recalculate).pack(side='left')
+                if status_lbl is not None:
+                    status_lbl.config(text=f"(showing 0–{new_window} min)")
+                build_content(filtered)
+
+            ttk.Button(ctrl_frame, text="↺ Recalculate",
+                       command=on_recalculate).pack(side='left')
 
         # Initial build with the already-filtered data passed in
         build_content(behavior_df)
@@ -4400,7 +5042,7 @@ class AnalysisTab(ttk.Frame):
         ttk.Label(table_frame, text="p-value", font=(FONT_FAMILY, 9, 'bold'), 
                  relief='solid', borderwidth=1, width=15).grid(row=0, column=3, sticky='ew', padx=1, pady=1)
         ttk.Label(table_frame, text="Significance", font=(FONT_FAMILY, 9, 'bold'),
-                 relief='solid', borderwidth=1, width=12).grid(row=0, column=4, sticky='ew', padx=1, pady=1)
+                 relief='solid', borderwidth=1, width=10).grid(row=0, column=4, sticky='ew', padx=1, pady=1)
         ttk.Label(table_frame, text="Effect Size", font=(FONT_FAMILY, 9, 'bold'),
                  relief='solid', borderwidth=1, width=15).grid(row=0, column=5, sticky='ew', padx=1, pady=1)
         
@@ -4516,7 +5158,7 @@ class AnalysisTab(ttk.Frame):
                              relief='solid', borderwidth=1, width=15).grid(
                         row=row_idx, column=3, sticky='ew', padx=1, pady=1)
                     ttk.Label(table_frame, text=sig,
-                             relief='solid', borderwidth=1, width=12,
+                             relief='solid', borderwidth=1, width=10,
                              foreground=fg, font=(FONT_FAMILY, 9, 'bold')).grid(
                         row=row_idx, column=4, sticky='ew', padx=1, pady=1)
 
@@ -4574,28 +5216,28 @@ class AnalysisTab(ttk.Frame):
         headers = ['Treatment', 'N', 'Mean', 'SD', 'SEM', 'Min', 'Max']
         for i, header in enumerate(headers):
             ttk.Label(desc_table, text=header, font=(FONT_FAMILY, 9, 'bold'), 
-                     relief='solid', borderwidth=1, width=12).grid(row=0, column=i, sticky='ew', padx=1, pady=1)
+                     relief='solid', borderwidth=1, width=10).grid(row=0, column=i, sticky='ew', padx=1, pady=1)
         
         for row_idx, treatment in enumerate(treatments, start=1):
             data = per_subject[per_subject['Treatment'] == treatment][column].values
             if len(data) == 0:
                 continue
             
-            ttk.Label(desc_table, text=treatment, relief='solid', borderwidth=1, width=12).grid(
+            ttk.Label(desc_table, text=treatment, relief='solid', borderwidth=1, width=10).grid(
                 row=row_idx, column=0, sticky='ew', padx=1, pady=1)
-            ttk.Label(desc_table, text=str(len(data)), relief='solid', borderwidth=1, width=12).grid(
+            ttk.Label(desc_table, text=str(len(data)), relief='solid', borderwidth=1, width=10).grid(
                 row=row_idx, column=1, sticky='ew', padx=1, pady=1)
-            ttk.Label(desc_table, text=f"{np.mean(data):.2f}", relief='solid', borderwidth=1, width=12).grid(
+            ttk.Label(desc_table, text=f"{np.mean(data):.2f}", relief='solid', borderwidth=1, width=10).grid(
                 row=row_idx, column=2, sticky='ew', padx=1, pady=1)
-            ttk.Label(desc_table, text=f"{np.std(data, ddof=1):.2f}", relief='solid', borderwidth=1, width=12).grid(
+            ttk.Label(desc_table, text=f"{np.std(data, ddof=1):.2f}", relief='solid', borderwidth=1, width=10).grid(
                 row=row_idx, column=3, sticky='ew', padx=1, pady=1)
             
             sem = np.std(data, ddof=1) / np.sqrt(len(data))
-            ttk.Label(desc_table, text=f"{sem:.2f}", relief='solid', borderwidth=1, width=12).grid(
+            ttk.Label(desc_table, text=f"{sem:.2f}", relief='solid', borderwidth=1, width=10).grid(
                 row=row_idx, column=4, sticky='ew', padx=1, pady=1)
-            ttk.Label(desc_table, text=f"{np.min(data):.2f}", relief='solid', borderwidth=1, width=12).grid(
+            ttk.Label(desc_table, text=f"{np.min(data):.2f}", relief='solid', borderwidth=1, width=10).grid(
                 row=row_idx, column=5, sticky='ew', padx=1, pady=1)
-            ttk.Label(desc_table, text=f"{np.max(data):.2f}", relief='solid', borderwidth=1, width=12).grid(
+            ttk.Label(desc_table, text=f"{np.max(data):.2f}", relief='solid', borderwidth=1, width=10).grid(
                 row=row_idx, column=6, sticky='ew', padx=1, pady=1)
         
         # Statistical test results
