@@ -294,11 +294,22 @@ class MultiClassifierTab(ttk.Frame):
            "significance markers, bar/box plots, grid and fonts. Saved with "
            "the project and shared by the analysis tabs.").pack(
             side="left", padx=(6, 0))
+        self._stats_mode = tk.BooleanVar(value=False)
+        _T(ttk.Checkbutton(topbar, text="Σ Stats",
+                           variable=self._stats_mode, style="Toolbutton",
+                           command=self._apply_stats_mode),
+           "Flip between the graph and a statistics table for the current "
+           "view (group descriptives + tests).").pack(side="left",
+                                                      padx=(6, 0))
 
         self._fig = Figure(figsize=(9, 5.5), constrained_layout=True)
         self._canvas = FigureCanvasTkAgg(self._fig, master=right)
         self._canvas.get_tk_widget().pack(fill="both", expand=True)
-        NavigationToolbar2Tk(self._canvas, right)
+        self._nav = NavigationToolbar2Tk(self._canvas, right)
+        from tkinter import scrolledtext as _stext
+        self._stats_widget = _stext.ScrolledText(right, wrap="none",
+                                                 font=("Consolas", 9))
+
 
     # ------------------------------------------------------------------ data
 
@@ -559,6 +570,18 @@ class MultiClassifierTab(ttk.Frame):
     # ------------------------------------------------------------------ views
 
     def refresh(self):
+        if getattr(self, "_stats_mode", None) is not None \
+                and self._stats_mode.get():
+            self._stats_widget.configure(state="normal")
+            self._stats_widget.delete("1.0", "end")
+            try:
+                txt = (self._stats_text() if self._frames
+                       else "Scan a results folder first.")
+            except Exception as e:
+                txt = f"Could not compute statistics: {e}"
+            self._stats_widget.insert("1.0", txt)
+            self._stats_widget.configure(state="disabled")
+            return
         self._fig.clear()
         if not self._frames:
             ax = self._fig.add_subplot(111)
@@ -1033,6 +1056,65 @@ class MultiClassifierTab(ttk.Frame):
             df.to_csv(p, index=False)
             messagebox.showinfo("Exported", f"{len(df)} rows → {p}",
                                 parent=self)
+
+    def _apply_stats_mode(self):
+        """Swap the canvas and the stats table; refresh fills the visible one."""
+        if self._stats_mode.get():
+            self._canvas.get_tk_widget().pack_forget()
+            self._nav.pack_forget()
+            self._stats_widget.pack(fill="both", expand=True)
+        else:
+            self._stats_widget.pack_forget()
+            self._canvas.get_tk_widget().pack(fill="both", expand=True)
+            self._nav.pack(fill="x")
+        self.refresh()
+
+    def _stats_text(self):
+        import plot_style
+        opts = plot_style.get_options(self._project())
+        sessions = sorted(self._frames)
+        groups = self._groups_present()
+        view = self._view.get()
+        if not groups:
+            return ("No key file loaded - statistics need Treatment "
+                    "groups.")
+        if view == "occupancy":
+            occ = {}
+            prio = None
+            for s_ in sessions:
+                st, prio = self._states_for(s_)
+                counts = np.bincount(st, minlength=len(prio) + 1)
+                occ[s_] = counts / max(len(st), 1) * 100
+            labels = ["unscored"] + prio
+            rows_by_g = {g: np.array([occ[s_] for s_ in sessions
+                                      if self._group_of(s_) == g])
+                         for g in groups}
+            return plot_style.stats_table(
+                "State occupancy (% of session time, priority-resolved)",
+                labels, rows_by_g, opts, test_fn=self._group_test,
+                unit="% of session time")
+        # summary + timecourse + traces: per-behavior session values
+        beh = [b for b in self._priority()
+               if b in self._selected_behaviors()]
+        if view == "summary":
+            def val(d, b):
+                return (d[f"{b}_prob"].mean()
+                        if f"{b}_prob" in d.columns else np.nan)
+            title = "Mean classifier probability (whole session)"
+            unit = "mean probability"
+        else:
+            def val(d, b):
+                return (d[f"{b}_pred"].mean() * 100
+                        if f"{b}_pred" in d.columns else np.nan)
+            title = "Time in behavior (% of session, per-classifier calls)"
+            unit = "% of session time"
+        per = {s_: np.array([val(self._sheet(s_), b) for b in beh])
+               for s_ in sessions}
+        rows_by_g = {g: np.array([per[s_] for s_ in sessions
+                                  if self._group_of(s_) == g])
+                     for g in groups}
+        return plot_style.stats_table(title, beh, rows_by_g, opts,
+                                      test_fn=self._group_test, unit=unit)
 
     def on_project_changed(self):
         self._frames = {}

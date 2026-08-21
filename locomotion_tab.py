@@ -241,11 +241,22 @@ class LocomotionTab(ttk.Frame):
             self.refresh()
         _hmcb.bind("<<ComboboxSelected>>", _on_hm_pick)
         self._hm_cmap_cb = _hmcb
+        self._stats_mode = tk.BooleanVar(value=False)
+        _T(ttk.Checkbutton(topbar, text="Σ Stats",
+                           variable=self._stats_mode, style="Toolbutton",
+                           command=self._apply_stats_mode),
+           "Flip between the graph and a statistics table for the current "
+           "view (group descriptives + tests).").pack(side="left",
+                                                      padx=(6, 0))
 
         self._fig = Figure(figsize=(9, 5.5), constrained_layout=True)
         self._canvas = FigureCanvasTkAgg(self._fig, master=right)
         self._canvas.get_tk_widget().pack(fill="both", expand=True)
-        NavigationToolbar2Tk(self._canvas, right)
+        self._nav = NavigationToolbar2Tk(self._canvas, right)
+        from tkinter import scrolledtext as _stext
+        self._stats_widget = _stext.ScrolledText(right, wrap="none",
+                                                 font=("Consolas", 9))
+
 
     # ------------------------------------------------------------------ data
 
@@ -514,6 +525,18 @@ class LocomotionTab(ttk.Frame):
     # ------------------------------------------------------------------ views
 
     def refresh(self):
+        if getattr(self, "_stats_mode", None) is not None \
+                and self._stats_mode.get():
+            self._stats_widget.configure(state="normal")
+            self._stats_widget.delete("1.0", "end")
+            try:
+                txt = (self._stats_text() if self._sessions
+                       else "Scan the project videos first.")
+            except Exception as e:
+                txt = f"Could not compute statistics: {e}"
+            self._stats_widget.insert("1.0", txt)
+            self._stats_widget.configure(state="disabled")
+            return
         # colormap picker only makes sense on the heatmap view
         try:
             import plot_style
@@ -1058,6 +1081,47 @@ class LocomotionTab(ttk.Frame):
         plot_style.open_options_dialog(self, self._project(),
                                        self._groups_present(),
                                        on_apply=self.refresh)
+
+    def _apply_stats_mode(self):
+        """Swap the canvas and the stats table; refresh fills the visible one."""
+        if self._stats_mode.get():
+            self._canvas.get_tk_widget().pack_forget()
+            self._nav.pack_forget()
+            self._stats_widget.pack(fill="both", expand=True)
+        else:
+            self._stats_widget.pack_forget()
+            self._canvas.get_tk_widget().pack(fill="both", expand=True)
+            self._nav.pack(fill="x")
+        self.refresh()
+
+    def _stats_text(self):
+        import plot_style
+        opts = plot_style.get_options(self._project())
+        sessions = sorted(self._sessions)
+        groups = self._groups_present()
+        per_sess, bin_min, unit = self._binned()
+        tot = {s_: float(np.sum(v)) for s_, v in per_sess.items()}
+        dur = {s_: len(self._displacement(s_)) / self._sessions[s_]["fps"]
+               for s_ in per_sess}
+        vel = {s_: tot[s_] / max(dur[s_], 1e-9) for s_ in per_sess}
+        lines = []
+        if groups:
+            rows_by_g = {g: np.array(
+                [[tot[s_], vel[s_]] for s_ in per_sess
+                 if self._group_of(s_) == g]) for g in groups}
+            lines.append(plot_style.stats_table(
+                "Locomotion summary",
+                [f"total distance ({unit})", f"mean velocity ({unit}/s)"],
+                rows_by_g, opts, test_fn=self._group_test, unit=unit))
+            lines.append("")
+        lines.append("Per session")
+        lines.append("-----------")
+        for s_ in sorted(per_sess):
+            g = self._group_of(s_) or ""
+            lines.append(f"  {s_:<24} {g:<12} "
+                         f"{tot[s_]:>9.1f} {unit}   "
+                         f"{vel[s_]:>7.3f} {unit}/s")
+        return "\n".join(lines)
 
     def on_project_changed(self):
         self._sessions = {}

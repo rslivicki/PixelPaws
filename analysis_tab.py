@@ -2659,6 +2659,9 @@ class AnalysisTab(ttk.Frame):
         self._gw_toggle_view_controls()
 
         # Colors / dose-response / order / palette dialog — right-aligned, always visible.
+        ttk.Button(top_bar, text="🎨 Style…",
+                   command=self._gw_open_shared_style).pack(side='right',
+                                                            padx=(0, 4))
         ttk.Button(top_bar, text="⚙ Graph settings…",
                    command=self._gw_open_settings).pack(side='right', padx=(0, 4))
         ttk.Button(top_bar, text="Axis…",
@@ -2835,6 +2838,34 @@ class AnalysisTab(ttk.Frame):
         """Heatmap palette dropdown changed → re-render the heatmap with the new colormap."""
         self.heatmap_palette = self._gw_palette_var.get()
         self._gw_refresh_plot()
+
+    def _gw_open_shared_style(self):
+        """The shared per-project style dialog (colors + plot options) used
+        by the newer analysis tabs. Applying pulls the shared group colors
+        into this tab's treatment_colors so all tabs stay in step."""
+        import plot_style
+        proj = ""
+        try:
+            proj = self.analysis_project_var.get()
+        except Exception:
+            pass
+        groups = list(getattr(self, "treatment_order", []) or [])
+        if not groups and getattr(self, "key_df", None) is not None:
+            groups = [str(t) for t in self.key_df["Treatment"].unique()]
+
+        def _on_apply():
+            try:
+                shared = plot_style.get_colors(proj, groups)
+                if not hasattr(self, "treatment_colors")                         or self.treatment_colors is None:
+                    self.treatment_colors = {}
+                self.treatment_colors.update(shared)
+                if getattr(self, "filtered_results_df", None) is not None:
+                    self._gw_reapply_settings(None)
+            except Exception:
+                pass
+
+        plot_style.open_options_dialog(self, proj, groups,
+                                       on_apply=_on_apply)
 
     def _gw_open_settings(self):
         """Open the full graph-customization dialog (colors, dose-response gradient, treatment

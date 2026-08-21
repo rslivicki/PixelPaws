@@ -282,12 +282,23 @@ class SequencingTab(ttk.Frame):
            "Plot style: group colors, marker size and alpha, line width, "
            "grid and fonts. Saved with the project and shared by the "
            "analysis tabs.").pack(side="left", padx=(6, 0))
+        self._stats_mode = tk.BooleanVar(value=False)
+        _T(ttk.Checkbutton(topbar, text="Σ Stats",
+                           variable=self._stats_mode, style="Toolbutton",
+                           command=self._apply_stats_mode),
+           "Flip between the graph and a statistics table for the current "
+           "view (group descriptives + tests).").pack(side="left",
+                                                      padx=(6, 0))
 
 
         self._fig = Figure(figsize=(9, 5), constrained_layout=True)
         self._canvas = FigureCanvasTkAgg(self._fig, master=right)
         self._canvas.get_tk_widget().pack(fill="both", expand=True)
-        NavigationToolbar2Tk(self._canvas, right)
+        self._nav = NavigationToolbar2Tk(self._canvas, right)
+        from tkinter import scrolledtext as _stext
+        self._stats_widget = _stext.ScrolledText(right, wrap="none",
+                                                 font=("Consolas", 9))
+
 
     # ------------------------------------------------------------------ pipeline
 
@@ -574,6 +585,17 @@ class SequencingTab(ttk.Frame):
             on_apply=self.refresh)
 
     def refresh(self):
+        if getattr(self, "_stats_mode", None) is not None \
+                and self._stats_mode.get():
+            self._stats_widget.configure(state="normal")
+            self._stats_widget.delete("1.0", "end")
+            try:
+                txt = self._stats_text()
+            except Exception as e:
+                txt = f"Could not compute statistics: {e}"
+            self._stats_widget.insert("1.0", txt)
+            self._stats_widget.configure(state="disabled")
+            return
         self._fig.clf()
         if self._cohort is None:
             ax = self._fig.add_subplot(111)
@@ -671,6 +693,45 @@ class SequencingTab(ttk.Frame):
             filetypes=[("PNG", "*.png"), ("SVG", "*.svg"), ("PDF", "*.pdf")])
         if path:
             self._fig.savefig(path, dpi=300, bbox_inches="tight")
+
+    def _apply_stats_mode(self):
+        """Swap the canvas and the stats table; refresh fills the visible one."""
+        if self._stats_mode.get():
+            self._canvas.get_tk_widget().pack_forget()
+            self._nav.pack_forget()
+            self._stats_widget.pack(fill="both", expand=True)
+        else:
+            self._stats_widget.pack_forget()
+            self._canvas.get_tk_widget().pack(fill="both", expand=True)
+            self._nav.pack(fill="x")
+        self.refresh()
+
+    def _stats_text(self):
+        if self._cohort is None:
+            return "Compute a cohort first."
+        c = self._cohort
+        lines = ["Sequencing cohort", "=================", ""]
+        try:
+            F2, p, R2 = c.test()
+            lines.append(f"PERMANOVA (Behrens-Fisher F2): "
+                         f"F2={F2:.3g}  p={p:.4g}  R\u00b2={R2:.3g}")
+        except Exception as e:
+            lines.append(f"PERMANOVA unavailable: {e}")
+        lines.append(f"groups: {', '.join(map(str, self._groups))}")
+        try:
+            import numpy as _np
+            for g in self._groups:
+                subs = [s for s, gg in c.group_of.items() if gg == g]
+                bouts = [len(c.seqs[s]) for s in subs if s in c.seqs]
+                if bouts:
+                    lines.append(f"  {g}: {len(subs)} animal(s), "
+                                 f"median bouts {int(_np.median(bouts))} "
+                                 f"(range {min(bouts)}-{max(bouts)})")
+        except Exception:
+            pass
+        lines.append("")
+        lines.append(f"status: {self._status.get()}")
+        return "\n".join(lines)
 
     def on_project_changed(self):
         self._cohort = None

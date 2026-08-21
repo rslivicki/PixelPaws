@@ -487,6 +487,60 @@ def apply_frame_options(ax, opts, base=None, y0=True):
         ax.set_ylim(bottom=0)
 
 
+def fmt_mean_err(values, opts):
+    """'mean ± err (n=X)' for a 1-D sample, honoring error_type."""
+    v = np.asarray(values, float)
+    v = v[np.isfinite(v)]
+    if not len(v):
+        return "—"
+    m = float(np.mean(v))
+    e = calc_error(v, opts.get("error_type", "SEM"))
+    return f"{m:.3g} ± {e:.3g} (n={len(v)})"
+
+
+def stats_table(title, row_labels, rows_by_group, opts, test_fn=None,
+                unit=""):
+    """Monospace stats table: one row per label, one column per group
+    (mean ± err (n)), plus a test column when test_fn is given.
+
+    rows_by_group: {group: 2-D array (n_subjects, n_labels)}.
+    test_fn(list_of_samples) -> (p, test_name) or None.
+    """
+    groups = list(rows_by_group)
+    colw = max([14] + [len(str(g)) + 2 for g in groups])
+    lw = max([12] + [len(str(l)) + 1 for l in row_labels])
+    lines = [title, "=" * len(title), ""]
+    hdr = " " * lw + "".join(f"{str(g):>{colw + 8}}" for g in groups)
+    if test_fn:
+        hdr += f"{'test':>16}"
+    lines.append(hdr)
+    lines.append("-" * len(hdr))
+    for i, lab in enumerate(row_labels):
+        cells = []
+        samples = []
+        for g in groups:
+            col = rows_by_group[g][:, i]
+            col = col[np.isfinite(col)]
+            samples.append(col)
+            cells.append(f"{fmt_mean_err(col, opts):>{colw + 8}}")
+        row = f"{str(lab):<{lw}}" + "".join(cells)
+        if test_fn:
+            res = test_fn([c for c in samples if len(c) >= 2])
+            if res is not None:
+                pv, name = res
+                mark = sig_text(pv, 0.05, opts.get("sig_style", "asterisk"))
+                if opts.get("sig_style") == "p-value":
+                    mark = ""
+                row += f"{name + ' p=' + format(pv, '.3g') + (' ' + mark if mark else ''):>16}"
+            else:
+                row += f"{'—':>16}"
+        lines.append(row)
+    if unit:
+        lines += ["", f"values: {unit}; error: "
+                      + error_label(opts.get("error_type", "SEM"))]
+    return "\n".join(lines)
+
+
 def group_label(group, n, opts):
     """Group legend/title label honoring the show_n option."""
     return f"{group} (n={n})" if opts.get("show_n", True) else str(group)

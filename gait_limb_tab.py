@@ -8930,6 +8930,79 @@ class GaitLimbTab(ttk.Frame):
 
     # ── Metric selector infrastructure ──────────────────────────────────
 
+    def _render_metric_stats(self, frame, entry):
+        """Statistics table for one registered metric: per-treatment
+        descriptives of the metric column (per-session values; binned data
+        is averaged per session first) plus a group test."""
+        from tkinter import scrolledtext as _stext
+        txt = _stext.ScrolledText(frame, wrap='none', font=('Consolas', 9))
+        txt.pack(fill='both', expand=True, padx=6, pady=4)
+
+        def _put(msg):
+            txt.insert('end', msg + "\n")
+
+        df = entry.get('data')
+        col = entry.get('column')
+        if df is None or col is None or col not in getattr(df, 'columns', []):
+            _put("No tabular data behind this graph (custom rendering) "
+                 "\u2014 statistics unavailable here.")
+            txt.configure(state='disabled')
+            return
+        d = df.copy()
+        if 'treatment' not in d.columns:
+            _put("No treatment column \u2014 run with a key file for group "
+                 "statistics.")
+            _put("")
+            _put(str(d[col].describe()))
+            txt.configure(state='disabled')
+            return
+        # per-session value (bins average to one value per session)
+        if 'session' in d.columns:
+            per = (d.groupby(['treatment', 'session'])[col]
+                   .mean().reset_index())
+        else:
+            per = d[['treatment', col]].rename(columns={col: col}).copy()
+            per['session'] = np.arange(len(per))
+        groups = [t for t in per['treatment'].dropna().unique()]
+        cfg = self._last_graph_cfg or {}
+        err_t = cfg.get('error_type', 'SEM')
+        _put(f"{entry.get('display_name', col)}")
+        _put("=" * max(len(str(entry.get('display_name', col))), 8))
+        _put("")
+        samples = []
+        for g in groups:
+            v = per.loc[per['treatment'] == g, col].to_numpy(float)
+            v = v[np.isfinite(v)]
+            samples.append(v)
+            e = self._calc_error(v, err_t)
+            _put(f"  {str(g):<18} mean {np.mean(v):.4g}  \u00b1 {e:.4g} "
+                 f"({self._error_label(err_t).split(' ')[-1]})   n={len(v)}  "
+                 f"median {np.median(v):.4g}" if len(v) else
+                 f"  {str(g):<18} no data")
+        _put("")
+        samples = [v for v in samples if len(v) >= 2]
+        if len(samples) >= 2:
+            try:
+                from scipy import stats as _st
+                if len(samples) == 2:
+                    tt = _st.ttest_ind(*samples, equal_var=False)
+                    mw = _st.mannwhitneyu(*samples, alternative='two-sided')
+                    _put(f"  Welch t-test:    t={tt[0]:.3g}  p={tt[1]:.4g}")
+                    _put(f"  Mann-Whitney U:  U={mw[0]:.3g}  p={mw[1]:.4g}")
+                else:
+                    an = _st.f_oneway(*samples)
+                    kw = _st.kruskal(*samples)
+                    _put(f"  one-way ANOVA:   F={an[0]:.3g}  p={an[1]:.4g}")
+                    _put(f"  Kruskal-Wallis:  H={kw[0]:.3g}  p={kw[1]:.4g}")
+            except Exception as e:
+                _put(f"  test unavailable: {e}")
+        else:
+            _put("  not enough groups with n \u2265 2 for a test")
+        if 'session' in df.columns and 'bin_start_min' in df.columns:
+            _put("")
+            _put("  (binned data averaged to one value per session first)")
+        txt.configure(state='disabled')
+
     def _make_metric_selector(self, parent_nb, category_name,
                               desc_lbl=None, tab_descs=None):
         """Create a category tab with combobox metric selector + graph area.
@@ -8954,6 +9027,15 @@ class GaitLimbTab(ttk.Frame):
                              font=(FONT_FAMILY, 10))
         combo.pack(side='left', fill='x', expand=True, padx=(0, 6))
 
+        stats_var = tk.BooleanVar(value=False)
+        _stats_btn = ttk.Checkbutton(sel_row, text="Σ Stats",
+                                     variable=stats_var, style='Toolbutton',
+                                     command=lambda: _show(combo.current()))
+        _stats_btn.pack(side='left', padx=(0, 6))
+        self._tip(_stats_btn,
+                  "Flip this metric between its graph and a statistics "
+                  "table (group descriptives + test).")
+
         registry = []
         _current_fig = [None]  # track for cleanup
 
@@ -8971,6 +9053,11 @@ class GaitLimbTab(ttk.Frame):
                 _current_fig[0] = None
             for w in graph_frame.winfo_children():
                 w.destroy()
+            if stats_var.get():
+                self._render_metric_stats(graph_frame, entry)
+                if desc_lbl is not None and tab_descs is not None:
+                    desc_lbl.config(text=entry.get('description', ''))
+                return
             # Build the graph
             if entry.get('create_fn'):
                 entry['create_fn'](graph_frame)
