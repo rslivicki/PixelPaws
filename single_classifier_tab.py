@@ -434,6 +434,16 @@ class SingleClassifierTab(ttk.Frame):
             if n else f"{os.path.basename(folder)}: no prediction files — "
                       "run classifiers first.")
         self._dash_subjects_overview()
+        # Predictions + key already on disk -> analyze automatically so the
+        # tab arrives with graphs. Deferred so a following synchronous run
+        # (the batch handoff) wins; skipped once results exist.
+        if self._files and self.key_df is not None:
+            self.after(400, self._auto_run_if_idle)
+
+    def _auto_run_if_idle(self):
+        if (self.results_df is None and not self._running
+                and self._files and self.key_df is not None):
+            self.run_analysis(silent=False)
 
     def _scan_pred_folder(self, folder):
         import analysis_core as core
