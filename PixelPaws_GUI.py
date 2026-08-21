@@ -32,6 +32,16 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from collections import defaultdict
 
+# Windows consoles and pipes default to cp1252; log prints containing unicode
+# glyphs (✓/✗) would raise UnicodeEncodeError inside worker loops and
+# abort whole sessions. Keep the stream's encoding but replace what it can't
+# represent.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors='replace')
+    except (AttributeError, ValueError, OSError):
+        pass
+
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext
 from tkinter.font import Font
@@ -62,6 +72,24 @@ except ImportError:
 import numpy as np
 import pandas as pd
 import cv2
+
+
+def _robust_unpickle(path):
+    """Load a .pkl that may be joblib+LZ4 OR plain pickle.
+
+    The canonical feature caches and several encyclopedia classifiers are
+    written with joblib + LZ4 compression; project-local GUI artifacts are
+    plain pickle. ``joblib.load`` transparently reads both, so it is the
+    universal loader. Falls back to ``pickle`` only if joblib is
+    unavailable/erroring.
+    """
+    try:
+        import joblib
+        return joblib.load(path)
+    except Exception:
+        with open(path, 'rb') as f:
+            return pickle.load(f)
+
 
 try:
     from PIL import Image, ImageTk
@@ -108,6 +136,11 @@ try:
     BODY_CONTACT_TAB_AVAILABLE = True
 except ImportError:
     BODY_CONTACT_TAB_AVAILABLE = False
+
+# Tabs excluded from the public distribution. Discover (unsupervised), Body Contact and
+# Active Learning are development / lab-internal features; set True to restore them in a
+# working build. Their code stays in the repo -- this flag only gates the UI.
+INCLUDE_DEV_TABS = False
 
 try:
     from transitions_tab import TransitionsTab
@@ -327,8 +360,10 @@ class PixelPawsGUI:
         self.current_project_folder = tk.StringVar()
         self.current_project_folder.trace_add('write', self._on_project_folder_changed)
 
-        # Key file: {Subject: Treatment} — loaded from <project>/key_file.csv
+        # Key file: {Subject: Treatment} — resolved via project config /
+        # legacy key_file.csv / project-wide discovery (see _load_key_file)
         self.key_file_data = {}
+        self.key_file_path = None
         
         # Training visualization window
         self.train_viz_window = None
@@ -547,13 +582,23 @@ class PixelPawsGUI:
         
         # Main container with sidebar navigation
         self.notebook = SidebarNav(self.root, width=280, groups={
+            # Mainline scoring path top-to-bottom: pose-track -> score with the
+            # bundled set -> analyze. Classifier development (Predict & Review /
+            # Evaluate / Train) is demoted to the bottom group -- most users
+            # ship with the bundled classifiers and never train.
             "Pose & Features": ["🦴 Pose Estimation", "⚙️ Feature Extraction"],
-            "Train & Label": ["🎓 Train Classifier", "🧠 Active Learning"],
-            "Predict & Evaluate": ["🎬 Predict & Review", "📊 Evaluate", "🚀 Run Classifiers"],
-            "Analyze": ["📈 Analysis", "🔀 Transitions"],
-            "Discover": ["🔍 Discover"],
-            "Locomotion": ["🐾 Gait & Limb Use", "🫃 Body Contact"],
+            "Score": ["🚀 Run Classifiers"],
+            "Analyze": ["📈 Single-Classifier Analysis",
+                        "🧩 Multi-Classifier Analysis",
+                        "🔗 Sequencing", "📏 Locomotion",
+                        "🐾 Gait & Limb Use"]
+                       + (["🔀 Transitions"] if INCLUDE_DEV_TABS else [])
+                       + (["🫃 Body Contact"] if INCLUDE_DEV_TABS else []),
             "Tools": ["🛠 Tools"],
+            "Train & Evaluate": ["🎬 Predict & Review", "📊 Evaluate",
+                                 "🎓 Train Classifier"]
+                                + (["🧠 Active Learning"] if INCLUDE_DEV_TABS else []),
+            **({"Discover": ["🔍 Discover"]} if INCLUDE_DEV_TABS else {}),
         })
         self.notebook.pack(fill='both', expand=True)
         
@@ -565,18 +610,53 @@ class PixelPawsGUI:
         self.create_run_classifiers_tab()
         self.create_analysis_tab()
 
-        # Transitions tab (state transition analysis)
-        if TRANSITIONS_TAB_AVAILABLE:
+        # Multi-Classifier Analysis tab (cross-classifier probability /
+        # occupancy / timecourse views over the batch's per_frame sheets)
+        try:
+            from multi_classifier_tab import MultiClassifierTab
+            self.multi_classifier_tab_frame = ttk.Frame(self.notebook)
+            self.notebook.add(self.multi_classifier_tab_frame,
+                              text="🧩 Multi-Classifier Analysis")
+            self.multi_classifier_tab = MultiClassifierTab(
+                self.multi_classifier_tab_frame, self)
+            self.multi_classifier_tab.pack(fill='both', expand=True)
+        except Exception as _mc_ex:
+            print(f"Multi-classifier tab unavailable: {_mc_ex}")
+
+        # Transitions tab (state transition analysis) -- lab-internal; the
+        # distribution ships Sequencing + Multi-Classifier Analysis instead.
+        if TRANSITIONS_TAB_AVAILABLE and INCLUDE_DEV_TABS:
             self.transitions_tab_frame = ttk.Frame(self.notebook)
             self.notebook.add(self.transitions_tab_frame, text="🔀 Transitions")
             self.transitions_tab = TransitionsTab(self.transitions_tab_frame, self)
             self.transitions_tab.pack(fill='both', expand=True)
 
+        # Sequencing tab (behavioural syntax; native prediction-CSV pipeline)
+        try:
+            from sequencing_tab import SequencingTab
+            self.sequencing_tab_frame = ttk.Frame(self.notebook)
+            self.notebook.add(self.sequencing_tab_frame, text="🔗 Sequencing")
+            self.sequencing_tab = SequencingTab(self.sequencing_tab_frame, self)
+            self.sequencing_tab.pack(fill='both', expand=True)
+        except Exception as _seq_ex:
+            print(f"Sequencing tab unavailable: {_seq_ex}")
+
+        # Locomotion tab (distance / velocity from the pose skeleton)
+        try:
+            from locomotion_tab import LocomotionTab
+            self.locomotion_tab_frame = ttk.Frame(self.notebook)
+            self.notebook.add(self.locomotion_tab_frame, text="📏 Locomotion")
+            self.locomotion_tab = LocomotionTab(self.locomotion_tab_frame, self)
+            self.locomotion_tab.pack(fill='both', expand=True)
+        except Exception as _loc_ex:
+            print(f"Locomotion tab unavailable: {_loc_ex}")
+
         # Active Learning tab (after Analysis, before Discover)
-        self._create_active_learning_tab_v2()
+        if INCLUDE_DEV_TABS:
+            self._create_active_learning_tab_v2()
 
         # Unsupervised behavior discovery tab
-        if UNSUPERVISED_TAB_AVAILABLE:
+        if INCLUDE_DEV_TABS and UNSUPERVISED_TAB_AVAILABLE:
             self.unsupervised_tab_frame = ttk.Frame(self.notebook)
             self.notebook.add(self.unsupervised_tab_frame, text="🔍 Discover")
             self.unsupervised_tab = UnsupervisedTab(self.unsupervised_tab_frame, self)
@@ -590,7 +670,7 @@ class PixelPawsGUI:
             self.wb_tab.pack(fill='both', expand=True)
 
         # Body Contact analysis tab (centroid + tailbase, midline keypoints)
-        if BODY_CONTACT_TAB_AVAILABLE:
+        if INCLUDE_DEV_TABS and BODY_CONTACT_TAB_AVAILABLE:
             self.body_contact_tab_frame = ttk.Frame(self.notebook)
             self.notebook.add(self.body_contact_tab_frame,
                               text="🫃 Body Contact")
@@ -614,8 +694,15 @@ class PixelPawsGUI:
             self.notebook.hide_item("🐾 Gait & Limb Use")
         if not BODY_CONTACT_TAB_AVAILABLE:
             self.notebook.hide_item("🫃 Body Contact")
-        if not TRANSITIONS_TAB_AVAILABLE:
+        if INCLUDE_DEV_TABS and not TRANSITIONS_TAB_AVAILABLE:
             self.notebook.hide_item("🔀 Transitions")
+
+        # Land on the top of the mainline path (first-added tab would
+        # otherwise win, which is Train Classifier).
+        try:
+            self.notebook.select("🦴 Pose Estimation")
+        except Exception:
+            pass
 
         # Status bar at bottom
         status_frame = ttk.Frame(self.root)
@@ -2013,8 +2100,7 @@ class PixelPawsGUI:
             messagebox.showwarning("No classifier", "Select a classifier first.")
             return
         try:
-            with open(clf, 'rb') as f:
-                cd = pickle.load(f)
+            cd = _robust_unpickle(clf)
         except Exception as e:
             messagebox.showerror("Load failed", f"Could not read classifier:\n{e}")
             return
@@ -2083,8 +2169,7 @@ class PixelPawsGUI:
 
         if cache_file:
             self._pr_log(f"  ✓ using cached features: {os.path.basename(cache_file)}")
-            with open(cache_file, 'rb') as f:
-                X = pickle.load(f)
+            X = _robust_unpickle(cache_file)
         else:
             self._pr_log("  no matching feature cache for this classifier — extracting…")
             if proj and os.path.isdir(proj):
@@ -2115,7 +2200,7 @@ class PixelPawsGUI:
                 pass
 
         X = augment_features_post_cache(X, clf_data, model, dlc_path, log_fn=self._pr_log)
-        y_proba = predict_with_xgboost(model, X, calibrator=clf_data.get('prob_calibrator'),
+        y_proba = predict_with_xgboost(model, X, calibrator=(clf_data.get('prob_calibrator') or clf_data.get('calibrator')),
                                        fold_models=clf_data.get('fold_models'))
         y_pred = apply_smoothing(y_proba, clf_data, smooth)
         cap = _cv2.VideoCapture(video_path)
@@ -2135,8 +2220,7 @@ class PixelPawsGUI:
         import numpy as _np
         try:
             from evaluation_tab import render_session_diagnostic, EvaluationTab
-            with open(clf_path, 'rb') as f:
-                clf_data = pickle.load(f)
+            clf_data = _robust_unpickle(clf_path)
             clf_data['bp_include_list'] = clean_bodyparts_list(clf_data.get('bp_include_list', []))
             clf_data['bp_pixbrt_list'] = clean_bodyparts_list(clf_data.get('bp_pixbrt_list', []))
             clf_data = auto_detect_bodyparts_from_model(clf_data, verbose=False)
@@ -2527,7 +2611,7 @@ class PixelPawsGUI:
     def create_analysis_tab(self):
         """Analysis tab — subjects overview + settings + inline graphs (embedded AnalysisTab)."""
         frame = ttk.Frame(self.notebook)
-        self.notebook.add(frame, text="📈 Analysis")
+        self.notebook.add(frame, text="📈 Single-Classifier Analysis")
         if ANALYSIS_TAB_AVAILABLE:
             self.analysis_tab = AnalysisTab(frame, self)
             self.analysis_tab.pack(fill='both', expand=True)
@@ -2544,6 +2628,25 @@ class PixelPawsGUI:
         if not isinstance(getattr(self, 'batch_folder', None), tk.StringVar):
             self.batch_folder = tk.StringVar()
         self.batch_folder.set(self.current_project_folder.get() or '')
+
+        # === One-click scoring (the mainline path) ===
+        hero_frame = ttk.LabelFrame(parent, text="One-click scoring", padding=10)
+        hero_frame.pack(fill='x', padx=15, pady=6)
+        hero_btn = ttk.Button(hero_frame,
+                              text="▶  Run default classifier set (Core 8)",
+                              command=self.run_default_classifier_set)
+        try:
+            hero_btn.configure(style='Accent.TButton')
+        except Exception:
+            pass
+        hero_btn.pack(anchor='w')
+        ttk.Label(hero_frame,
+                  text="Scores every project video with the validated bundled set: licking, "
+                       "scratching, facial grooming, body grooming, rearing, jumping, walking, "
+                       "and stillness. Replaces the classifier list below; use the controls "
+                       "below only for custom runs.",
+                  foreground='gray', wraplength=760,
+                  justify='left').pack(anchor='w', pady=(4, 0))
 
         # === Input options ===
         input_frame = ttk.LabelFrame(parent, text="Input options", padding=10)
@@ -2608,6 +2711,8 @@ class PixelPawsGUI:
                    command=self.batch_preview_mapping).pack(side='left', padx=2)
         ttk.Button(btn_frame, text="🔄 Add All",
                    command=self.batch_autodetect_classifiers).pack(side='left', padx=2)
+        ttk.Button(btn_frame, text="📦 Add All Bundled",
+                   command=self.batch_add_all_bundled).pack(side='left', padx=2)
         self._refresh_batch_clf_options()
 
         # === Session readiness (pose / features extracted · group from key file) ===
@@ -2739,6 +2844,7 @@ class PixelPawsGUI:
                     opts[f"[Global] {os.path.basename(full)}"] = full
         except Exception:
             pass
+        opts.update(self.bundled_classifier_options())
         self.batch_clf_options = opts
         combo['values'] = list(opts.keys())
         if opts and not self.batch_clf_var.get():
@@ -2750,8 +2856,7 @@ class PixelPawsGUI:
         if not path or path in self.batch_classifiers:
             return False
         try:
-            with open(path, 'rb') as f:
-                clf_data = pickle.load(f)
+            clf_data = _robust_unpickle(path)
             self.batch_classifiers[path] = {
                 'use_override': False,
                 'threshold': clf_data.get('best_thresh', 0.5),
@@ -2767,6 +2872,50 @@ class PixelPawsGUI:
             }
         self.batch_clf_listbox.insert(tk.END, label or os.path.basename(path))
         return True
+
+    def check_fps_against_classifiers(self, video_paths, clf_datas, parent=None):
+        """Warn before scoring video whose frame rate differs from the classifiers'.
+
+        The bundled classifiers were trained and validated at 60 fps; velocity and lag
+        features are computed per frame, so a 30 fps video silently halves them and the
+        output looks plausible while being wrong. Returns True to proceed.
+        """
+        import cv2 as _cv2
+        expected = {int(cd.get('expected_fps') or 60) for cd in clf_datas if cd}
+        mismatches = []
+        for vp in video_paths:
+            try:
+                cap = _cv2.VideoCapture(vp)
+                fps = cap.get(_cv2.CAP_PROP_FPS)
+                cap.release()
+            except Exception:
+                continue
+            if fps and all(abs(fps - e) > 1.0 for e in expected):
+                mismatches.append(f"{os.path.basename(vp)}: {fps:.0f} fps")
+        if not mismatches:
+            return True
+        exp = ", ".join(str(e) for e in sorted(expected))
+        listing = "\n".join(mismatches[:8]) + ("\n..." if len(mismatches) > 8 else "")
+        return messagebox.askyesno(
+            "Frame-rate mismatch",
+            f"These classifiers were trained at {exp} fps, but:\n\n{listing}\n\n"
+            "Velocity-based features scale with frame rate, so predictions on these "
+            "videos may be unreliable. Continue anyway?", parent=parent)
+
+    def batch_add_all_bundled(self):
+        """Add every bundled encyclopedia classifier to the batch list.
+
+        Transition and sequencing analyses need the full state set (licking, scratching,
+        both groomings, rearing, moving, stillness), so adding them one by one is the
+        common case made tedious; this is the one-click version.
+        """
+        added = 0
+        for disp, path in self.bundled_classifier_options().items():
+            if self._batch_add_classifier_path(path, label=disp):
+                added += 1
+        messagebox.showinfo("Bundled classifiers",
+                            f"Added {added} bundled classifier(s) to the batch."
+                            if added else "All bundled classifiers are already in the batch.")
 
     def _batch_add_selected_classifier(self):
         """Add the classifier currently chosen in the dropdown to the batch list."""
@@ -2897,15 +3046,29 @@ class PixelPawsGUI:
                             f"Classifier copied to global library:\n{dst}")
 
     def _import_classifier_from_global(self):
-        """Copy a .pkl from the global library into the current project."""
+        """Copy a .pkl from the global library into the current project.
+
+        When the per-user global library is empty (every fresh install), fall through to
+        the bundled encyclopedia instead of dead-ending -- that folder always ships with
+        the app and is the "score without training" starting point.
+        """
         import shutil
         from user_config import get_global_classifiers_folder
         gcf = get_global_classifiers_folder()
         if not os.path.isdir(gcf) or not any(
                 f.endswith('.pkl') for f in os.listdir(gcf)):
-            messagebox.showinfo("Empty",
-                                "Global classifiers folder is empty or doesn't exist.")
-            return
+            enc = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               'pixelpaws_global_classifier_encyclopedia', 'classifiers')
+            if os.path.isdir(enc):
+                messagebox.showinfo(
+                    "Using bundled classifiers",
+                    "Your global classifiers folder is empty, so this will import from "
+                    "the classifier encyclopedia that ships with PixelPaws.")
+                gcf = enc
+            else:
+                messagebox.showinfo("Empty",
+                                    "Global classifiers folder is empty or doesn't exist.")
+                return
         src = filedialog.askopenfilename(
             title="Select classifier to import",
             initialdir=gcf,
@@ -3980,6 +4143,12 @@ class PixelPawsGUI:
         # Sync transitions tab
         if TRANSITIONS_TAB_AVAILABLE and hasattr(self, 'transitions_tab'):
             self.transitions_tab.on_project_changed()
+        if hasattr(self, 'multi_classifier_tab'):
+            self.multi_classifier_tab.on_project_changed()
+        if hasattr(self, 'locomotion_tab'):
+            self.locomotion_tab.on_project_changed()
+        if hasattr(self, 'sequencing_tab'):
+            self.sequencing_tab.on_project_changed()
 
         # Sync weight bearing tab
         if GAIT_LIMB_TAB_AVAILABLE and hasattr(self, 'wb_tab'):
@@ -4052,20 +4221,73 @@ class PixelPawsGUI:
     # ------------------------------------------------------------------
 
     def _load_key_file(self, folder: str):
-        """Read <project>/key_file.csv → self.key_file_data {Subject: Treatment}."""
+        """Resolve and read the project's key file → self.key_file_data
+        {Subject: Treatment} and self.key_file_path.
+
+        Resolution order: PixelPaws_project.json 'key_file' entry (relative
+        paths resolved against the project) → legacy <project>/key_file.csv →
+        project-wide discovery (project_config.find_key_files). A discovered
+        path is persisted back into the project config so later opens skip
+        the walk. Never prompts."""
         import csv
-        key_path = os.path.join(folder, 'key_file.csv')
         self.key_file_data = {}
-        if os.path.isfile(key_path):
+        self.key_file_path = None
+
+        key_path = None
+        from_config = False
+        try:
+            from project_config import ProjectConfig, find_key_files
+            cfg = ProjectConfig.load(folder)
+            if cfg.key_file:
+                cand = cfg.key_file
+                if not os.path.isabs(cand):
+                    cand = os.path.join(folder, cand)
+                if os.path.isfile(cand):
+                    key_path = cand
+                    from_config = True
+        except Exception:
+            find_key_files = None
+
+        if key_path is None:
+            legacy = os.path.join(folder, 'key_file.csv')
+            if os.path.isfile(legacy):
+                key_path = legacy
+            elif find_key_files is not None:
+                try:
+                    hits = find_key_files(folder)
+                    if hits:
+                        key_path = hits[0]
+                except Exception:
+                    pass
+
+        if not key_path:
+            return
+        try:
+            with open(key_path, newline='') as f:
+                for row in csv.DictReader(f):
+                    subj = (row.get('Subject') or '').strip()
+                    trt = (row.get('Treatment') or '').strip()
+                    if subj:
+                        self.key_file_data[subj] = trt
+            self.key_file_path = os.path.abspath(key_path)
+        except Exception as e:
+            print(f"Warning: could not load key file: {e}")
+            return
+
+        # Persist a discovered path so the next open resolves instantly.
+        if not from_config:
             try:
-                with open(key_path, newline='') as f:
-                    for row in csv.DictReader(f):
-                        subj = row.get('Subject', '').strip()
-                        trt  = row.get('Treatment', '').strip()
-                        if subj:
-                            self.key_file_data[subj] = trt
-            except Exception as e:
-                print(f"Warning: could not load key file: {e}")
+                from project_config import ProjectConfig
+                cfg = ProjectConfig.load(folder)
+                try:
+                    rel = os.path.relpath(self.key_file_path, folder)
+                except ValueError:      # cross-drive on Windows
+                    rel = self.key_file_path
+                if cfg.key_file != rel:
+                    cfg.key_file = rel
+                    cfg.save(folder)
+            except Exception:
+                pass
 
     def _open_key_file_dialog(self):
         """Open the KeyFileGeneratorDialog for the current project.
@@ -4094,6 +4316,16 @@ class PixelPawsGUI:
 
         def _on_save(data):
             self.key_file_data = data
+            kp = os.path.join(folder, 'key_file.csv')
+            if os.path.isfile(kp):
+                self.key_file_path = os.path.abspath(kp)
+            # Pick the fresh key up downstream without another click.
+            try:
+                at = getattr(self, 'analysis_tab', None)
+                if at is not None:
+                    at.scan_project_folder(folder)
+            except Exception:
+                pass
 
         KeyFileGeneratorDialog(self.root, folder, basenames,
                                existing_groups=self.key_file_data.copy(),
@@ -7981,8 +8213,7 @@ class PixelPawsGUI:
                 from active_learning_v2 import _robust_unpickle
                 X_full = _robust_unpickle(feature_cache_file)
             except Exception:
-                with open(feature_cache_file, 'rb') as f:
-                    X_full = pickle.load(f)
+                X_full = _robust_unpickle(feature_cache_file)
         else:
             # Extract features (only done once per video+config, reused for all behaviors)
             self.log_train(f"  [Extract] Extracting features for {session['session_name']}")
@@ -9684,8 +9915,12 @@ class PixelPawsGUI:
         ttk.Label(run_lf, text="Analyze the current project's videos with the active model. "
                   "Detected keypoints are written next to each video as DLC .h5 files.",
                   foreground='#555', wraplength=620, justify='left').pack(anchor='w', pady=(0, 6))
-        ttk.Button(run_lf, text="🐾 Analyze Videos (Pose Tracking)…",
-                   command=self.open_pose_extraction, style='Accent.TButton').pack(anchor='w')
+        _run_btns = ttk.Frame(run_lf)
+        _run_btns.pack(anchor='w')
+        ttk.Button(_run_btns, text="🐾 Analyze Videos (Pose Tracking)…",
+                   command=self.open_pose_extraction, style='Accent.TButton').pack(side='left')
+        ttk.Button(_run_btns, text="➕ Add Videos…",
+                   command=self.add_videos_to_project).pack(side='left', padx=(8, 0))
 
         self._build_pose_model_manager(frame)
 
@@ -9856,6 +10091,154 @@ class PixelPawsGUI:
                     f"Could not load the DLC inference engine / model bundle:\n{e}")
             return False
 
+    def add_videos_to_project(self, on_done=None):
+        """Import videos from anywhere (portal, SD card, network) into the
+        current project's videos/ folder, optionally transcoding to H.265 with
+        the intake-pipeline encode (source files are never modified).
+        on_done: optional callable invoked (main thread) when the import
+        finishes or is abandoned — used by the pose dialog to rescan."""
+        import shutil as _sh
+
+        def _abandon():
+            if on_done:
+                try:
+                    on_done()
+                except Exception:
+                    pass
+        proj = self.current_project_folder.get()
+        if not proj or not os.path.isdir(proj):
+            messagebox.showwarning("No project", "Load a project folder first.")
+            _abandon()
+            return
+        paths = filedialog.askopenfilenames(
+            title="Select videos to add to the project",
+            filetypes=[("Video files", "*.mp4 *.avi *.mov *.mkv"),
+                       ("All files", "*.*")])
+        if not paths:
+            _abandon()
+            return
+        videos_dir = os.path.join(proj, 'videos')
+        os.makedirs(videos_dir, exist_ok=True)
+
+        ffmpeg_ok = _sh.which('ffmpeg') is not None
+
+        win = tk.Toplevel(self.root)
+        win.title("Add Videos to Project")
+        win.transient(self.root)
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        w, h = 560, 380
+        win.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+        outer = ttk.Frame(win, padding=12)
+        outer.pack(fill='both', expand=True)
+        ttk.Label(outer, text=f"{len(paths)} video(s) selected",
+                  font=(FONT_FAMILY, 11, 'bold')).pack(anchor='w')
+        tr_var = tk.BooleanVar(value=ffmpeg_ok)
+        tr_chk = ttk.Checkbutton(
+            outer, text="Transcode to H.265 while importing (recommended — "
+                        "same encode as the transfer portal)",
+            variable=tr_var)
+        tr_chk.pack(anchor='w', pady=(6, 0))
+        if not ffmpeg_ok:
+            tr_var.set(False)
+            tr_chk.config(state='disabled')
+        ttk.Label(outer, text="Source files are left untouched. Videos whose name already "
+                              "exists in the project are skipped.",
+                  foreground='gray', wraplength=520, justify='left').pack(anchor='w', pady=(2, 6))
+        prog = ttk.Progressbar(outer, mode='determinate', maximum=len(paths))
+        prog.pack(fill='x', pady=(4, 2))
+        stat = ttk.Label(outer, text="ready")
+        stat.pack(anchor='w')
+        logtxt = scrolledtext.ScrolledText(outer, height=8, wrap='word',
+                                           font=('Consolas', 9))
+        logtxt.pack(fill='both', expand=True, pady=(6, 6))
+        btns = ttk.Frame(outer)
+        btns.pack(fill='x')
+        cancel_evt = threading.Event()
+
+        def _log(m):
+            self.root.after(0, lambda: (logtxt.insert(tk.END, m + "\n"),
+                                        logtxt.see(tk.END)))
+
+        def _close():
+            cancel_evt.set()
+            win.destroy()
+        win.protocol("WM_DELETE_WINDOW", _close)
+        close_btn = ttk.Button(btns, text="Cancel", command=_close)
+        close_btn.pack(side='right')
+
+        def _worker(do_transcode):
+            added = skipped = failed = 0
+            build_cmd = out_ok = None
+            if do_transcode:
+                try:
+                    from pp_pipeline import build_transcode_cmd, transcode_output_ok
+                    build_cmd, out_ok = build_transcode_cmd, transcode_output_ok
+                except Exception as e:
+                    _log(f"intake pipeline unavailable ({e!r}) — copying instead")
+                    do_transcode = False
+            for i, src in enumerate(paths, 1):
+                if cancel_evt.is_set():
+                    break
+                srcp = Path(src)
+                stem = srcp.stem
+                existing = [p for p in Path(videos_dir).glob(f"{stem}.*")
+                            if p.suffix.lower() in ('.mp4', '.avi', '.mov', '.mkv')]
+                self.root.after(0, lambda i=i, n=srcp.name:
+                                (prog.config(value=i - 1),
+                                 stat.config(text=f"[{i}/{len(paths)}] {n}")))
+                if existing:
+                    _log(f"↷ {srcp.name}: already in project, skipped")
+                    skipped += 1
+                    continue
+                try:
+                    if do_transcode:
+                        dst = Path(videos_dir) / f"{stem}.mp4"
+                        r = subprocess.run(build_cmd(srcp, dst),
+                                           capture_output=True, text=True)
+                        if r.returncode != 0 or not out_ok(dst):
+                            if dst.exists():
+                                dst.unlink()
+                            _log(f"✗ {srcp.name}: transcode failed — copying instead")
+                            dst = Path(videos_dir) / srcp.name
+                            _sh.copy2(srcp, dst)
+                    else:
+                        dst = Path(videos_dir) / srcp.name
+                        _sh.copy2(srcp, dst)
+                    try:
+                        from pawcapture_meta import read_calibration
+                        c = read_calibration(dst)
+                        _cal = (f"; calibration {c['mm_per_pixel']:.4f} mm/px"
+                                if c and c.get("mm_per_pixel") else
+                                "; no spatial calibration (distances in px)")
+                    except Exception:
+                        _cal = ""
+                    _log(f"✓ {srcp.name} → videos/{dst.name}{_cal}")
+                    added += 1
+                except Exception as e:
+                    _log(f"✗ {srcp.name}: {e}")
+                    failed += 1
+
+            def _finish():
+                prog.config(value=len(paths))
+                stat.config(text=f"done — {added} added, {skipped} skipped"
+                                 + (f", {failed} failed" if failed else ""))
+                close_btn.config(text="Close")
+                if added:
+                    stat.config(text=stat.cget('text') + " — run pose tracking next")
+                try:
+                    self._ba_scan_sessions()
+                except Exception:
+                    pass
+                if on_done:
+                    try:
+                        on_done()
+                    except Exception:
+                        pass
+            self.root.after(0, _finish)
+
+        threading.Thread(target=_worker, args=(bool(tr_var.get()),),
+                         daemon=True).start()
+
     def open_pose_extraction(self):
         """Tools > Analyze Videos (Pose Tracking).
 
@@ -9876,10 +10259,12 @@ class PixelPawsGUI:
             return
 
         def _predict():
+            # One-pass chain: actually run the Core-8 default set (it selects
+            # the Run Classifiers tab itself so the user sees progress).
             try:
-                self.notebook.select("🎬 Predict & Review")
-            except Exception:
-                pass
+                self.run_default_classifier_set()
+            except Exception as e:
+                messagebox.showerror("Run classifiers", str(e))
 
         def _frames():
             try:
@@ -9887,8 +10272,16 @@ class PixelPawsGUI:
             except Exception as e:
                 messagebox.showerror("Extract Problem Frames", str(e))
 
+        def _features():
+            try:
+                self.open_feature_extraction_run()
+            except Exception as e:
+                messagebox.showerror("Feature Extraction", str(e))
+
         run_dlc_flow(self.root, proj, on_predictions_done=_predict,
-                     on_select_frames=_frames)
+                     on_select_frames=_frames,
+                     on_extract_features=_features,
+                     on_add_videos=self.add_videos_to_project)
 
     def extract_problem_frames(self):
         """Surface frames where DLC tracking is unreliable and/or the classifier is
@@ -10586,8 +10979,7 @@ class PixelPawsGUI:
             log(f"Loading: {os.path.basename(file_path)}")
             
             # Load features
-            with open(file_path, 'rb') as f:
-                features_df = pickle.load(f)
+            features_df = _robust_unpickle(file_path)
             
             if not isinstance(features_df, pd.DataFrame):
                 self.root.after(0, lambda: messagebox.showerror(
@@ -11055,8 +11447,7 @@ class PixelPawsGUI:
         """Inspect features file in background thread"""
         try:
             # Load file
-            with open(file_path, 'rb') as f:
-                data = pickle.load(f)
+            data = _robust_unpickle(file_path)
             
             # Analyze contents
             analysis = self._analyze_features_data(data, file_path)
@@ -11608,8 +11999,7 @@ class PixelPawsGUI:
                     # Get feature data
                     try:
                         # Load the actual dataframe
-                        with open(file_path, 'rb') as f:
-                            df = pickle.load(f)
+                        df = _robust_unpickle(file_path)
                         
                         if feature not in df.columns:
                             ttk.Label(data_display_frame,
@@ -12137,11 +12527,70 @@ Median: {feature_data.median():.6f}
         ttk.Button(selbar, text="Rescan", command=_scan).pack(side='left', padx=(6, 0))
         status_lbl = ttk.Label(selbar, text="", foreground='#555'); status_lbl.pack(side='right')
 
-        # ── Progress log ──
+        # ── Progress bars + log (mirrors the pose-tracking progress dialog) ──
         pfr = ttk.LabelFrame(outer, text="Progress", padding=6)
         pfr.pack(fill='both', expand=True, pady=(0, 6))
+
+        ttk.Label(pfr, text="Overall progress",
+                  font=(FONT_FAMILY, 9, 'bold')).pack(anchor='w')
+        sess_bar = ttk.Progressbar(pfr, mode='determinate', maximum=1)
+        sess_bar.pack(fill='x', pady=(2, 2))
+        sess_lbl = ttk.Label(pfr, text="0 / 0 sessions")
+        sess_lbl.pack(anchor='w', pady=(0, 4))
+
+        cur_lbl = ttk.Label(pfr, text="—", font=(FONT_FAMILY, 9, 'bold'))
+        cur_lbl.pack(anchor='w')
+        cur_bar = ttk.Progressbar(pfr, mode='determinate', maximum=100)
+        cur_bar.pack(fill='x', pady=(2, 2))
+        cur_stats = ttk.Label(pfr, text="idle")
+        cur_stats.pack(anchor='w', pady=(0, 4))
+
         logtxt = scrolledtext.ScrolledText(pfr, height=8, wrap='word', font=('Consolas', 9))
         logtxt.pack(fill='both', expand=True)
+
+        # written from the worker thread, read by the UI tick — plain dict
+        # writes are atomic under the GIL, no lock needed
+        prog_state = {'sess_done': 0, 'sess_total': 0, 'name': '',
+                      'cur': 0, 'cur_total': 0, 't0': None}
+
+        def _progress(kind, payload):
+            if kind == 'start':
+                idx, total, name, nframes = payload
+                prog_state['sess_done'] = idx - 1
+                prog_state['sess_total'] = total
+                prog_state['name'] = name
+                prog_state['cur'] = 0
+                prog_state['cur_total'] = nframes
+                prog_state['t0'] = time.time()
+            elif kind == 'frame':
+                prog_state['cur'] = payload
+            elif kind == 'done_one':
+                prog_state['sess_done'] = payload
+                prog_state['cur'] = prog_state['cur_total']
+
+        def _tick():
+            if not win.winfo_exists():
+                return
+            n, tot = prog_state['sess_done'], prog_state['sess_total']
+            sess_bar.config(maximum=max(tot, 1), value=n)
+            sess_lbl.config(text=f"{n} / {tot} sessions")
+            cur, ctot = prog_state['cur'], prog_state['cur_total']
+            if prog_state['name']:
+                cur_lbl.config(text=prog_state['name'])
+            if ctot:
+                cur_bar.config(value=(cur / ctot) * 100)
+                el = max(time.time() - (prog_state['t0'] or time.time()), 1e-3)
+                fps = cur / el
+                if 0 < cur < ctot and fps > 0:
+                    rem = (ctot - cur) / fps
+                    cur_stats.config(text=f"{cur}/{ctot}  {fps:.0f} fps  "
+                                          f"ETA {int(rem // 60)}m {int(rem % 60)}s")
+                elif cur >= ctot:
+                    cur_stats.config(text=f"{ctot} frames — done")
+            if state['running']:
+                win.after(150, _tick)
+            else:
+                cur_stats.config(text="done" if tot and n >= tot else cur_stats.cget('text'))
 
         stop_event = threading.Event()
 
@@ -12165,6 +12614,11 @@ Median: {feature_data.median():.6f}
             state['running'] = True
             run_btn.config(state='disabled'); stop_btn.config(state='normal')
             logtxt.delete('1.0', tk.END)
+            prog_state.update(sess_done=0, sess_total=len(sessions), name='',
+                              cur=0, cur_total=0, t0=None)
+            cur_bar.config(value=0)
+            cur_stats.config(text="starting…")
+            win.after(150, _tick)
 
             def _done():
                 state['running'] = False
@@ -12173,7 +12627,8 @@ Median: {feature_data.median():.6f}
 
             threading.Thread(
                 target=self._run_feature_extraction_thread,
-                args=(sessions, cache_root, None, cfg, _log, stop_event, _done),
+                args=(sessions, cache_root, None, cfg, _log, stop_event, _done,
+                      _progress),
                 daemon=True).start()
 
         # ── Buttons ──
@@ -12444,7 +12899,8 @@ Median: {feature_data.median():.6f}
         run_btn.config(command=start)
 
     def _run_feature_extraction_thread(self, sessions, cache_root,
-                                        project_folder, cfg, log_fn, stop_event, done_fn):
+                                        project_folder, cfg, log_fn, stop_event, done_fn,
+                                        progress_fn=None):
         """Background worker for the Feature Extraction tool.
 
         sessions     : list of dicts with session_name/pose_path/video_path,
@@ -12518,6 +12974,16 @@ Median: {feature_data.median():.6f}
 
                 name = session['session_name']
                 log(f"[{idx}/{total}] {name}")
+                if progress_fn:
+                    _nf = 0
+                    try:
+                        _cap = cv2.VideoCapture(session['video_path'])
+                        if _cap.isOpened():
+                            _nf = max(int(_cap.get(cv2.CAP_PROP_FRAME_COUNT)), 0)
+                        _cap.release()
+                    except Exception:
+                        pass
+                    progress_fn('start', (idx, total, name, _nf))
 
                 _mm_px_session = (_proj_cfg.resolve_mm_per_pixel(session)
                                   if _proj_cfg is not None else None)
@@ -12530,8 +12996,12 @@ Median: {feature_data.median():.6f}
                 if os.path.isfile(cache_file):
                     log("  ✓ Already cached — skipping")
                     skipped += 1
+                    if progress_fn:
+                        progress_fn('done_one', idx)
                     continue
 
+                _fcb = ((lambda i, *_a: progress_fn('frame', i))
+                        if progress_fn else None)
                 try:
                     X = PixelPaws_ExtractFeatures(
                         pose_data_file=session['pose_path'],
@@ -12544,6 +13014,8 @@ Median: {feature_data.median():.6f}
                         include_optical_flow=cfg['include_optical_flow'],
                         bp_optflow_list=cfg['bp_optflow_list'] or None,
                         mm_per_pixel=_mm_px_session,
+                        frame_callback=_fcb,
+                        cancel_flag=stop_event,
                     )
                     if stop_event.is_set():
                         log("\nStopped by user.")
@@ -12555,6 +13027,8 @@ Median: {feature_data.median():.6f}
                 except Exception as e:
                     log(f"  ✗ Error: {e}")
                     errors += 1
+                if progress_fn:
+                    progress_fn('done_one', idx)
 
             if not stop_event.is_set():
                 log(f"\nDone.  {total - skipped - errors} extracted, "
@@ -12609,8 +13083,7 @@ Median: {feature_data.median():.6f}
             
             # Load classifier
             results_text.insert(tk.END, "Loading classifier...\n")
-            with open(clf_path, 'rb') as f:
-                clf_data = pickle.load(f)
+            clf_data = _robust_unpickle(clf_path)
             
             # Try both possible key names for compatibility
             model = clf_data.get('clf_model') or clf_data.get('model')
@@ -12691,8 +13164,7 @@ Median: {feature_data.median():.6f}
                     # Try to load from cache
                     if cache_file:
                         results_text.insert(tk.END, f"  ✓ Loaded from cache\n")
-                        with open(cache_file, 'rb') as f:
-                            X = pickle.load(f)
+                        X = _robust_unpickle(cache_file)
                     else:
                         # Extract features and save to project features/ (or video-local FeatureCache)
                         results_text.insert(tk.END, f"  Extracting features...\n")
@@ -12739,7 +13211,7 @@ Median: {feature_data.median():.6f}
                     X = augment_features_post_cache(X, clf_data, model, file_set['dlc'])
 
                     proba = predict_with_xgboost(
-                        model, X, calibrator=clf_data.get('prob_calibrator'), fold_models=clf_data.get('fold_models'))
+                        model, X, calibrator=(clf_data.get('prob_calibrator') or clf_data.get('calibrator')), fold_models=clf_data.get('fold_models'))
 
                     min_len = min(len(proba), len(labels))
                     all_proba.extend(proba[:min_len])
@@ -13056,8 +13528,7 @@ Median: {feature_data.median():.6f}
                 optimizer_window.update()
                 
                 # Load classifier
-                with open(clf_path, 'rb') as f:
-                    clf_data = pickle.load(f)
+                clf_data = _robust_unpickle(clf_path)
                 
                 # Try both possible key names for compatibility
                 model = clf_data.get('clf_model') or clf_data.get('model')
@@ -13180,7 +13651,7 @@ Median: {feature_data.median():.6f}
 
                     # Get probabilities
                     proba = predict_with_xgboost(
-                        model, X, calibrator=clf_data.get('prob_calibrator'), fold_models=clf_data.get('fold_models'))
+                        model, X, calibrator=(clf_data.get('prob_calibrator') or clf_data.get('calibrator')), fold_models=clf_data.get('fold_models'))
 
                     # Match lengths
                     min_len = min(len(proba), len(labels))
@@ -13433,8 +13904,7 @@ Median: {feature_data.median():.6f}
                 optimizer_window.update()
                 
                 # Load classifier
-                with open(clf_path, 'rb') as f:
-                    clf_data = pickle.load(f)
+                clf_data = _robust_unpickle(clf_path)
                 
                 # Try both possible key names for compatibility
                 model = clf_data.get('clf_model') or clf_data.get('model')
@@ -13486,7 +13956,7 @@ Median: {feature_data.median():.6f}
 
                 # Get probabilities
                 y_proba = predict_with_xgboost(
-                    model, X, calibrator=clf_data.get('prob_calibrator'), fold_models=clf_data.get('fold_models'))
+                    model, X, calibrator=(clf_data.get('prob_calibrator') or clf_data.get('calibrator')), fold_models=clf_data.get('fold_models'))
 
                 # Truncate to match labels length
                 min_len = min(len(y_proba), len(human_labels))
@@ -14047,6 +14517,45 @@ Left/Right  - Previous/Next frame
     
     # ===== PREDICTION TAB METHODS =====
     
+    # Tier-3 (BELOW_GATE) classifiers ship in the encyclopedia but are excluded
+    # from the one-click default set; future encyclopedia additions join the
+    # default set unless listed here.
+    _CORE8_EXCLUDE_PKLS = {'classifier_belly_groom.pkl', 'classifier_back_groom.pkl'}
+
+    def core_bundled_classifier_options(self):
+        """The Core 8 default scoring set: bundled encyclopedia minus Tier-3."""
+        return {d: p for d, p in self.bundled_classifier_options().items()
+                if os.path.basename(p).lower() not in self._CORE8_EXCLUDE_PKLS}
+
+    def bundled_classifier_options(self):
+        """{'[Bundled] name': path} from the shipped classifier encyclopedia.
+
+        Manifest-driven, so the corrected registry (v2 rebuilds, deployed operating
+        points, jump) is authoritative; falls back to a folder scan when no manifest is
+        present. Merged into the Predict and Run Classifiers dropdowns so scoring with a
+        bundled classifier needs no manual file copying.
+        """
+        import glob as _g
+        import json as _json
+        enc = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'pixelpaws_global_classifier_encyclopedia')
+        out = {}
+        try:
+            man = os.path.join(enc, 'manifest.json')
+            if os.path.isfile(man):
+                with open(man, encoding='utf-8') as fh:
+                    m = _json.load(fh)
+                for c in m.get('classifiers', []):
+                    full = os.path.join(enc, c.get('path', ''))
+                    if os.path.isfile(full):
+                        out[f"[Bundled] {c.get('name', os.path.basename(full))}"] = full
+            else:
+                for full in sorted(_g.glob(os.path.join(enc, 'classifiers', '*.pkl'))):
+                    out[f"[Bundled] {os.path.basename(full)}"] = full
+        except Exception:
+            pass
+        return out
+
     def refresh_pred_classifiers(self):
         """Populate the predict-tab classifier dropdown from project + global classifiers."""
         from user_config import get_global_classifiers_folder
@@ -14069,6 +14578,9 @@ Left/Right  - Previous/Next frame
                     os.path.join(gcf, '**', '*.pkl'), recursive=True)):
                 basename = os.path.basename(full)
                 self.pred_classifier_options[f"[Global] {basename}"] = full
+
+        # Bundled encyclopedia — the no-training path the platform is built around
+        self.pred_classifier_options.update(self.bundled_classifier_options())
 
         if hasattr(self, 'pred_classifier_combo'):
             self.pred_classifier_combo['values'] = list(self.pred_classifier_options.keys())
@@ -14221,8 +14733,7 @@ Left/Right  - Previous/Next frame
             return
         
         try:
-            with open(clf_path, 'rb') as f:
-                clf_data = pickle.load(f)
+            clf_data = _robust_unpickle(clf_path)
             
             info = "=== Classifier Information ===\n\n"
             info += f"File: {os.path.basename(clf_path)}\n\n"
@@ -14233,7 +14744,7 @@ Left/Right  - Previous/Next frame
                 info += f"Best Threshold: {clf_data['best_thresh']:.3f}\n"
             if 'min_bout' in clf_data:
                 info += f"Min Bout: {clf_data['min_bout']} frames\n"
-            if clf_data.get('prob_calibrator') is not None:
+            if (clf_data.get('prob_calibrator') or clf_data.get('calibrator')) is not None:
                 info += "Calibration: isotonic (on OOF)\n"
             _fm = clf_data.get('fold_models') or []
             if _fm:
@@ -14501,13 +15012,16 @@ Left/Right  - Previous/Next frame
         
         try:
             # Load classifier first to get defaults
-            with open(clf_path, 'rb') as f:
-                clf_data_preview = pickle.load(f)
+            clf_data_preview = _robust_unpickle(clf_path)
             
             # Clean body parts lists (remove DLC network names)
             clf_data_preview['bp_include_list'] = clean_bodyparts_list(clf_data_preview.get('bp_include_list', []))
             clf_data_preview['bp_pixbrt_list'] = clean_bodyparts_list(clf_data_preview.get('bp_pixbrt_list', []))
             
+            # frame-rate pre-flight (velocity features scale with fps)
+            if not self.check_fps_against_classifiers([video_path], [clf_data_preview]):
+                return
+
             # Show parameter adjustment dialog
             param_result = self.show_parameter_dialog(clf_data_preview)
             if param_result is None:  # User cancelled
@@ -14536,8 +15050,7 @@ Left/Right  - Previous/Next frame
                     progress_label.config(text="Loading classifier...")
                     self.root.update()
                     
-                    with open(clf_path, 'rb') as f:
-                        clf_data = pickle.load(f)
+                    clf_data = _robust_unpickle(clf_path)
                     
                     # Clean body parts lists (remove DLC network names)
                     clf_data['bp_include_list'] = clean_bodyparts_list(clf_data.get('bp_include_list', []))
@@ -14659,7 +15172,7 @@ Left/Right  - Previous/Next frame
                     self.root.update()
 
                     y_proba = predict_with_xgboost(
-                        model, X, calibrator=clf_data.get('prob_calibrator'), fold_models=clf_data.get('fold_models'))
+                        model, X, calibrator=(clf_data.get('prob_calibrator') or clf_data.get('calibrator')), fold_models=clf_data.get('fold_models'))
                     y_pred = (y_proba >= best_thresh).astype(int)
                     
                     # Apply bout filtering with custom parameters
@@ -15285,8 +15798,7 @@ Left/Right  - Previous/Next frame
             
             # Load classifier
             self._pred_log("Loading classifier...\n")
-            with open(clf_path, 'rb') as f:
-                clf_data = pickle.load(f)
+            clf_data = _robust_unpickle(clf_path)
             
             # Clean body parts lists (remove DLC network names)
             clf_data['bp_include_list'] = clean_bodyparts_list(clf_data.get('bp_include_list', []))
@@ -15341,8 +15853,7 @@ Left/Right  - Previous/Next frame
             if features_path and os.path.isfile(features_path):
                 self._pred_log("Loading pre-extracted features...\n")
                 try:
-                    with open(features_path, 'rb') as f:
-                        features_data = pickle.load(f)
+                    features_data = _robust_unpickle(features_path)
 
                     # Handle dict wrapper (e.g. {'X': array}) or bare array/DataFrame
                     if isinstance(features_data, dict):
@@ -15437,7 +15948,7 @@ Left/Right  - Previous/Next frame
             # Predict
             self._pred_log("Running classifier...\n")
             y_proba = predict_with_xgboost(
-                model, X, calibrator=clf_data.get('prob_calibrator'), fold_models=clf_data.get('fold_models'))
+                model, X, calibrator=(clf_data.get('prob_calibrator') or clf_data.get('calibrator')), fold_models=clf_data.get('fold_models'))
 
             # Apply smoothing (bout filters / HMM Viterbi / none)
             _smooth = (self.pred_smoothing_mode.get()
@@ -15639,8 +16150,7 @@ Left/Right  - Previous/Next frame
                 
                 try:
                     # Load classifier
-                    with open(clf_path, 'rb') as f:
-                        clf_data = pickle.load(f)
+                    clf_data = _robust_unpickle(clf_path)
                     
                     clf_data['bp_include_list'] = clean_bodyparts_list(clf_data.get('bp_include_list', []))
                     clf_data['bp_pixbrt_list'] = clean_bodyparts_list(clf_data.get('bp_pixbrt_list', []))
@@ -15707,8 +16217,7 @@ Left/Right  - Previous/Next frame
                     elif cache_file and cache_type == "old":
                         # Old cache found - check if compatible by loading and inspecting
                         try:
-                            with open(cache_file, 'rb') as f:
-                                cached_features = pickle.load(f)
+                            cached_features = _robust_unpickle(cache_file)
                             
                             # Check if it's a DataFrame with columns
                             if hasattr(cached_features, 'columns'):
@@ -15807,8 +16316,7 @@ Left/Right  - Previous/Next frame
         if filepath and filepath not in self.batch_classifiers:
             # Load classifier to get defaults
             try:
-                with open(filepath, 'rb') as f:
-                    clf_data = pickle.load(f)
+                clf_data = _robust_unpickle(filepath)
                 
                 self.batch_classifiers[filepath] = {
                     'use_override': False,
@@ -15872,8 +16380,7 @@ Left/Right  - Previous/Next frame
         
         # Load classifier to get defaults
         try:
-            with open(clf_path, 'rb') as f:
-                clf_data = pickle.load(f)
+            clf_data = _robust_unpickle(clf_path)
         except Exception:
             clf_data = {}
         
@@ -16082,27 +16589,107 @@ Left/Right  - Previous/Next frame
         self._batch_cancel_flag.set()
         self._batch_log("\nCancelling — aborting extraction…\n")
 
+    def run_default_classifier_set(self):
+        """One-click: score the project's videos with the Core 8 bundled set.
+
+        Resets the batch classifier list to exactly the default set, points
+        the batch at the current project, and starts without a confirm
+        dialog. Manual curation flows (Add / Add All Bundled / Run) are
+        untouched."""
+        if getattr(self, '_batch_thread', None) is not None and self._batch_thread.is_alive():
+            messagebox.showinfo("Batch running",
+                                "A classifier run is already in progress.")
+            return
+        proj = self.current_project_folder.get()
+        if not proj or not os.path.isdir(proj):
+            messagebox.showwarning("No project", "Load a project folder first.")
+            return
+        core = self.core_bundled_classifier_options()
+        if not core:
+            messagebox.showerror(
+                "Bundled classifiers not found",
+                "The bundled classifier encyclopedia could not be located. "
+                "Reinstall PixelPaws or add classifiers manually below.")
+            return
+
+        self.batch_folder.set(proj)
+        # Auto-pick the video extension from what is actually in the project.
+        import glob as _g
+        search_dir = os.path.join(proj, 'videos')
+        if not os.path.isdir(search_dir):
+            search_dir = proj
+        cur = (self.batch_video_ext.get() or '.mp4')
+        exts = [cur] + [e for e in ('.mp4', '.avi') if e != cur]
+        for ext in exts:
+            if _g.glob(os.path.join(search_dir, f'*{ext}')):
+                self.batch_video_ext.set(ext)
+                break
+
+        # Reset to exactly the default set (defined semantics for "default").
+        self.batch_classifiers.clear()
+        self.batch_clf_listbox.delete(0, tk.END)
+        for disp, path in core.items():
+            self._batch_add_classifier_path(path, label=disp)
+
+        try:
+            self.notebook.select("🚀 Run Classifiers")
+        except Exception:
+            pass
+        self._start_batch_run()
+
     def run_batch_analysis(self):
-        """Run batch analysis"""
+        """Run batch analysis (manual path: validates, confirms, then starts)."""
         if not self.batch_folder.get():
             messagebox.showwarning("No Folder", "Please select a data folder first.")
             return
-        
+
         if not self.batch_classifiers:
             messagebox.showwarning("No Classifiers", "Please add at least one classifier.")
             return
-        
-        if not messagebox.askyesno("Start Batch", 
+
+        if not messagebox.askyesno("Start Batch",
                                    f"Start batch analysis with {len(self.batch_classifiers)} classifier(s)?\n\n"
                                    f"This may take a while depending on the number of videos."):
             return
-        
+
+        self._start_batch_run()
+
+    def _start_batch_run(self):
+        """Shared launcher: fps pre-flight + worker thread. Called by the manual
+        Run button (after its confirm dialog) and by run_default_classifier_set
+        (no confirm -- that is the point of one-click)."""
+        if getattr(self, '_batch_thread', None) is not None and self._batch_thread.is_alive():
+            messagebox.showinfo("Batch running",
+                                "A classifier run is already in progress.")
+            return False
+
+        # frame-rate pre-flight: classifiers are validated at a specific fps and velocity
+        # features scale with it, so a mismatched video gives plausible-looking wrong output
+        try:
+            import glob as _g
+            folder = self.batch_folder.get()
+            ext = (self.batch_video_ext.get() or '.mp4').lstrip('*')
+            vids = _g.glob(os.path.join(folder, '**', f'*{ext}'), recursive=True)[:100]
+            cds = []
+            for path in self.batch_classifiers:
+                try:
+                    cds.append(_robust_unpickle(path))
+                except Exception:
+                    pass
+            if vids and cds and not self.check_fps_against_classifiers(vids, cds):
+                return False
+        except Exception:
+            pass
+
         # Run in thread
         self._batch_cancel_flag.clear()
         self._batch_run_btn.config(state='disabled')
         self._batch_stop_btn.config(state='normal')
-        threading.Thread(target=self._batch_analysis_thread, daemon=True).start()
-    
+        self._batch_thread = threading.Thread(target=self._batch_analysis_thread,
+                                              daemon=True)
+        self._batch_thread.start()
+        return True
+
     def _batch_analysis_thread(self):
         """Batch analysis thread - FULLY IMPLEMENTED"""
         try:
@@ -16180,8 +16767,7 @@ Left/Right  - Previous/Next frame
                     
                     try:
                         # Load classifier
-                        with open(clf_path, 'rb') as f:
-                            clf_data = pickle.load(f)
+                        clf_data = _robust_unpickle(clf_path)
                         
                         # Clean body parts
                         clf_data['bp_include_list'] = clean_bodyparts_list(clf_data.get('bp_include_list', []))
@@ -16285,8 +16871,7 @@ Left/Right  - Previous/Next frame
                                         # Found old cache - test if compatible
                                         test_cache = matches[0]
                                         try:
-                                            with open(test_cache, 'rb') as f:
-                                                test_X = pickle.load(f)
+                                            test_X = _robust_unpickle(test_cache)
                                             
                                             # Check if model's required features are present
                                             if hasattr(model, 'feature_names_in_') and hasattr(test_X, 'columns'):
@@ -16411,7 +16996,7 @@ Left/Right  - Previous/Next frame
                         self.root.update_idletasks()
 
                         y_proba = predict_with_xgboost(
-                            model, X, calibrator=clf_data.get('prob_calibrator'), fold_models=clf_data.get('fold_models'))
+                            model, X, calibrator=(clf_data.get('prob_calibrator') or clf_data.get('calibrator')), fold_models=clf_data.get('fold_models'))
 
                         # Apply smoothing (respects the predict-tab smoothing-mode choice)
                         _smooth = (self.pred_smoothing_mode.get()
@@ -16616,16 +17201,41 @@ Left/Right  - Previous/Next frame
                             ran = getattr(at, 'results_df', None) is not None
                 except Exception:
                     pass
+                # Populate the Sequencing tab from the fresh results so it
+                # arrives ready (sessions selected, priority ordered, key set).
+                try:
+                    sq = getattr(self, 'sequencing_tab', None)
+                    if sq is not None:
+                        sq._autofill_results()
+                        if sq._results_var.get():
+                            sq.scan_results()
+                except Exception:
+                    pass
+                try:
+                    mc = getattr(self, 'multi_classifier_tab', None)
+                    if mc is not None:
+                        mc._autofill_results()
+                        if mc._results_var.get():
+                            mc.scan_results()
+                except Exception:
+                    pass
                 if ran:
                     try:
-                        self.notebook.select("📈 Analysis")
+                        self.notebook.select("📈 Single-Classifier Analysis")
                     except Exception:
                         pass
                     messagebox.showinfo("Batch + analysis complete",
-                        m + "\n\nGraphs are ready in the 📈 Analysis tab.")
+                        m + "\n\nGraphs are ready in the 📈 Single-Classifier Analysis tab.")
                 else:
-                    messagebox.showinfo("Batch complete",
-                        m + "\n\nOpen the 📈 Analysis tab, load/Generate a key file, then Run Analysis.")
+                    # The one moment we offer key-file creation: results exist
+                    # and only the group assignments are missing.
+                    if messagebox.askyesno("Batch complete",
+                            m + "\n\nNo key file (group assignments) was found "
+                                "for this project. Create one now?"):
+                        try:
+                            self._open_key_file_dialog()
+                        except Exception as e:
+                            messagebox.showerror("Key file", str(e))
             self._safe_after(_post_batch)
 
         except Exception as e:

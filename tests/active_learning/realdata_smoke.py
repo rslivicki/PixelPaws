@@ -30,7 +30,7 @@ def main():
     Xdf = pickle.load(open(FEAT, "rb")); cols = list(Xdf.columns)
     cd = joblib.load(CLF); m = cd["clf_model"]
     Xa = augment_features_post_cache(Xdf.copy(), cd, m, h5[0])
-    p = predict_with_xgboost(m, Xa, calibrator=cd.get("prob_calibrator"), fold_models=cd.get("fold_models"))
+    p = predict_with_xgboost(m, Xa, calibrator=(cd.get("prob_calibrator") or cd.get("calibrator")), fold_models=cd.get("fold_models"))
     eng = E.ActiveLearningEngine([{"features": Xdf.values.astype(np.float32),
                                    "labels": np.full(len(Xdf), -1, int)}],
                                  feature_cols=cols, min_bout_frames=5, max_bout_frames=120, min_frame_gap=60)

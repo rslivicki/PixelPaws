@@ -121,6 +121,8 @@ _VIEW_MENU = [
     '— Composition —', 'State Usage', 'State Composition',
     '— Transitions —', 'Transition Matrix', 'Transition Graph',
     'Group Transition Graphs', 'Group Matrices', 'Transition Difference',
+    '— Sequencing —', 'Sequencing Networks', 'Sequencing Difference',
+    'Sequencing Ordination',
     '— Temporal —', 'Ethogram', 'Composition Over Time',
     'Occupancy Over Time', 'Behavior × Group', 'Transition Timeline',
 ]
@@ -3033,7 +3035,7 @@ class TransitionsTab(ttk.Frame):
                         log_fn=self._log_msg)
                     proba = predict_with_xgboost(
                         model, X_aug,
-                        calibrator=cd.get('prob_calibrator'),
+                        calibrator=(cd.get('prob_calibrator') or cd.get('calibrator')),
                         fold_models=cd.get('fold_models'))
                     prob_matrix[:len(proba), bi] = proba
 
@@ -5046,6 +5048,9 @@ class TransitionsTab(ttk.Frame):
             'Transition Matrix':        self._plot_heatmap,
             'Transition Graph':         self._plot_network,
             'Group Transition Graphs':  self._plot_group_networks,
+            'Sequencing Networks':      self._plot_syntax_networks,
+            'Sequencing Difference':    self._plot_syntax_difference,
+            'Sequencing Ordination':    self._plot_syntax_ordination,
             'Group Matrices':           self._plot_group_matrices,
             'Transition Difference':    self._plot_transition_difference,
             'Ethogram':                 self._plot_ethogram,
@@ -5305,6 +5310,148 @@ class TransitionsTab(ttk.Frame):
         nx.draw_networkx_edge_labels(G, pos, edge_labels, ax=ax, font_size=6)
         ax.set_title("State Transition Network")
         ax.axis('off')
+
+    # ------------------------------------------------------------------
+    # Sequencing views — the manuscript's bout-level syntax analysis
+    # (pipeline/syntax_analysis.py; quasi-independence residuals, rarefied
+    # pooled networks, PCoA + PERMANOVA), run on the same priority-resolved
+    # state sequences every other view uses.
+    # ------------------------------------------------------------------
+
+    _SYNTAX_GROUP_COLS = ["#8D99AE", "#CC79A7", "#3b528b", "#21918c",
+                          "#f59f00", "#2f9e44"]
+
+    def _syntax_cohort(self):
+        """Build (cohort, ordered groups) from the current sequences, or (None, msg)."""
+        from pipeline import syntax_analysis as SA
+        seqs = getattr(self, '_state_seqs', None)
+        if not seqs:
+            return None, "Run a transitions compute first."
+        # honor the display time window, as every matrix view does
+        try:
+            seqs = {name: self._win_seq(seq) for name, seq in seqs.items()}
+        except Exception:
+            pass
+        group_of = {name: self._session_group(name) for name in seqs}
+        if not any(group_of.values()):
+            return None, ("Load a key file so sessions carry groups —\n"
+                          "sequencing views compare groups.")
+        named = [s for s in self._states if s != 0]      # unscored is closed over
+        keep_idx = {sid: i for i, sid in enumerate(named)}
+        labels = [self._state_name(s) for s in named]
+        # paired design: within-animal permutation. The key file's Subject column defines
+        # groups, so pairing needs its own column -- an 'Animal' (or 'Pair'/'Block') column
+        # naming which rows are the same animal across conditions. Without one, fall back
+        # to repeated subjects across sessions.
+        subs = getattr(self, '_session_subjects', None) or {}
+        strata_of = {n: subs.get(n, n) for n in seqs}
+        kdf = getattr(self, '_key_df', None)
+        if kdf is not None:
+            pcol = next((c for c in ('Animal', 'Pair', 'Block') if c in kdf.columns), None)
+            if pcol:
+                m = {str(r['Subject']): str(r[pcol]) for _, r in kdf.iterrows()}
+                strata_of = {n: m.get(str(subs.get(n, n)), subs.get(n, n)) for n in seqs}
+        rep = len(set(strata_of.values())) < len([n for n in seqs if group_of.get(n)])
+        cohort = SA.SyntaxCohort(seqs, group_of, keep_idx, labels,
+                                 strata_of=strata_of if rep else None)
+        if not cohort.sessions:
+            return None, (f"No session carries ≥{SA.MIN_BOUTS} labelled transitions.\n"
+                          "Sequencing needs bout-level data; check the bout filters.")
+        groups = self._ordered_groups(cohort.groups)
+        return (cohort, groups), None
+
+    def _syntax_msg(self, msg):
+        ax = self._fig.add_subplot(111)
+        ax.text(0.5, 0.5, msg, ha='center', va='center', transform=ax.transAxes)
+        ax.axis('off')
+
+    def _plot_syntax_networks(self):
+        """One pooled, rarefied transition network per group; colour = Pearson residual."""
+        from pipeline import syntax_analysis as SA
+        built, msg = self._syntax_cohort()
+        if built is None:
+            self._syntax_msg(msg)
+            return
+        cohort, groups = built
+        n = len(groups)
+        self._set_panel_figsize(n, 'h')
+        axes = self._fig.subplots(1, n, squeeze=False)[0]
+        for gi, g in enumerate(groups):
+            col = self._SYNTAX_GROUP_COLS[gi % len(self._SYNTAX_GROUP_COLS)]
+            SA.draw_network(axes[gi], cohort.pooled[g], cohort.labels,
+                            f"{g}\n(rarefied to {int(cohort.pooled[g].sum())} transitions)",
+                            col, SA.mono_cmap(col))
+        if cohort.dropped:
+            self._fig.text(0.01, 0.01,
+                           f"excluded (<{SA.MIN_BOUTS} transitions): "
+                           + ", ".join(cohort.dropped), fontsize=7, color='#888888')
+        self._log_msg(f"Sequencing networks: {n} group(s), "
+                      f"{len(cohort.sessions)} session(s), per-animal tables "
+                      f"subsampled to {cohort.n_sub} transitions.")
+
+    def _plot_syntax_difference(self):
+        """What changed vs the reference group: every assessable change > MIN_DZ residual units."""
+        from pipeline import syntax_analysis as SA
+        built, msg = self._syntax_cohort()
+        if built is None:
+            self._syntax_msg(msg)
+            return
+        cohort, groups = built
+        if len(groups) < 2:
+            self._syntax_msg("Need at least two groups for a difference network.")
+            return
+        ref, others = groups[0], groups[1:]
+        cmap = SA.div_cmap()
+        self._set_panel_figsize(len(others), 'h')
+        axes = self._fig.subplots(1, len(others), squeeze=False)[0]
+        for gi, g in enumerate(others):
+            vmax, n_ch, n_el = SA.draw_diff(axes[gi], cohort.pooled[ref],
+                                            cohort.pooled[g], cohort.labels, cmap)
+            axes[gi].set_title(f"{g} vs {ref}\n{n_ch} of {n_el} routes changed "
+                               f"> {SA.MIN_DZ:.0f} residual units", fontsize=9, pad=4)
+            self._log_msg(f"Sequencing difference {g} vs {ref}: {n_ch}/{n_el} routes "
+                          f"past {SA.MIN_DZ:.0f} SD (solid strengthened, dashed weakened).")
+
+    def _plot_syntax_ordination(self):
+        """PCoA of per-animal residual tables, with PERMANOVA (Behrens-Fisher, exact p)."""
+        from pipeline import syntax_analysis as SA
+        import numpy as _np
+        built, msg = self._syntax_cohort()
+        if built is None:
+            self._syntax_msg(msg)
+            return
+        cohort, groups = built
+        xy, pcvar, _load = cohort.ordination()
+        xyd = SA.dodge(xy)
+        ax = self._fig.add_subplot(111)
+        marks = ['o', 's', '^', 'D', 'v', 'P']
+        for gi, g in enumerate(groups):
+            m = cohort.groups_per_session == g
+            col = self._SYNTAX_GROUP_COLS[gi % len(self._SYNTAX_GROUP_COLS)]
+            mk = marks[gi % len(marks)]
+            ax.scatter(xyd[m, 0], xyd[m, 1], s=46, marker=mk, facecolors='none',
+                       edgecolors=col, linewidth=1.3, alpha=0.95, zorder=3, label=g)
+            if m.sum() > 1:
+                ax.scatter(*xy[m].mean(0), s=150, marker='+', color=col,
+                           linewidth=1.8, zorder=4)
+        try:
+            F2, p, R2 = cohort.test()
+            paired = cohort.strata is not None
+            ax.set_title(f"p = {p:.4g}, R² = {R2:.2f}  (PERMANOVA"
+                         + (", within-animal permutation)" if paired else ")"),
+                         fontsize=10, pad=6)
+        except Exception as ex:
+            ax.set_title(f"PERMANOVA unavailable: {ex}", fontsize=9)
+        ax.set_xlabel(f"PC1 ({pcvar[0]:.0f}%)")
+        ax.set_ylabel(f"PC2 ({pcvar[1]:.0f}%)")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for sp in ax.spines.values():
+            sp.set_color('#DDDDDD')
+        ax.set_aspect('equal', adjustable='datalim')
+        ax.legend(frameon=False, fontsize=8, loc='best')
+        self._log_msg(f"Sequencing ordination: {len(cohort.sessions)} animals, "
+                      f"PC1+PC2 carry {pcvar[0] + pcvar[1]:.0f}% of variance.")
 
     def _plot_group_networks(self):
         """One transition-network panel per group, side-by-side, shared layout."""
