@@ -67,6 +67,20 @@ DLC_RE = re.compile(r"(\d+)/(\d+)[^\r\n]*?([\d.]+)it/s")
 FEAT_RE = re.compile(r"(\d+)/(\d+) frames[^\r\n]*?([\d.]+)frames/s")
 
 
+def _pid_alive(pid: int) -> bool:
+    """True if a process with this pid exists (Windows: tasklist filter; else os.kill 0)."""
+    try:
+        if sys.platform.startswith("win"):
+            r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                               capture_output=True, text=True, timeout=10)
+            return str(pid) in r.stdout
+        import os
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return True          # can't tell -> keep tracking (safety timeout still applies)
+
+
 def bar(done, total, w=20):
     frac = max(0.0, min(1.0, done / total if total else 0))
     f = int(round(frac * w))
@@ -94,7 +108,8 @@ def ts_to_sec(t):
 
 class Tracker:
     def __init__(self, proj: Path, cohort: str, nvid: int, webhook: str,
-                 expected_stems=None, shuffle: int = SHUFFLE):
+                 expected_stems=None, shuffle: int = SHUFFLE,
+                 msg_file=None, follow_pid=None):
         self.proj = proj
         self.cohort = cohort
         self.shuffle = int(shuffle)
@@ -105,7 +120,15 @@ class Tracker:
         self.stage_file = proj / "_stage.json"
         self.prog = self.videos / ".ffprog.txt"
         self.done = proj / "PIPELINE_DONE"
-        self.msg_file = proj / "_discord_msg.json"
+        # --msg-file: where this tracker's Discord message id is persisted. Default is the
+        # project-wide _discord_msg.json (one live message per project); concurrent runs in
+        # one project (e.g. a transcode worker beside a DLC batch) each need their own file
+        # or they fight over a single message.
+        self.msg_file = Path(msg_file) if msg_file else proj / "_discord_msg.json"
+        # --follow-pid: when set, the tracker ends when THAT process exits and ignores the
+        # shared PIPELINE_DONE / _stage.json "done" sentinels, which another concurrent
+        # pp_pipeline run in the same project may write at any time.
+        self.follow_pid = int(follow_pid) if follow_pid else None
         self.start = time.time()
         # Optional set of expected output basenames (sans .mp4). If provided,
         # all on-disk counters are filtered to just these stems — so an
@@ -115,8 +138,10 @@ class Tracker:
     def _matches(self, name: str) -> bool:
         if not self.expected_stems:
             return True
+        # Strict stem boundary: "<stem>.mp4", "<stem>DLC..." (h5), "<stem>_features_..." —
+        # a bare prefix test would count S10's outputs for S1.
         for s in self.expected_stems:
-            if name.startswith(s):
+            if name == s or name == s + ".mp4" or name.startswith(s + "DLC") or name.startswith(s + "_features_"):
                 return True
         return False
 
@@ -241,9 +266,14 @@ class Tracker:
                           + (f" · ETA {hms(rem / fps)}" if fps > 0 else ""))
         lines.append(fline)
 
-        finished = self.done.exists() or stage == "done"
-        if finished:
-            lines.append("✅ **Pipeline done** — transcode + DLC + features complete.")
+        if self.follow_pid:
+            finished = not _pid_alive(self.follow_pid)
+            if finished:
+                lines.append("⏹ **Run finished** (followed process exited).")
+        else:
+            finished = self.done.exists() or stage == "done"
+            if finished:
+                lines.append("✅ **Pipeline done** — transcode + DLC + features complete.")
         return "\n".join(lines), finished
 
     # --- webhook single-message edit -----------------------------------------
@@ -322,6 +352,13 @@ def main(argv=None):
     ap.add_argument("--shuffle", type=int, default=SHUFFLE,
                     help="DLC shuffle whose *shuffle<N>*.h5 count as DLC progress. Must match "
                          "the --shuffle the run was launched with, else DLC reads 0/N throughout.")
+    ap.add_argument("--msg-file", dest="msg_file",
+                    help="JSON file holding this tracker's Discord message id (default "
+                         "<proj>/_discord_msg.json). Give concurrent runs in one project "
+                         "separate files so each gets its own live message.")
+    ap.add_argument("--follow-pid", dest="follow_pid", type=int,
+                    help="end when this process exits instead of on PIPELINE_DONE (use when "
+                         "another pp_pipeline run in the same project may write that sentinel).")
     a = ap.parse_args(argv)
     proj = Path(a.proj)
     nvid = a.nvid if a.nvid else _derive_nvid(proj, a.portal, a.sources)
@@ -335,7 +372,7 @@ def main(argv=None):
         except Exception:
             pass
     return Tracker(proj, a.cohort, nvid, a.webhook, expected_stems=expected_stems,
-                   shuffle=a.shuffle).loop()
+                   shuffle=a.shuffle, msg_file=a.msg_file, follow_pid=a.follow_pid).loop()
 
 
 if __name__ == "__main__":

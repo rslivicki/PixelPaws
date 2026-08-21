@@ -39,6 +39,12 @@ class ProjectConfig:
     dlc_config: str = ''
     last_classifier: str = ''
 
+    # Group-assignment key file (added 2026-08-21). Path to a CSV with
+    # Subject/Treatment columns, relative to the project folder when
+    # possible. Written by KeyFileGeneratorDialog and by the main GUI's
+    # key-file discovery; consumed by Analysis/Sequencing/Gait fallbacks.
+    key_file: str = ''
+
     # Frame-rate handling (added 2026-05-07).
     # process_fps is the rate at which features are computed for this
     # project. None = use the video's stored fps (legacy). When videos
@@ -85,7 +91,7 @@ class ProjectConfig:
             'project_folder', 'video_ext', 'behaviors', 'behavior_name',
             'bp_include_list', 'bp_pixbrt_list', 'square_size',
             'pix_threshold', 'include_optical_flow', 'bp_optflow_list',
-            'roi_size', 'dlc_config', 'last_classifier',
+            'roi_size', 'dlc_config', 'last_classifier', 'key_file',
             'process_fps', 'source_fps_note',
             'calibration_mode', 'fixed_mm_per_pixel',
         ):
@@ -178,3 +184,59 @@ class ProjectConfig:
             v = session.get('mm_per_pixel')
             return float(v) if v is not None else None
         return None
+
+
+# ---------------------------------------------------------------------------
+# Key-file discovery (module-level so it is importable headless).
+# Port of the reference pattern in gait_limb_tab._scan_key_files: walk the
+# project, skip junk dirs and prediction/bout exports, accept CSVs whose
+# header row contains exact-case Subject and Treatment columns.
+# ---------------------------------------------------------------------------
+
+_KEY_SKIP_DIRS = {'__pycache__', '.git', 'features', 'FeatureCache',
+                  'per_frame', 'videos'}
+_KEY_SKIP_NAME_TOKENS = ('prediction', 'pred', 'bout', 'timebin', 'summary',
+                         'frames')
+
+
+def find_key_files(project_folder: str) -> List[str]:
+    """Return candidate key-file CSVs under ``project_folder``, best first.
+
+    A candidate is a .csv whose header row contains both ``Subject`` and
+    ``Treatment`` (exact case, matching analysis_tab's requirement).
+    Ranking: ``<project>/key_file.csv`` first, then "key" in the filename,
+    then shallower paths. Never raises.
+    """
+    import csv as _csv
+    out = []
+    root = os.path.abspath(project_folder)
+    if not os.path.isdir(root):
+        return out
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames
+                       if d not in _KEY_SKIP_DIRS and not d.startswith('.')]
+        for fn in filenames:
+            low = fn.lower()
+            if not low.endswith('.csv'):
+                continue
+            if any(tok in low for tok in _KEY_SKIP_NAME_TOKENS):
+                continue
+            path = os.path.join(dirpath, fn)
+            try:
+                with open(path, 'r', newline='', encoding='utf-8-sig') as f:
+                    header = next(_csv.reader(f), [])
+            except Exception:
+                continue
+            header = [h.strip() for h in header]
+            if 'Subject' in header and 'Treatment' in header:
+                out.append(path)
+
+    def _rank(path):
+        rel = os.path.relpath(path, root)
+        return (0 if rel.lower() == 'key_file.csv' else 1,
+                0 if 'key' in os.path.basename(path).lower() else 1,
+                rel.count(os.sep),
+                rel.lower())
+
+    out.sort(key=_rank)
+    return out

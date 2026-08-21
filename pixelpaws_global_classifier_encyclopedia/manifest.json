@@ -1,6 +1,6 @@
 {
-  "encyclopedia_version": "1.0.0",
-  "build_date": "2026-05-25",
+  "encyclopedia_version": "1.1.0",
+  "build_date": "2026-08-21",
   "expected_fps": 60,
   "feature_schema_canonical": {
     "hash": "8aed1c22",
@@ -62,7 +62,8 @@
       },
       "path": "classifiers/classifier_Scratching.pkl",
       "docs": "docs/Scratching.md",
-      "performance_dir": "performance_results/Scratching/"
+      "performance_dir": "performance_results/Scratching/",
+      "note": "operating point 0.5/3/10 (deployed recipe) as of v1.1.0"
     },
     {
       "name": "Left_licking",
@@ -133,6 +134,12 @@
       "performance_dir": "performance_results/Facial_grooming/"
     },
     {
+      "name": "jump",
+      "tier": 1,
+      "path": "classifiers/classifier_jump.pkl",
+      "note": "naloxone-precipitated withdrawal readout; trained on the AOW cohort with S6 held out; analysed as discrete events, not a mutually exclusive state"
+    },
+    {
       "name": "rearing",
       "tier": 1,
       "status": "KEEP",
@@ -162,9 +169,10 @@
         "pose_feature_version": 5,
         "brightness_feature_version": 1
       },
-      "path": "classifiers/classifier_rearing.pkl",
+      "path": "classifiers/classifier_rearing_v2.pkl",
       "docs": "docs/rearing.md",
-      "performance_dir": "performance_results/rearing/"
+      "performance_dir": "performance_results/rearing/",
+      "note": "v2 rebuild; original (min_bout=1) in superseded/"
     },
     {
       "name": "walking",
@@ -264,77 +272,10 @@
         "pose_feature_version": 5,
         "brightness_feature_version": 1
       },
-      "path": "classifiers/classifier_body_grooming.pkl",
+      "path": "classifiers/classifier_body_grooming_v2.pkl",
       "docs": "docs/body_grooming.md",
-      "performance_dir": "performance_results/body_grooming/"
-    },
-    {
-      "name": "body_grooming_combined",
-      "tier": 2,
-      "status": "BOUT_USEFUL",
-      "definition": "Union of body_grooming, back_groom, belly_groom (any non-facial grooming).",
-      "frame_f1": 0.6985480046908012,
-      "frame_f1_std": 0.08647546946536147,
-      "bout_f1": 0.5187986418943068,
-      "bout_count_pearson_r": 0.736698972353102,
-      "best_thresh": 0.85,
-      "min_bout": 30,
-      "min_after_bout": 1,
-      "max_gap": 40,
-      "n_train_sessions": 7,
-      "n_pos_frames": 56095,
-      "feature_schema": {
-        "include_optical_flow": true,
-        "square_size": [
-          40,
-          40,
-          40
-        ],
-        "bp_pixbrt_list": [
-          "hrpaw",
-          "hlpaw",
-          "snout"
-        ],
-        "pose_feature_version": 5,
-        "brightness_feature_version": 1
-      },
-      "path": "classifiers/classifier_body_grooming_combined.pkl",
-      "docs": "docs/body_grooming_combined.md",
-      "performance_dir": "performance_results/body_grooming_combined/"
-    },
-    {
-      "name": "L_flinching",
-      "tier": 2,
-      "status": "BOUT_USEFUL",
-      "definition": "Mouse rapidly retracts/raises its left hindpaw (nocifensive flinch response).",
-      "frame_f1": 0.5741829731306509,
-      "frame_f1_std": 0.04115904077352694,
-      "bout_f1": 0.6842442673959821,
-      "bout_count_pearson_r": 0.9649130868620683,
-      "best_thresh": 0.3,
-      "min_bout": 12,
-      "min_after_bout": 1,
-      "max_gap": 0,
-      "n_train_sessions": 21,
-      "n_pos_frames": 29393,
-      "feature_schema": {
-        "include_optical_flow": true,
-        "square_size": [
-          40,
-          40,
-          40
-        ],
-        "bp_pixbrt_list": [
-          "hrpaw",
-          "hlpaw",
-          "snout"
-        ],
-        "pose_feature_version": 5,
-        "brightness_feature_version": 1
-      },
-      "path": "classifiers/classifier_L_flinching.pkl",
-      "docs": "docs/L_flinching.md",
-      "performance_dir": "performance_results/L_flinching/"
+      "performance_dir": "performance_results/body_grooming/",
+      "note": "v2 rebuild excluding unreviewed frames; original in superseded/"
     },
     {
       "name": "belly_groom",
@@ -403,6 +344,17 @@
       "path": "classifiers/classifier_back_groom.pkl",
       "docs": "docs/back_groom.md",
       "performance_dir": "performance_results/back_groom/"
+    }
+  ],
+  "changelog_1_1_0": "rearing and body_grooming now point at the v2 rebuilds the manuscript deploys (originals in superseded/: rearing shipped min_bout=1, body_grooming trained on 83,640 unreviewed frames as negatives). Scratching operating point corrected to the deployed 0.5/3/10 recipe (stored 0.86/1/0 accepted 17 ms bouts; original in superseded/). classifier_jump added -- the naloxone-withdrawal readout, trained on the AOW cohort with session S6 held out. L_flinching withheld from this distribution (superseded/).",
+  "version": "1.1.1",
+  "changelog": [
+    {
+      "version": "1.1.1",
+      "date": "2026-08-28",
+      "changes": [
+        "classifier_Scratching.pkl: corrected include_optical_flow False->True (model requires hrpaw/hlpaw/snout Flow features; extraction config was self-contradictory and batch prediction failed). Pre-fix copy in superseded/."
+      ]
     }
   ]
 }

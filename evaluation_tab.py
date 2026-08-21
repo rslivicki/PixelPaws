@@ -39,6 +39,16 @@ except ImportError:
     plt = None
 
 
+def _robust_unpickle(path):
+    """Load a .pkl that may be joblib+LZ4 OR plain pickle (see PixelPaws_GUI)."""
+    try:
+        import joblib
+        return joblib.load(path)
+    except Exception:
+        with open(path, 'rb') as f:
+            return pickle.load(f)
+
+
 def render_session_diagnostic(y_true, y_pred, behavior_name, base_name, out_path,
                               fps=60.0, threshold=None, y_proba=None):
     """Render a human-vs-model diagnostic figure for ONE session → save to out_path.
@@ -987,8 +997,7 @@ class EvaluationTab(ttk.Frame):
 
         try:
             import pickle
-            with open(clf_path, 'rb') as f:
-                clf_data = pickle.load(f)
+            clf_data = _robust_unpickle(clf_path)
 
             clf_data['best_thresh']    = self._optimized_params['best_thresh']
             clf_data['min_bout']       = self._optimized_params['min_bout']
@@ -1014,8 +1023,7 @@ class EvaluationTab(ttk.Frame):
             messagebox.showwarning('No File', 'Please select a valid classifier file.')
             return
         try:
-            with open(clf_path, 'rb') as f:
-                clf_data = pickle.load(f)
+            clf_data = _robust_unpickle(clf_path)
 
             lines = ['=== Classifier Information ===\n',
                      f'File: {os.path.basename(clf_path)}\n']
@@ -1173,8 +1181,7 @@ class EvaluationTab(ttk.Frame):
 
             # ── Load classifier ──────────────────────────────────────────
             self._log(f'\nLoading classifier: {os.path.basename(clf_path)}')
-            with open(clf_path, 'rb') as f:
-                clf_data = pickle.load(f)
+            clf_data = _robust_unpickle(clf_path)
 
             clf_data['bp_include_list'] = _clean_bp(clf_data.get('bp_include_list', []))
             clf_data['bp_pixbrt_list']  = _clean_bp(clf_data.get('bp_pixbrt_list',  []))
@@ -1391,7 +1398,7 @@ class EvaluationTab(ttk.Frame):
                 # ── Predict ──────────────────────────────────────────────
                 try:
                     y_proba = _predict(
-                        model, X, calibrator=clf_data.get('prob_calibrator'), fold_models=clf_data.get('fold_models'))
+                        model, X, calibrator=(clf_data.get('prob_calibrator') or clf_data.get('calibrator')), fold_models=clf_data.get('fold_models'))
                 except Exception as e:
                     self._log(f'  ✗ Prediction failed: {e}  — skipping.')
                     continue
@@ -1766,8 +1773,7 @@ class EvaluationTab(ttk.Frame):
 
             # Load classifier
             log_fn(f'\nLoading classifier: {os.path.basename(clf_path)}')
-            with open(clf_path, 'rb') as f:
-                clf_data = pickle.load(f)
+            clf_data = _robust_unpickle(clf_path)
 
             clf_data['bp_include_list'] = _clean_bp(clf_data.get('bp_include_list', []))
             clf_data['bp_pixbrt_list']  = _clean_bp(clf_data.get('bp_pixbrt_list', []))
@@ -1901,7 +1907,7 @@ class EvaluationTab(ttk.Frame):
                 # Predict
                 try:
                     y_proba = _predict(
-                        model, X, calibrator=clf_data.get('prob_calibrator'), fold_models=clf_data.get('fold_models'))
+                        model, X, calibrator=(clf_data.get('prob_calibrator') or clf_data.get('calibrator')), fold_models=clf_data.get('fold_models'))
                 except Exception as e:
                     log_fn(f'  Skipping — prediction failed: {e}')
                     continue
@@ -2158,8 +2164,7 @@ class EvaluationTab(ttk.Frame):
             return
 
         try:
-            with open(self.eval_classifier_path.get(), 'rb') as f:
-                clf_data = pickle.load(f)
+            clf_data = _robust_unpickle(self.eval_classifier_path.get())
             model = clf_data.get('clf_model') or clf_data.get('model')
             if model is None:
                 messagebox.showerror('Error', 'Could not find model in classifier file.')
@@ -2260,8 +2265,7 @@ class EvaluationTab(ttk.Frame):
                         if fname.endswith('.pkl') and 'features' in fname.lower():
                             fp = os.path.join(dirpath, fname)
                             try:
-                                with open(fp, 'rb') as f:
-                                    X = pickle.load(f)
+                                X = _robust_unpickle(fp)
                                 _log_shap(f'✓ Loaded features from: {fname}')
                                 break
                             except Exception:
@@ -2280,8 +2284,7 @@ class EvaluationTab(ttk.Frame):
                 if not file_path:
                     return
                 try:
-                    with open(file_path, 'rb') as f:
-                        data = pickle.load(f)
+                    data = _robust_unpickle(file_path)
                     if isinstance(data, dict):
                         if 'X' in data:
                             X = data['X']

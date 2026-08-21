@@ -137,7 +137,7 @@ def _fallback_analyze(vp: Path, device: str):
         except TypeError:
             kw.pop("batchsize", None)
             deeplabcut.analyze_videos(POSE_DLC_CONFIG, [str(vp)], **kw)
-        cands = [p for p in vp.parent.glob(f"{vp.stem}*shuffle{POSE_SHUFFLE}*.h5")
+        cands = [p for p in vp.parent.glob(f"{vp.stem}DLC*shuffle{POSE_SHUFFLE}*.h5")   # "DLC" boundary: S1 must not match S10
                  if not p.name.endswith("_filtered.h5")]
         return str(sorted(cands)[-1]) if cands else None
     except Exception:

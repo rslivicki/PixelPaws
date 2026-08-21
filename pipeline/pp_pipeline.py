@@ -85,7 +85,10 @@ def find_h5(video: Path):
     `_filtered.h5` and our pose-filter `_ppfilt.h5`. When several snapshots exist
     for the same video (e.g. best-460 and best-660), prefer the HIGHEST snapshot
     so downstream uses the most recent model."""
-    c = [x for x in video.parent.glob(f"{video.stem}*shuffle{SHUFFLE}*.h5")
+    # NOTE the "DLC" boundary: DLC names outputs <stem>DLC_<scorer>..., and a bare
+    # f"{stem}*" glob also matches sibling stems that extend this one (S1 -> S10, S2 -> S20),
+    # which would pair a video with another video's pose. First hit: 2608_VIP_form.
+    c = [x for x in video.parent.glob(f"{video.stem}DLC*shuffle{SHUFFLE}*.h5")
          if not x.name.endswith("_filtered.h5") and not x.name.endswith("_ppfilt.h5")]
     if not c:
         return None
@@ -214,6 +217,32 @@ class Ctx:
 
 
 # --- stage 1: transcode -------------------------------------------------------
+def build_transcode_cmd(src: Path, dst: Path, prog=None) -> list:
+    """The canonical intake encode: H.265 (CODEC/CRF/PRESET from pp_config),
+    audio dropped, and the source's CUSTOM container tags preserved.
+    -map_metadata 0 + -movflags use_metadata_tags: PawCapture videos carry
+    spatial-calibration tags (mm_per_pixel, pixelpaws_calibrated,
+    pixelpaws_ref_length_mm/ref_pixels) that the classifier mm-per-pixel path
+    consumes; without these flags ffmpeg silently drops all arbitrary MP4 tags.
+    No-op for sources that have none.
+
+    prog: None, a file path for -progress, or "pipe:1" for stdout progress.
+    Used by both the portal pipeline (stage_transcode) and the GUI's
+    pre-tracking transcode step (dlc_run_dialog) so the encode settings can
+    never drift apart.
+    """
+    cmd = ["ffmpeg", "-y", "-i", str(src),
+           "-map_metadata", "0", "-movflags", "use_metadata_tags",
+           "-c:v", CODEC, "-crf", CRF,
+           "-preset", PRESET, "-an"]
+    if prog is not None:
+        cmd += ["-progress", str(prog), "-stats_period", "2"]
+        if str(prog) == "pipe:1":
+            cmd += ["-nostats", "-loglevel", "error"]
+    cmd.append(str(dst))
+    return cmd
+
+
 def stage_transcode(ctx: Ctx, pairs):
     ctx.videos.mkdir(parents=True, exist_ok=True)
     n = len(pairs)
@@ -246,17 +275,8 @@ def stage_transcode(ctx: Ctx, pairs):
                 pass
         step(f"transcode {i}/{n}: {src.name} -> {dst.name}")
         t0 = time.time()
-        # -map_metadata 0 + -movflags use_metadata_tags: preserve the source's
-        # CUSTOM container tags through the transcode. PawCapture videos carry
-        # spatial-calibration tags (mm_per_pixel, pixelpaws_calibrated,
-        # pixelpaws_ref_length_mm/ref_pixels) that the classifier mm-per-pixel
-        # path consumes; without these flags ffmpeg silently drops all arbitrary
-        # MP4 tags. No-op for sources that have none.
-        p = subprocess.run(["ffmpeg", "-y", "-i", str(src),
-                            "-map_metadata", "0", "-movflags", "use_metadata_tags",
-                            "-c:v", CODEC, "-crf", CRF,
-                            "-preset", PRESET, "-an", "-progress", str(ctx.prog),
-                            "-stats_period", "2", str(dst)], capture_output=True, text=True)
+        p = subprocess.run(build_transcode_cmd(src, dst, prog=ctx.prog),
+                           capture_output=True, text=True)
         if p.returncode != 0:
             step(f"! ffmpeg failed {src.name}: {p.stderr[-400:]}")
             if dst.is_file():

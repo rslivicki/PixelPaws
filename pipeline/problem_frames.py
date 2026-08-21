@@ -179,7 +179,7 @@ def classifier_probs(features_pkl, dlc_path, clf_data):
     model = clf_data["clf_model"]
     X = _load_features(features_pkl)
     Xa = augment_features_post_cache(X.copy(), clf_data, model, dlc_path)
-    proba = np.asarray(predict_with_xgboost(model, Xa, calibrator=clf_data.get("prob_calibrator"),
+    proba = np.asarray(predict_with_xgboost(model, Xa, calibrator=(clf_data.get("prob_calibrator") or clf_data.get("calibrator")),
                                             fold_models=clf_data.get("fold_models")))
     return proba
 
