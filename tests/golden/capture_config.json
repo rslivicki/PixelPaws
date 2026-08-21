@@ -1,0 +1,60 @@
+{
+  "project_folder": "E:/PixelPaws_practice",
+  "pred_folder": "E:/PixelPaws_practice\\results",
+  "key_file": "E:\\PixelPaws_practice\\practice_key.csv",
+  "runs": {
+    "default": {
+      "csv": "practice_results_default.csv",
+      "bin_size_min": 5.0,
+      "whole_session": false,
+      "fps": 60,
+      "analyze_mode": "both",
+      "phases": [],
+      "filename_prefix": ""
+    },
+    "formalin": {
+      "csv": "practice_results_formalin.csv",
+      "bin_size_min": 5.0,
+      "whole_session": false,
+      "fps": 60,
+      "analyze_mode": "both",
+      "phases": [
+        {
+          "name": "Acute",
+          "start_min": 0,
+          "end_min": 10,
+          "bin_index": -1
+        },
+        {
+          "name": "Phase_II",
+          "start_min": 10,
+          "end_min": 60,
+          "bin_index": -2
+        }
+      ],
+      "filename_prefix": ""
+    },
+    "formalin_shortphase": {
+      "csv": "practice_results_formalin_shortphase.csv",
+      "bin_size_min": 5.0,
+      "whole_session": false,
+      "fps": 60,
+      "analyze_mode": "both",
+      "phases": [
+        {
+          "name": "Acute",
+          "start_min": 0,
+          "end_min": 1,
+          "bin_index": -1
+        },
+        {
+          "name": "Phase_II",
+          "start_min": 1,
+          "end_min": 2,
+          "bin_index": -2
+        }
+      ],
+      "filename_prefix": ""
+    }
+  }
+}

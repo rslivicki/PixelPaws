@@ -98,16 +98,23 @@ except ImportError:
     ImageTk = None
 
 try:
-    from analysis_tab import AnalysisTab
+    # Rebuilt tab (analysis_core + shared style architecture); the original
+    # implementation remains importable as the legacy fallback / dev tab.
+    from single_classifier_tab import SingleClassifierTab as AnalysisTab
     ANALYSIS_TAB_AVAILABLE = True
-except ImportError as _at_err:
-    ANALYSIS_TAB_AVAILABLE = False
-    # Pre-2026-05-01 the message said "not found", but the file is
-    # always present — the ImportError is virtually always a missing
-    # transitive dep (e.g. seaborn). Surface the real reason.
-    print(f"Warning: could not import analysis_tab ({_at_err}). "
-          "Analysis tab will be disabled. "
-          "If a dep is missing, `pip install seaborn` typically fixes it.")
+except ImportError as _sct_err:
+    print(f"Warning: rebuilt Single-Classifier tab unavailable "
+          f"({_sct_err}); falling back to the legacy analysis_tab.")
+    try:
+        from analysis_tab import AnalysisTab
+        ANALYSIS_TAB_AVAILABLE = True
+    except ImportError as _at_err:
+        ANALYSIS_TAB_AVAILABLE = False
+        # The ImportError is virtually always a missing transitive dep
+        # (e.g. seaborn). Surface the real reason.
+        print(f"Warning: could not import analysis_tab ({_at_err}). "
+              "Analysis tab will be disabled. "
+              "If a dep is missing, `pip install seaborn` typically fixes it.")
 
 try:
     from evaluation_tab import EvaluationTab, _apply_bout_filtering, count_bouts, find_session_triplets, fit_hmm_transitions
@@ -593,6 +600,8 @@ class PixelPawsGUI:
                         "🔗 Sequencing", "📏 Locomotion",
                         "🐾 Gait & Limb Use"]
                        + (["🔀 Transitions"] if INCLUDE_DEV_TABS else [])
+                       + (["📈 Single-Classifier (legacy)"]
+                          if INCLUDE_DEV_TABS else [])
                        + (["🫃 Body Contact"] if INCLUDE_DEV_TABS else []),
             "Tools": ["🛠 Tools"],
             "Train & Evaluate": ["🎬 Predict & Review", "📊 Evaluate",
@@ -2619,6 +2628,18 @@ class PixelPawsGUI:
             self.analysis_tab = None
             ttk.Label(frame, text="Analysis module unavailable.",
                       foreground='gray').pack(pady=40)
+        # Legacy implementation kept available for comparison during the
+        # rebuild transition (dev builds only). self.analysis_tab always
+        # points at the primary (rebuilt) tab.
+        if INCLUDE_DEV_TABS:
+            try:
+                from analysis_tab import AnalysisTab as _LegacyAnalysisTab
+                lf = ttk.Frame(self.notebook)
+                self.notebook.add(lf, text="📈 Single-Classifier (legacy)")
+                self._legacy_analysis_tab = _LegacyAnalysisTab(lf, self)
+                self._legacy_analysis_tab.pack(fill='both', expand=True)
+            except Exception as _leg_ex:
+                print(f"Legacy analysis tab unavailable: {_leg_ex}")
 
     def _build_batch_run_panel(self, parent):
         """Batch classifier-run controls, no project-folder input (uses the startup project).

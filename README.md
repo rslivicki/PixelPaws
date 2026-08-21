@@ -356,12 +356,28 @@ All outputs are saved to `evaluations/` as a text report and image files.
 
 ### Single-Classifier Analysis Tab
 
-The Analyze tab performs cohort-level batch analysis: it loads prediction CSVs for multiple animals, bins behavior time into user-defined windows, and generates grouped statistics plots.
+Rebuilt on the app's standard layout: everything auto-populates when a project opens
+(prediction folders, behaviors, key file, subject-to-group matching), and the graphs live
+behind a single **Graph** dropdown — Time Course, Individual Traces, Total Time, Bout
+Analysis, Phase Analysis (Formalin preset), two heatmaps, two cumulative views, Mean
+Timecourse (1 Hz), and Latency — with a metric selector (time, bouts, bout duration,
+frequency, % time), the shared 🎨⚙ style dialog, and a **Σ Stats** flip showing group
+descriptives, omnibus tests with effect sizes, Bonferroni-corrected pairwise
+comparisons, and per-bin timecourse post-hocs for the current graph. Analyses run on a
+worker thread with live progress and a working Stop. Exports: full results CSV with a
+`.meta.json` provenance sidecar (inputs, settings, software version) and per-figure
+image export.
 
 **Setup:**
-1. Load a **key file** — a CSV or XLSX with at minimum `Subject` and `Treatment` columns (Subject values must match the prediction file names). For paired / repeated-measures designs, an optional `Animal` (or `Pair`/`Block`) column names which rows are the same animal across conditions; the Sequencing tab uses it to switch to within-animal permutation tests.
-2. Select the **predictions folder** containing the per-animal prediction CSVs from the Predict tab (or from batch prediction).
-3. Set the **time bin size** (e.g., 5 minutes) and which **metrics** to calculate (total time, bout count, mean bout duration, AUC, percent time, bout frequency).
+1. The **key file** is discovered automatically (CSV/XLSX with `Subject` and
+   `Treatment`); Generate… creates one from the project's videos. For paired designs an
+   optional `Animal` (or `Pair`/`Block`) column enables within-animal permutation in the
+   Sequencing tab.
+2. Behaviors and the predictions folder auto-fill from `results/`; use Advanced to
+   point elsewhere.
+3. Set the **time bin size** (e.g., 5 minutes) or analyze the entire session; metrics
+   (total time, bout count, mean bout duration, % time, bout frequency, latency) are
+   always computed.
 
 **Optional graph types (Settings panel):**
 - *Show individual animal traces on time course* — overlays faint per-animal lines behind the mean ± error, letting you see the spread in the raw data.

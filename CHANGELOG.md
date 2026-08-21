@@ -1,3 +1,24 @@
+# 2026-08-28 — Single-Classifier Analysis rebuilt (analysis_core + single_classifier_tab)
+
+Ground-up rebuild on the shared architecture. Compute extracted verbatim into
+headless `analysis_core.py` (golden-tested equal to the old tab on the practice
+project, both presets); UI rebuilt as `single_classifier_tab.py` (rail + Graph
+dropdown + shared style dialog + Σ Stats flip + threaded run with Stop). The old
+`analysis_tab.py` remains as the fallback import and as a
+"Single-Classifier (legacy)" tab under INCLUDE_DEV_TABS.
+
+**Intentional behavior changes**
+- `AUC` column dropped from results/exports — it was a verbatim duplicate of
+  `Total_Time_s` (asserted at golden capture).
+- Pairwise comparisons are now Bonferroni-corrected everywhere (the old bar-graph
+  path was uncorrected while timecourse paths used Tukey/Bonferroni); result dicts
+  carry `pairwise_correction: "bonferroni"` with both `p_raw` and `p_corrected`.
+- The latency graph and CSV now agree (both use the stored absolute `Latency_s`).
+- The timecourse statistics respect the selected metric (previously hardcoded to
+  `Total_Time_s`).
+- Statistics run on explicit args, so analyses execute on a worker thread
+  (Stop actually cancels) instead of pumping the UI thread.
+
 # PixelPaws Changelog
 
 Running log of non-trivial edits and the decisions behind them.
