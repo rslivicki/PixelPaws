@@ -1,6 +1,6 @@
 # PixelPaws — User Guide
 
-Desktop GUI for automated animal behavior classification using DeepLabCut pose data and XGBoost. PixelPaws takes the `.h5` output from DeepLabCut, extracts kinematic and pixel-brightness features, trains an XGBoost classifier to detect a target behavior frame-by-frame, and then runs batch predictions and group statistics.
+PixelPaws is an open-source desktop application for automated scoring of mouse behavior from below-acrylic video. It combines DeepLabCut pose estimation with per-behavior XGBoost classifiers: pose and pixel-brightness features are extracted from each frame, classifiers assign per-frame behavior probabilities, and the application produces per-session predictions, group statistics, and figures. A pretrained pose network and a set of validated classifiers are included, so behavioral scoring requires no labeling or training to begin.
 
 ## Demo
 
@@ -19,24 +19,64 @@ Example of automated behavior scoring using a scratching classifier. Behavior de
 
 > 📷 **Building the filming enclosure?** See [hardware.md](hardware.md) for the full bill of materials, 3D-printed enclosure files, wiring notes, and camera/lens specs.
 
+## Quick Start — score videos without training anything
+
+PixelPaws includes a pretrained pose network and validated classifiers for hind-paw
+licking, scratching, facial grooming, body grooming, rearing, jumping, moving, and
+stillness. The licking classifier scores the left hind paw, the injected or injured
+side in the assays it was validated on; if your manipulation is on the right paw,
+mirror the videos or note the sidedness in your analysis. Labeling and training are
+not required to begin scoring:
+
+1. **Install and launch** (below). The Project Setup Wizard creates a project; the
+   Behaviors step applies only to training new classifiers and can be skipped.
+2. **Pose-track your videos** on the Pose Estimation tab. The bundled
+   `PixelPaws — SlivickiR_WangH` network is installed automatically; select it and run
+   your videos to produce the DeepLabCut `.h5` files used by all downstream analyses.
+3. **Score behavior** on Run Classifiers: the **Run default classifier set** button
+   scores every project video with the validated bundled set in one click (features
+   are extracted and cached automatically). Checking *Run the default classifier set*
+   in the pose-tracking dialog does the same automatically after tracking. Predict &
+   Review (under Train & Evaluate) offers single-video scoring with a review player.
+4. **Analyze groups**: place a key file (CSV with `Subject` and `Treatment` columns)
+   anywhere in the project — it is discovered automatically — and the Analysis and
+   Sequencing tabs arrive pre-populated once predictions exist. If no key file is
+   found, PixelPaws offers to create one when scoring finishes.
+
+Name videos with underscore-separated tokens (`mouse1_veh.mp4`, `m07_sni_day3.mp4`):
+subjects are matched as whole tokens against the key file, so `mouse1` in the key file
+finds `mouse1_veh_predictions.csv`, while spaces or hyphens in file names defeat the
+matching.
+
+Training a new classifier (Train Classifier tab, with BORIS labeling) is needed only
+for behaviors the bundled set does not cover.
+
+---
+
 ## Table of Contents
 
-1. [Installation](#installation)
-2. [Project Setup Wizard](#project-setup-wizard)
-3. [Preparing Your Data](#preparing-your-data)
-4. [Labeling with BORIS](#labeling-with-boris)
-5. [Crop for DLC Tool](#crop-for-dlc-tool)
-6. [Tab-by-Tab Guide](#tab-by-tab-guide)
-   - [Train](#train-tab)
-   - [Predict](#predict-tab)
-   - [Batch](#batch-tab)
+1. [Quick Start](#quick-start--score-videos-without-training-anything)
+2. [Installation](#installation)
+3. [Project Setup Wizard](#project-setup-wizard)
+4. [Preparing Your Data](#preparing-your-data)
+5. [Labeling with BORIS](#labeling-with-boris)
+6. [Crop for DLC Tool](#crop-for-dlc-tool)
+7. [Tab-by-Tab Guide](#tab-by-tab-guide)
+   - [Pose Estimation](#pose-estimation-tab)
+   - [Feature Extraction](#feature-extraction-tab)
+   - [Predict & Review](#predict-tab)
+   - [Run Classifiers](#run-classifiers-tab)
    - [Evaluate](#evaluate-tab)
-   - [Analyze](#analyze-tab)
+   - [Train Classifier](#train-tab)
+   - [Single-Classifier Analysis](#analyze-tab)
+   - [Multi-Classifier Analysis](#multi-classifier-analysis-tab)
+   - [Sequencing](#sequencing-tab)
+   - [Locomotion](#locomotion-tab)
    - [Gait & Limb Use](#gait--limb-use-tab)
    - [Tools](#tools-tab)
-7. [Project Folder Layout](#project-folder-layout)
-8. [Requirements](#requirements)
-9. [Attribution & License](#attribution--license)
+8. [Project Folder Layout](#project-folder-layout)
+9. [Requirements](#requirements)
+10. [Attribution & License](#attribution--license)
 
 ---
 
@@ -61,11 +101,11 @@ The Project Setup Wizard opens automatically on first launch. It walks through t
 
 **Step 1 — Project folder.** Choose an existing folder or create a new one. PixelPaws creates the standard subfolder structure inside it (`videos/`, `behavior_labels/`, `classifiers/`, etc.) and writes a `PixelPaws_project.json` config file.
 
-**Step 2 — Behaviors.** Enter the names of the behaviors you plan to train classifiers for (e.g., `Flinch`, `Lick`, `Groom`). You can add or remove behaviors later from the Train tab. Built-in presets are available for common pain-assay behaviors.
+**Step 2 — Behaviors (training only).** If you plan to score with the bundled classifiers, click **Use defaults and finish** here — the remaining steps configure classifier training and are not needed for scoring. Otherwise, enter the names of the behaviors you plan to train classifiers for (e.g., `Lick`, `Groom`, `Rear`); these can be changed later from the Train tab.
 
-**Step 3 — Body parts & features.** Choose which DeepLabCut body parts to use for feature extraction and whether to include pixel-brightness features. These choices are saved to the project config and can be changed later per classifier.
+**Step 3 — Body parts & features (training only).** Choose which DeepLabCut body parts to use for feature extraction and whether to include pixel-brightness features. Prediction with an existing classifier always uses the configuration stored in that classifier, so these choices affect only classifiers you train yourself.
 
-After finishing the wizard the main window appears with all five tabs ready to use.
+After finishing the wizard the main window opens with every tab ready to use.
 
 ---
 
@@ -82,7 +122,7 @@ DLC CSV output (`.csv`) is also supported as a fallback.
 Behavior labels are one row per video frame, one column per behavior (0 = absent, 1 = present):
 
 ```
-frame,Flinch,Lick
+frame,Lick,Groom
 0,0,0
 1,1,0
 2,1,0
@@ -91,7 +131,7 @@ frame,Flinch,Lick
 
 Save label files in the `behavior_labels/` subfolder. The filename must contain the same session identifier as the video (e.g., `session01_labels.csv` for `session01.mp4`). PixelPaws discovers labels automatically during training and evaluation.
 
-Label files can be created with any tool that produces this format — BORIS exported in the right mode, a custom script, or the built-in Active Learning loop.
+Label files can be created with any tool that produces this format — BORIS exported in the right mode, or a custom script.
 
 ### Feature caching
 
@@ -105,7 +145,7 @@ The first time PixelPaws processes a video it extracts all pose and brightness f
 
 ### Labeling workflow in BORIS
 
-1. Open your video in BORIS and create an ethogram with the behavior(s) you want to train (e.g., `Flinch`, `Lick`).
+1. Open your video in BORIS and create an ethogram with the behavior(s) you want to train (e.g., `Lick`, `Groom`).
 2. Score each session using **START/STOP** events (for continuous behaviors) or **POINT** events (for instantaneous ones). Both are supported.
 3. When finished, export the observation via **File → Export events → Save as CSV** (or TSV). Make sure the export includes at minimum the following columns:
    - **Behavior** — the behavior name
@@ -128,7 +168,7 @@ PixelPaws needs labels as a per-frame CSV (one row per video frame, one column p
 The converter produces a file named `<boris_filename>_labels.csv` with a single column named after the behavior:
 
 ```
-Flinch
+Lick
 0
 0
 1
@@ -143,7 +183,7 @@ Place this file in `behavior_labels/` inside your project folder (or in the same
 
 - **One behavior per conversion run.** Run the converter once per behavior name. If you scored multiple behaviors in the same BORIS file, run it once for each and then merge the output CSVs column-by-column before training a multi-behavior session.
 - **Frame alignment.** The converter multiplies each timestamp by FPS and rounds to the nearest frame. Using the exact FPS your camera recorded at (e.g., 60.0, not 59.94) avoids drift over long recordings.
-- **Dense vs. sparse labels.** BORIS exports cover the full video duration with 0s between scored bouts — this is ideal for training. If you only have labels for a subset of frames (e.g., from Active Learning), the `SmartLabelManager` handles mixing the two automatically during training.
+- **Dense vs. sparse labels.** BORIS exports cover the full video duration with 0s between scored bouts — this is ideal for training. If only a subset of frames is labeled, sparse and dense label files are mixed automatically during training.
 
 ---
 
@@ -172,6 +212,22 @@ Cropped videos are saved alongside the originals with a `_cropped` suffix. Run D
 ### Pose Estimation Tab
 
 Runs the bundled DeepLabCut network on your project's videos and manages installed pose models. **Analyze Videos (Pose Tracking)** runs the active model — detected keypoints are written next to each video as DLC `.h5` files, and the flow can chain into Predict and Extract Problem Frames. The **Installed pose models** panel lists bundled models with their version / scorer / release date; use **Import model (.zip)…** to add a newer network, **Set active** to choose which model is used for tracking (and as the scorer/keypoints source for Extract Problem Frames), **Delete** to remove one, and **Details** to inspect scorer / keypoints / snapshot. On first run the shipped default model is seeded automatically.
+
+**Optional transcode step.** Checking *Transcode with the intake pipeline first* in the
+Analyze Videos dialog re-encodes each selected video to H.265 (CRF 23, audio dropped,
+spatial-calibration tags preserved) before tracking — the same encode our transfer-portal
+pipeline applies to incoming videos. Compression at this level shrinks files roughly
+200-fold at no practical cost: keypoints shift ~0.5 px and behavioral output is unchanged
+(validated in the manuscript). The transcoded file keeps the video's name, so downstream
+pairing is unaffected; the original is moved to `videos/raw/`. Videos already H.265 are
+skipped automatically. Encoding takes roughly the video's running time, so plan for it
+with long recordings.
+
+**One-pass chaining.** The same dialog can chain the rest of the workflow: *Run behavior
+predictions* opens scoring when tracking finishes, and *Extract features* opens the
+Feature Extraction runner pre-selecting the newly tracked sessions (useful before
+training; prediction extracts and caches features automatically, so this is not required
+for scoring).
 
 ### Feature Extraction Tab
 
@@ -261,14 +317,14 @@ The Predict tab runs a trained classifier on a single video and reports behavior
 
 The Predict tab includes an optional **Human Labels** field where you can point to a ground-truth label CSV for the session. This path is stored with the prediction for reference but the Predict tab itself does not compute agreement metrics. For a full evaluation — confusion matrix, precision, recall, F1 at the trained threshold, precision-recall curve, and SHAP feature importance — use the **Evaluate tab**, which is designed specifically for that purpose.
 
-### Batch Tab
+### Run Classifiers Tab
 
-The Batch tab runs one or more classifiers across an entire folder of videos in a single operation.
+The Run Classifiers tab (batch scoring) runs one or more classifiers across an entire folder of videos in a single operation.
 
 **Inputs:**
 - **Data folder** — select the folder containing your videos (and their corresponding DLC H5 files).
 - **Video extension** — filter by file extension (e.g., `.mp4`, `.avi`).
-- **Classifiers** — add multiple classifiers from `classifiers/`. Use **Auto-Detect** to find all `.pkl` files in the project, or add/remove individually.
+- **Classifiers** — pick from `[Project]`, `[Global]`, and `[Bundled]` entries; the bundled encyclopedia is always available. Use **Auto-Detect** to find all `.pkl` files in the project, or add/remove individually.
 - **Prefer filtered DLC files** — when checked, PixelPaws uses filtered DLC output (e.g., `*_filtered.h5`) over unfiltered when both exist for the same session.
 
 **Feature status checker.** Before running, click **Check Feature Status** to see which sessions already have cached features and which will require extraction from video. This lets you estimate how long the batch will take.
@@ -298,12 +354,12 @@ Results include:
 
 All outputs are saved to `evaluations/` as a text report and image files.
 
-### Analyze Tab
+### Single-Classifier Analysis Tab
 
 The Analyze tab performs cohort-level batch analysis: it loads prediction CSVs for multiple animals, bins behavior time into user-defined windows, and generates grouped statistics plots.
 
 **Setup:**
-1. Load a **key file** — a CSV or XLSX with at minimum `Subject` and `Treatment` columns (Subject values must match the prediction file names).
+1. Load a **key file** — a CSV or XLSX with at minimum `Subject` and `Treatment` columns (Subject values must match the prediction file names). For paired / repeated-measures designs, an optional `Animal` (or `Pair`/`Block`) column names which rows are the same animal across conditions; the Sequencing tab uses it to switch to within-animal permutation tests.
 2. Select the **predictions folder** containing the per-animal prediction CSVs from the Predict tab (or from batch prediction).
 3. Set the **time bin size** (e.g., 5 minutes) and which **metrics** to calculate (total time, bout count, mean bout duration, AUC, percent time, bout frequency).
 
@@ -328,14 +384,36 @@ The Analyze tab performs cohort-level batch analysis: it loads prediction CSVs f
 
 Each graph opens in a tabbed window with **Save Figure** (PNG/PDF/SVG at 300 dpi) and **Export Data** (CSV) buttons.
 
+### Locomotion Tab
+
+Distance traveled and velocity straight from the pose skeleton — no classifiers needed.
+The animal's centroid trajectory is likelihood-gated, median-smoothed, and integrated with
+a jitter dead-band; views show distance per bin, cumulative distance, and mean velocity,
+as mean and SEM lines per group (any number of groups) with an annotated group test.
+Units are real centimeters whenever every video carries the PawCapture spatial
+calibration (the `mm_per_pixel` tag, preserved through the intake transcode and shown in
+the pose-tracking dialog's Calibration column); uncalibrated projects fall back to pixels
+with a note. Binned tables export as CSV.
+
 ### Gait & Limb Use Tab
 
 The Gait & Limb Use tab analyzes paw contact patterns, gait timing, and limb symmetry from DLC pose data — no force plate or pressure mat needed.
 
-**Paw contact detection.** Three methods are available:
+**Paw contact detection.** Four methods are available:
+- *Contour area* (default) — a paw is "in contact" when its Otsu-segmented contour falls
+  within a plausible paw-sized area band (1,500–5,000 px² by default). This is the
+  validated gate from our manuscript and ships as the "Paw contact (manuscript gate)"
+  preset, which also excludes licking frames — score licking first (Run Classifiers),
+  then run the gait analysis
 - *Height* — paw is "in contact" when its vertical coordinate falls below a threshold
 - *Speed* — paw is "in contact" when its speed drops below a threshold (Kumar Lab, Cell Reports 2022)
 - *Combined* — both height AND speed criteria must agree
+
+**Injured / injected paw.** Set which hind paw carries the injury or injection in the
+Paw Mapping panel (default HL). Every ratio graph is then shown as injured/contralateral,
+so values below 1.0 always mean the injured paw bears less — no need to mentally invert
+when the manipulated side is HR. The results window opens on a **Paw Contact** group with
+these headline ratios; per-paw breakdowns live under Paw Contour.
 
 **Metrics computed per session:**
 - **Contact percentages** — % frames each paw is in stance (ground contact) for hind-left, hind-right, fore-left, fore-right
@@ -351,6 +429,43 @@ The Gait & Limb Use tab analyzes paw contact patterns, gait timing, and limb sym
 **Time binning.** All metrics can be computed in user-defined time bins (e.g., 5-minute windows) for tracking changes over a session.
 
 **Batch processing.** Select multiple sessions and run analysis across all of them. Results are saved to `gait_limb_analysis/` inside the project folder as CSV files and summary plots.
+
+### Multi-Classifier Analysis Tab
+
+Cross-classifier views of a scored cohort, fed by the consolidated per-frame sheets that
+Run Classifiers writes to `results/per_frame/`. Three views, each scaling to any number
+of groups:
+
+- **Probability traces** — one panel per behavior for a chosen session: the classifier's
+  frame-by-frame probability with predicted bouts shaded (the format of the manuscript's
+  supplementary probability plots)
+- **State occupancy** — every frame resolved to a single state by the priority order
+  (unscored = no classifier fired), shown as % of session time per state, mean and SEM
+  per group with per-animal points
+- **Group timecourse** — a panel grid, one panel per behavior: % time in behavior per
+  time bin, mean and SEM lines, one line per group; bin width is adjustable and clamps
+  automatically for short sessions
+
+The tab auto-populates after a classifier run and on project open; the key file is
+discovered from the project. Use Multi-Classifier Analysis for *how much and when*;
+use Sequencing for *what follows what*.
+
+### Sequencing Tab
+
+Bout-level behavioral syntax — the order behaviors are strung together, independent of how
+much of each occurs. It has its own pipeline: point it at a folder of prediction CSVs from
+Run Classifiers, order the priority list, load a key file, and Compute. Views:
+
+- **Group networks** — one pooled transition network per group (edge width = traffic,
+  color = deviation from what that group's own behavioral rates predict)
+- **Difference vs reference** — every route that strengthened or weakened past a threshold
+- **Ordination (PCoA)** — each animal placed by how differently it sequences behavior,
+  with optional group centroids, 95% ellipses or convex hulls, and a PERMANOVA test
+  (exact p by permutation; within-animal permutation when the key file has an `Animal`
+  column)
+
+Sequencing reads the *filtered* binary calls from the prediction CSVs, so every classifier
+keeps its own validated threshold and bout filter — no re-thresholding.
 
 ### Tools Tab
 

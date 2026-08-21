@@ -284,6 +284,27 @@ class ProjectSetupWizard(tk.Toplevel):
         row += 1
 
         # ---- Behaviors (multi-item list) ----
+        # A first-time user does not need this: PixelPaws ships pretrained classifiers
+        # (licking, scratching, grooming, rearing, jumping, moving, stillness), and the
+        # score-first path is Predict & Review / Run Classifiers with those. This field
+        # only matters when training NEW classifiers, so say so before asking.
+        hint = ttk.Label(
+            cf, foreground='#666666', wraplength=430, justify='left',
+            text=("Optional — only needed if you plan to train your own classifiers. "
+                  "PixelPaws ships pretrained classifiers (licking, scratching, grooming, "
+                  "rearing, jumping, moving, stillness); to score videos with those, skip "
+                  "this and go to Predict & Review or Run Classifiers after setup."))
+        hint.grid(row=row, column=0, columnspan=3, sticky='ew', pady=(8, 2))
+        row += 1
+
+        # Score-first escape hatch: the rest of this step (and step 3) only matters for
+        # training new classifiers, so scoring-only users finish here with defaults.
+        ttk.Button(cf, text="Use defaults and finish — I'll score with the bundled classifiers",
+                   style='Accent.TButton',
+                   command=self._finish_with_defaults).grid(
+            row=row, column=0, columnspan=3, sticky='w', pady=(0, 10))
+        row += 1
+
         ttk.Label(cf, text="Behaviors:").grid(
             row=row, column=0, sticky='nw', pady=(8, 2))
 
@@ -394,6 +415,19 @@ class ProjectSetupWizard(tk.Toplevel):
             self._bp_listbox.selection_set(tk.END)
 
     # ---- behavior helpers ------------------------------------------------
+
+    def _finish_with_defaults(self):
+        """Save the step-2 defaults as-is and finish, skipping the training-only setup.
+
+        Safe for scoring: prediction-time feature extraction reads its configuration from
+        each classifier artifact, not from the project config, so nothing here can put the
+        project out of step with the bundled classifiers.
+        """
+        try:
+            self._save_step2_config()
+        except Exception:
+            pass
+        self._finish()
 
     def _add_behavior(self):
         name = self._behavior_entry.get().strip()

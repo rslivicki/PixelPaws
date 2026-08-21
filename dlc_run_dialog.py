@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import threading
@@ -83,9 +84,10 @@ def _probe_providers() -> List[dict]:
 class DLCRunDialog(tk.Toplevel):
     """Collect inference settings + video selection."""
 
-    def __init__(self, root, project_folder: str):
+    def __init__(self, root, project_folder: str, on_add_videos=None):
         super().__init__(root)
         self.root = root
+        self._on_add_videos = on_add_videos
         self.project_folder = Path(project_folder)
         self.videos_dir = self.project_folder / "videos"
         if not self.videos_dir.is_dir():
@@ -115,7 +117,7 @@ class DLCRunDialog(tk.Toplevel):
         outer.pack(fill="both", expand=True)
 
         # Model header.
-        hdr = ttk.LabelFrame(outer, text="Model", padding=10)
+        hdr = ttk.Labelframe(outer, text="Model", padding=10)
         hdr.pack(fill="x", pady=(0, 10))
         ttk.Label(hdr, text=self.bundle.display_name,
                   font=("Segoe UI", 11, "bold")).pack(anchor="w")
@@ -127,17 +129,19 @@ class DLCRunDialog(tk.Toplevel):
         )).pack(anchor="w")
 
         # Video list.
-        vid_frame = ttk.LabelFrame(outer, text="Videos in project", padding=10)
+        vid_frame = ttk.Labelframe(outer, text="Videos in project", padding=10)
         vid_frame.pack(fill="both", expand=True, pady=(0, 10))
 
-        cols = ("name", "duration", "status")
+        cols = ("name", "duration", "cal", "status")
         self.video_tree = ttk.Treeview(vid_frame, columns=cols, show="headings", height=10)
         self.video_tree.heading("name", text="Video")
         self.video_tree.heading("duration", text="Length")
+        self.video_tree.heading("cal", text="Calibration")
         self.video_tree.heading("status", text="Status")
-        self.video_tree.column("name", width=340, anchor="w")
-        self.video_tree.column("duration", width=90, anchor="center")
-        self.video_tree.column("status", width=150, anchor="w")
+        self.video_tree.column("name", width=300, anchor="w")
+        self.video_tree.column("duration", width=70, anchor="center")
+        self.video_tree.column("cal", width=100, anchor="center")
+        self.video_tree.column("status", width=140, anchor="w")
         vsb = ttk.Scrollbar(vid_frame, orient="vertical", command=self.video_tree.yview)
         self.video_tree.configure(yscrollcommand=vsb.set)
         self.video_tree.pack(side="left", fill="both", expand=True)
@@ -146,7 +150,8 @@ class DLCRunDialog(tk.Toplevel):
         self.video_states: List[dict] = self._scan_videos()
         for v in self.video_states:
             self.video_tree.insert("", "end", iid=str(v["index"]),
-                                   values=(v["name"], v["duration"], v["status"]))
+                                   values=(v["name"], v["duration"],
+                                           v.get("cal", "—"), v["status"]))
         self.video_tree.selection_set([
             str(v["index"]) for v in self.video_states if v["select_default"]
         ])
@@ -157,9 +162,12 @@ class DLCRunDialog(tk.Toplevel):
         ttk.Button(sel_btns, text="Select unanalyzed only",
                    command=self._select_unanalyzed).pack(side="left", padx=(6, 0))
         ttk.Button(sel_btns, text="Clear", command=self._select_clear).pack(side="left", padx=(6, 0))
+        if self._on_add_videos is not None:
+            ttk.Button(sel_btns, text="➕ Add videos…",
+                       command=self._add_videos).pack(side="right")
 
         # Inference settings.
-        cfg = ttk.LabelFrame(outer, text="Inference settings", padding=10)
+        cfg = ttk.Labelframe(outer, text="Inference settings", padding=10)
         cfg.pack(fill="x", pady=(0, 10))
 
         ttk.Label(cfg, text="Device:").grid(row=0, column=0, sticky="w")
@@ -182,18 +190,51 @@ class DLCRunDialog(tk.Toplevel):
 
         self.chain_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(
-            cfg, text="Run behavior predictions after pose tracking",
+            cfg, text="Run the default classifier set (Core 8) after pose tracking",
             variable=self.chain_var,
         ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(10, 0))
+
+        self.features_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            cfg, text="Extract features after pose tracking (pre-caches for "
+                      "training; predictions do this automatically)",
+            variable=self.features_var,
+        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(2, 0))
 
         self.frames_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             cfg, text="Select more frames to label after pose tracking (active learning)",
             variable=self.frames_var,
-        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(2, 0))
+        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(2, 0))
+
+        self._ffmpeg_ok = shutil.which("ffmpeg") is not None
+        self.transcode_var = tk.BooleanVar(value=False)
+        tr_chk = ttk.Checkbutton(
+            cfg, text="Transcode with the intake pipeline first (recommended for "
+                      "raw camera videos)",
+            variable=self.transcode_var,
+        )
+        tr_chk.grid(row=5, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        if self._ffmpeg_ok:
+            _tr_hint = ("Runs the same encode as the transfer-portal pipeline "
+                        "(H.265 CRF 23, audio dropped, calibration tags "
+                        "preserved) before tracking. CRF 23 shrinks files "
+                        "~200-fold at no practical cost: keypoints shift "
+                        "~0.5 px and behavioral output is unchanged (validated "
+                        "in the manuscript). The transcode keeps the video name; "
+                        "the original moves to videos/raw/. Videos already "
+                        "H.265 are skipped. Encoding is slow — roughly "
+                        "real-time per video.")
+        else:
+            _tr_hint = ("ffmpeg was not found on PATH; install ffmpeg to enable "
+                        "transcoding.")
+            tr_chk.config(state="disabled")
+        ttk.Label(cfg, text=_tr_hint, foreground="#777", wraplength=600,
+                  justify="left").grid(row=6, column=0, columnspan=3,
+                                       sticky="w", padx=(24, 0), pady=(2, 0))
 
         self.cpu_warn = ttk.Label(cfg, text="", foreground="#a60")
-        self.cpu_warn.grid(row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        self.cpu_warn.grid(row=7, column=0, columnspan=3, sticky="w", pady=(6, 0))
         self._refresh_cpu_warning()
 
         # Buttons.
@@ -231,15 +272,53 @@ class DLCRunDialog(tk.Toplevel):
                 cap.release()
             except Exception:
                 pass
+            cal = "—"
+            try:
+                from pawcapture_meta import read_calibration
+                c = read_calibration(vp)
+                if c and c.get("mm_per_pixel"):
+                    cal = f"{float(c['mm_per_pixel']):.4f} mm/px"
+            except Exception:
+                pass
             out.append({
                 "index": idx,
                 "name": vp.name,
                 "path": vp,
                 "duration": duration,
+                "cal": cal,
                 "status": "already analyzed" if already else "needs analysis",
                 "select_default": not already,
             })
         return out
+
+    def _add_videos(self):
+        """Import more videos via the app's add-videos flow, then rescan."""
+        self.grab_release()
+
+        def _done():
+            try:
+                if not self.winfo_exists():
+                    return
+                self.video_tree.delete(*self.video_tree.get_children())
+                self.video_states = self._scan_videos()
+                for v in self.video_states:
+                    self.video_tree.insert("", "end", iid=str(v["index"]),
+                                           values=(v["name"], v["duration"],
+                                                   v.get("cal", "—"),
+                                                   v["status"]))
+                self.video_tree.selection_set([
+                    str(v["index"]) for v in self.video_states if v["select_default"]
+                ])
+            finally:
+                try:
+                    self.grab_set()
+                except Exception:
+                    pass
+
+        try:
+            self._on_add_videos(on_done=_done)
+        except Exception:
+            _done()
 
     def _selected_videos(self) -> List[Path]:
         sel = set(int(i) for i in self.video_tree.selection())
@@ -293,6 +372,8 @@ class DLCRunDialog(tk.Toplevel):
             "batch_size": int(self.batch_var.get()),
             "auto_predict": bool(self.chain_var.get()),
             "select_frames": bool(self.frames_var.get()),
+            "extract_features": bool(self.features_var.get()),
+            "transcode": bool(self.transcode_var.get()) and self._ffmpeg_ok,
             "bundle": self.bundle,
         }
         self.grab_release()
@@ -304,8 +385,8 @@ class DLCRunDialog(tk.Toplevel):
         self.destroy()
 
     @classmethod
-    def show(cls, root, project_folder: str) -> Optional[dict]:
-        dlg = cls(root, project_folder)
+    def show(cls, root, project_folder: str, on_add_videos=None) -> Optional[dict]:
+        dlg = cls(root, project_folder, on_add_videos=on_add_videos)
         if dlg.result is None and not dlg.winfo_exists():
             return None
         root.wait_window(dlg)
@@ -383,9 +464,151 @@ class DLCProgressDialog(tk.Toplevel):
         self.worker.start()
         self.after(100, self._drain_queue)
 
+    @staticmethod
+    def _frame_count(path) -> int:
+        try:
+            import cv2
+            cap = cv2.VideoCapture(str(path))
+            n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.isOpened() else 0
+            cap.release()
+            return max(n, 0)
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _video_codec(path) -> str:
+        if shutil.which("ffprobe") is None:
+            return ""
+        try:
+            r = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=codec_name",
+                 "-of", "default=nk=1:nw=1", str(path)],
+                capture_output=True, text=True, timeout=30)
+            return r.stdout.strip().lower()
+        except Exception:
+            return ""
+
+    def _transcode_videos(self, videos):
+        """The intake-pipeline encode (pp_pipeline.build_transcode_cmd) applied
+        in place: the transcoded file keeps the video's name so downstream
+        pairing is unchanged; the original moves to videos/raw/. Returns the
+        (possibly updated) video list, or None if cancelled."""
+        try:
+            from pp_pipeline import build_transcode_cmd, transcode_output_ok
+        except Exception as e:
+            self._msg_queue.put(("log", f"✗ intake pipeline unavailable ({e!r}) — "
+                                        "skipping transcode, tracking originals"))
+            return videos
+        import time as _time
+        out = []
+        n = len(videos)
+        self._msg_queue.put(("log", f"Transcoding with the intake encode "
+                                    f"(H.265 CRF 23) — {n} video(s)"))
+        for i, vp in enumerate(videos, 1):
+            if self._cancelled:
+                return None
+            src = Path(vp)
+            codec = self._video_codec(src)
+            if codec in ("hevc", "h265"):
+                self._msg_queue.put(("log", f"↷ {src.name}: already H.265, skipping"))
+                out.append(str(src))
+                continue
+            raw_dir = src.parent / "raw"
+            raw = raw_dir / src.name
+            if raw.exists():
+                self._msg_queue.put(("log", f"↷ {src.name}: raw copy already in "
+                                            "videos/raw/, assuming transcoded"))
+                out.append(str(src))
+                continue
+            total = self._frame_count(src)
+            self._msg_queue.put(("video_start", (i, n, f"transcode {src.name}", total)))
+            raw_dir.mkdir(exist_ok=True)
+            try:
+                src.rename(raw)
+            except OSError as e:
+                self._msg_queue.put(("log", f"✗ {src.name}: could not move to "
+                                            f"videos/raw/ ({e}) — tracking original"))
+                out.append(str(src))
+                continue
+            dst = src                      # same name, same folder
+            cmd = build_transcode_cmd(raw, dst, prog="pipe:1")
+            try:
+                self.proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1)
+            except Exception as e:
+                self._msg_queue.put(("log", f"✗ ffmpeg launch failed: {e!r}"))
+                raw.rename(src)
+                out.append(str(src))
+                continue
+            t0 = _time.time()
+            for line in self.proc.stdout:
+                line = line.strip()
+                if line.startswith("frame="):
+                    try:
+                        done = int(line.split("=", 1)[1])
+                    except ValueError:
+                        continue
+                    fps = done / max(_time.time() - t0, 1e-3)
+                    if total:
+                        self._msg_queue.put(("frames", (min(done, total), total, fps)))
+            self.proc.wait()
+            ok = (not self._cancelled and self.proc.returncode == 0
+                  and transcode_output_ok(dst))
+            if ok:
+                mb_in = raw.stat().st_size / 1e6
+                mb_out = dst.stat().st_size / 1e6
+                self._msg_queue.put(
+                    ("log", f"✓ {src.name} transcoded "
+                            f"({mb_in:.0f} → {mb_out:.0f} MB, "
+                            f"{(_time.time() - t0) / 60:.1f} min); "
+                            f"original kept in videos/raw/"))
+                # PawCapture spatial calibration must survive the encode --
+                # the mm-per-pixel path depends on it.
+                try:
+                    from pawcapture_meta import read_calibration
+                    c_src = read_calibration(raw)
+                    if c_src and c_src.get("mm_per_pixel"):
+                        c_dst = read_calibration(dst)
+                        if c_dst and (c_dst.get("mm_per_pixel")
+                                      == c_src.get("mm_per_pixel")):
+                            self._msg_queue.put(
+                                ("log", f"   calibration preserved "
+                                        f"({c_dst['mm_per_pixel']:.4f} mm/px)"))
+                        else:
+                            self._msg_queue.put(
+                                ("log", f"   ⚠ calibration tags did NOT "
+                                        f"survive the transcode of {src.name} "
+                                        f"-- distances will fall back to pixels"))
+                except Exception:
+                    pass
+                out.append(str(dst))
+                continue
+            # failure or cancel: remove the partial output, restore the original
+            try:
+                if dst.exists():
+                    dst.unlink()
+                raw.rename(src)
+            except OSError as e:
+                self._msg_queue.put(("log", f"✗ {src.name}: restore failed ({e}) — "
+                                            f"original is in videos/raw/"))
+            if self._cancelled:
+                return None
+            self._msg_queue.put(("log", f"✗ {src.name}: transcode failed — "
+                                        "tracking the original"))
+            out.append(str(src))
+        return out
+
     def _worker(self):
         s = self.settings
         videos = [str(p) for p in s["videos"]]
+        if s.get("transcode"):
+            videos = self._transcode_videos(videos)
+            if videos is None:        # cancelled or unrecoverable failure
+                self._msg_queue.put(("all_done", None))
+                return
+            self.proc = None
         bundle = s["bundle"]
         py = _resolve_pose_python()
         script = str(_REPO / "pipeline" / "dlc_analyze.py")
@@ -515,13 +738,22 @@ class DLCProgressDialog(tk.Toplevel):
 
 def run_dlc_flow(root, project_folder: str,
                  on_predictions_done: Optional[Callable[[], None]] = None,
-                 on_select_frames: Optional[Callable[[], None]] = None) -> None:
+                 on_select_frames: Optional[Callable[[], None]] = None,
+                 on_extract_features: Optional[Callable[[], None]] = None,
+                 on_add_videos=None) -> None:
     """Top-level entry: settings dialog -> progress dialog -> optional chaining."""
-    settings = DLCRunDialog.show(root, project_folder)
+    settings = DLCRunDialog.show(root, project_folder, on_add_videos=on_add_videos)
     if not settings:
         return
 
     def _after(h5_paths: List[Path]):
+        # Batch prediction extracts and caches features itself, so a separate
+        # feature-extraction pass alongside it is redundant (and could race on
+        # the same cache files). Only honour the FX chain when predictions are
+        # not also queued.
+        if (settings.get("extract_features") and h5_paths and on_extract_features
+                and not settings.get("auto_predict")):
+            on_extract_features()
         if settings.get("auto_predict") and h5_paths and on_predictions_done:
             on_predictions_done()
         if settings.get("select_frames") and on_select_frames:
