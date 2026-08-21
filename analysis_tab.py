@@ -1147,7 +1147,9 @@ class AnalysisTab(ttk.Frame):
                         fl = file.lower()
                         if 'prediction' in fl:
                             full_path = os.path.join(dirpath, file)
-                            behavior_name = self.extract_behavior_name(file, None)
+                            _subdir = (os.path.basename(dirpath)
+                                       if dirpath != folder else None)
+                            behavior_name = self.extract_behavior_name(file, _subdir)
 
                             file_info = {
                                 'path': full_path,
@@ -1203,14 +1205,23 @@ class AnalysisTab(ttk.Frame):
             if name.endswith(suffix):
                 name = name[:-len(suffix)]
                 break
-        
+
+        # The batch runner writes results/<Behavior_type>/<video>_<clf>_predictions.csv,
+        # so a behavior subfolder is the authoritative identity -- it groups every
+        # video under one behavior regardless of how the classifier file was named.
+        # (Old per-subject folders contain "Results" in their name and are excluded.)
+        if (folder_name and 'result' not in folder_name.lower()
+                and folder_name.lower() not in ('per_frame', 'features', 'videos')):
+            return folder_name
+
         # Split into parts
         parts = name.split('_')
         
-        # Behavior is whatever follows the source/classifier marker (PixelPaws, BAREfoot, …).
-        # This groups e.g. "<subject>_BAREfoot_Flinching" → "Flinching" for every subject,
-        # instead of fragmenting into one behavior per subject.
-        for _marker in ('PixelPaws', 'BAREfoot'):
+        # Behavior is whatever follows the source/classifier marker (classifier,
+        # PixelPaws, BAREfoot, …). This groups e.g.
+        # "<video>_classifier_Facial_grooming" → "Facial_grooming" for every video,
+        # instead of fragmenting into one behavior per file.
+        for _marker in ('classifier', 'PixelPaws', 'BAREfoot'):
             if _marker in parts:
                 _idx = len(parts) - 1 - parts[::-1].index(_marker)  # last occurrence
                 behavior_parts = parts[_idx + 1:]

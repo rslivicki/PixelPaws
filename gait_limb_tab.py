@@ -116,6 +116,16 @@ _SIG_STYLES = {
 }
 
 
+def _robust_unpickle(path):
+    """Load a .pkl that may be joblib+LZ4 OR plain pickle (see PixelPaws_GUI)."""
+    try:
+        import joblib
+        return joblib.load(path)
+    except Exception:
+        with open(path, 'rb') as f:
+            return pickle.load(f)
+
+
 def _p_label(p: float, style: str = 'asterisk') -> str:
     syms = _SIG_STYLES.get(style, _SIG_STYLES['asterisk'])
     if p < 0.001:
@@ -183,14 +193,18 @@ class GaitLimbTab(ttk.Frame):
     # only when the user picks one; the on-load defaults (set in __init__) are
     # left untouched. Keys are shown in the "Quick setup" combobox in order.
     GAIT_PRESETS = {
-        # Default profile — reproduces the formalin contour/brightness analysis:
-        # contour ROI 50 (hind), DLC-likelihood gate on @0.6, 5-min bins, and a
-        # contour-area contact gate (both hind paws, area > 20 px^2).
-        'Formalin (contour/brightness)': dict(
+        # Default profile — the manuscript's deployed paw-contact gate, as used for the
+        # formalin/oxycodone dose analyses: contour ROI 50 half-size (100x100 px box),
+        # Otsu per ROI per frame, contour-area band 1,500-5,000 px^2 on both hind paws,
+        # licking excluded, 5-min bins. The DLC-likelihood frame filter is OFF: its
+        # retention tracks the manipulation (69% at vehicle vs 23% at oxycodone 10 mg/kg),
+        # so it cannot arbitrate a treatment effect; the area band catches mislocated
+        # boxes instead. Sessions without pose files are still skipped upstream.
+        'Paw contact (manuscript gate)': dict(
             brightness=True, contour=True, fore=False, contour_roi=50,
-            likelihood=True, likelihood_thresh=0.6, bin_seconds=5, bin_unit='minutes',
-            contact_method='contour_area', contour_area_threshold=20,
-            exclude_licking=True),
+            likelihood=False, bin_seconds=5, bin_unit='minutes',
+            contact_method='contour_area', contour_area_threshold=1500,
+            contour_area_max=5000, exclude_licking=True),
         'Hindpaw gait (minimal)':        dict(brightness=False, contour=False, fore=False,
                                               contact_method='height'),
         'Gait + forepaws':               dict(brightness=False, contour=False, fore=True,
@@ -226,7 +240,16 @@ class GaitLimbTab(ttk.Frame):
         self._loco_thresh_var    = tk.DoubleVar(value=20.0)
         self._paw_contour_var    = tk.BooleanVar(value=True)
         self._contour_forelimbs_var = tk.BooleanVar(value=False)
-        self._contour_area_thresh_var = tk.IntVar(value=20)  # px^2 gate for contour-area contact
+        # px^2 band for contour-area contact. Defaults are the manuscript's deployed gate
+        # (the oxycodone-dose analysis): a real paw runs ~2,800 px^2 in the 100x100 ROI,
+        # so 1,500-5,000 excludes spill-over contours; the old floor of 20 never excluded
+        # a frame.
+        self._contour_area_thresh_var = tk.IntVar(value=1500)
+        self._contour_area_max_var = tk.IntVar(value=5000)
+        # Which hind paw carries the injury/injection. Stored ratio columns stay HL/HR;
+        # the results window relabels (and inverts when HR) so every ratio graph reads
+        # injured/contralateral regardless of side.
+        self._injured_paw_var = tk.StringVar(value='HL')
         self._min_stance_ms_var  = tk.IntVar(value=100)
         # Exclude-licking (formalin): drop frames predicted as a licking behavior
         # from the weight-bearing / contact / brightness metrics.
@@ -335,7 +358,7 @@ class GaitLimbTab(ttk.Frame):
         row = ttk.Frame(lf)
         row.pack(fill='x')
         ttk.Label(row, text="Preset:").pack(side='left')
-        self._preset_var = tk.StringVar(value='Formalin (contour/brightness)')
+        self._preset_var = tk.StringVar(value='Paw contact (manuscript gate)')
         self._preset_combo = ttk.Combobox(
             row, textvariable=self._preset_var, state='readonly',
             width=28, values=list(self.GAIT_PRESETS.keys()))
@@ -519,6 +542,18 @@ class GaitLimbTab(ttk.Frame):
                 ttk.Label(pm_lf, text='(optional)',
                           foreground='grey').grid(row=i, column=2, sticky='w')
 
+        _inj_lbl = ttk.Label(pm_lf, text='Injured / injected paw:')
+        _inj_lbl.grid(row=len(self.ROLE_LABELS), column=0, sticky='w', pady=(6, 2))
+        _inj_cb = ttk.Combobox(pm_lf, textvariable=self._injured_paw_var, width=14,
+                               state='readonly', values=['HL', 'HR'])
+        _inj_cb.grid(row=len(self.ROLE_LABELS), column=1, sticky='w', padx=4, pady=(6, 2))
+        _inj_tip = ('Which hind paw received the injury or injection. Ratio graphs are\n'
+                    'shown as injured/contralateral: with HL this is HL/HR as stored;\n'
+                    'with HR the displayed ratio is inverted so values below 1.0 always\n'
+                    'mean the injured paw bears less.')
+        self._tip(_inj_lbl, _inj_tip)
+        self._tip(_inj_cb, _inj_tip)
+
         self._use_fore_var = tk.BooleanVar(value=False)
         self._use_fore_chk = ttk.Checkbutton(
             pm_lf, text='Include fore paws',
@@ -548,7 +583,7 @@ class GaitLimbTab(ttk.Frame):
             row=0, column=2, sticky='w', padx=(4, 0))
         self._tip(cd_lf,
                   "Contour area (recommended): hind-paw contour area above the px^2\n"
-                  "threshold (both hind paws gated together) — the formalin contact gate.\n"
+                  "band (both hind paws gated together) — the manuscript contact gate.\n"
                   "Height: paw height below threshold (original).\n"
                   "Speed: paw speed below threshold (Kumar Lab 2022).\n"
                   "Combined: both must agree (logical AND).")
@@ -580,16 +615,32 @@ class GaitLimbTab(ttk.Frame):
         self._tip(_msd_lbl, _msd_tip)
         self._tip(_msd_sb, _msd_tip)
 
-        _cat_lbl = ttk.Label(cd_lf, text="Contour-area thresh (px²):")
+        _cat_lbl = ttk.Label(cd_lf, text="Contour-area band (px²):")
         _cat_lbl.grid(row=5, column=0, sticky='w', pady=2)
-        _cat_sb = ttk.Spinbox(cd_lf, from_=0, to=100000,
-                              textvariable=self._contour_area_thresh_var, width=8)
-        _cat_sb.grid(row=5, column=1, sticky='w', padx=4, pady=2)
-        _cat_tip = ("Used only when Method = 'Contour area'. A hind paw counts as\n"
-                    "in ground contact when its contour area exceeds this many px^2\n"
-                    "(both hind paws gated together). Formalin default: 20.")
+        _cat_row = ttk.Frame(cd_lf)
+        _cat_row.grid(row=5, column=1, sticky='w', padx=4, pady=2)
+        _cat_sb = ttk.Spinbox(_cat_row, from_=0, to=100000,
+                              textvariable=self._contour_area_thresh_var, width=7)
+        _cat_sb.pack(side='left')
+        ttk.Label(_cat_row, text="–").pack(side='left', padx=2)
+        _cat_max_sb = ttk.Spinbox(_cat_row, from_=0, to=100000,
+                                  textvariable=self._contour_area_max_var, width=7)
+        _cat_max_sb.pack(side='left')
+        _cat_tip = ("Used only when Method = 'Contour area'. A hind paw counts as in\n"
+                    "ground contact when its contour area falls inside this band (both\n"
+                    "hind paws gated together). Default 1,500-5,000 px^2, the deployed\n"
+                    "manuscript gate: a real paw runs ~2,800 px^2 in the 100x100 ROI, and\n"
+                    "the band excludes contours that spilled onto the body or background.")
         self._tip(_cat_lbl, _cat_tip)
         self._tip(_cat_sb, _cat_tip)
+        self._tip(_cat_max_sb, _cat_tip)
+
+        _prev_btn = ttk.Button(cd_lf, text="Preview contour…",
+                               command=self._open_contour_preview)
+        _prev_btn.grid(row=6, column=0, columnspan=2, sticky='w', pady=(2, 0))
+        self._tip(_prev_btn,
+                  "Visual check of the Otsu contour on sample frames; per-paw "
+                  "ROI half-sizes are editable inside the preview.")
 
         # Core kinematics (floor / contact height estimation)
         kin_lf = ttk.LabelFrame(detect_inner, text="Kinematics", padding=5)
@@ -664,7 +715,7 @@ class GaitLimbTab(ttk.Frame):
                   "weight-bearing / contact / brightness metrics (both numerator\n"
                   "and denominator). Sourced from the project's behavior\n"
                   "predictions (results/…/*_predictions.csv). Gait timing metrics\n"
-                  "are unaffected. The Formalin preset enables this automatically.")
+                  "are unaffected. The default paw-contact preset enables this automatically.")
 
         self._gate_4paw_chk = ttk.Checkbutton(
             fs_lf, text="Only analyze frames with all four paws in contact",
@@ -728,84 +779,11 @@ class GaitLimbTab(ttk.Frame):
         self._tip(bw_lbl, _bw_tip)
         self._tip(bw_sb,  _bw_tip)
 
-        # Paw contour
-        contour_lf = ttk.LabelFrame(adv_inner,
-                                    text="Paw Contour (needs brightness + video)", padding=5)
-        contour_lf.pack(fill='x', pady=(0, 6), padx=2)
-
-        contour_cb = ttk.Checkbutton(contour_lf, text="Compute paw contour area",
-                                      variable=self._paw_contour_var)
-        contour_cb.grid(row=0, column=0, columnspan=2, sticky='w', pady=(0, 0))
-        self._tip(contour_cb,
-                  "Detect paw outline within the contour ROI using Otsu thresholding.\n"
-                  "Requires brightness enabled + video.\n\n"
-                  "Output metrics per paw:\n"
-                  "  paw_area — contour area in px² (larger = more paw contact)\n"
-                  "  paw_spread — max(width, height) of contour bounding box (px)\n"
-                  "  contact_intensity — mean pixel brightness within the contour shape")
-
-        ttk.Button(contour_lf, text="Preview contour…",
-                   command=self._open_contour_preview).grid(
-            row=1, column=0, columnspan=2, sticky='w', pady=(2, 0))
-
-        ttk.Button(contour_lf, text="🔍 Cache details…",
-                   command=self._detect_both_caches).grid(
-            row=3, column=0, columnspan=2, sticky='w', pady=(2, 0))
-
-        contour_roi_lbl = ttk.Label(contour_lf, text="Contour ROI half-size (px):")
-        contour_roi_lbl.grid(row=4, column=0, columnspan=2, sticky='w', pady=(6, 0))
-        _croi_tip = ("Half-width of the ROI crop used for paw contour detection.\n"
-                     "Larger = captures more of the paw shape but may include background.\n"
-                     "Set independently from brightness ROI.")
-        self._tip(contour_roi_lbl, _croi_tip)
-
-        croi_frame = ttk.Frame(contour_lf)
-        croi_frame.grid(row=5, column=0, columnspan=2, sticky='w', pady=(0, 2))
-        for i, role in enumerate(self.ROLES):
-            ttk.Label(croi_frame, text=f"{role}:").grid(
-                row=i // 2, column=(i % 2) * 2, sticky='w', padx=(0, 2))
-            sb = ttk.Spinbox(croi_frame, from_=5, to=200,
-                             textvariable=self._contour_roi_size_vars[role], width=5)
-            sb.grid(row=i // 2, column=(i % 2) * 2 + 1, sticky='w', padx=(0, 8))
-            self._tip(sb, _croi_tip)
-
-        fore_cb = ttk.Checkbutton(contour_lf, text="Include forelimbs in contour",
-                                    variable=self._contour_forelimbs_var)
-        fore_cb.grid(row=6, column=0, columnspan=2, sticky='w', pady=(2, 0))
-        self._tip(fore_cb,
-                  "By default, paw contour analysis is limited to hind limbs (HL, HR).\n"
-                  "Enable this to also extract contour metrics for forelimbs (FL, FR).")
-
-        # DLC Crop Offset
-        crop_lf = ttk.LabelFrame(adv_inner, text="DLC Crop Offset", padding=5)
-        crop_lf.pack(fill='x', pady=(0, 6), padx=2)
-        self._tip(crop_lf,
-                  "Apply when DLC tracking was done on a cropped video.\n"
-                  "X/Y offset = top-left pixel of the crop region in the original video.")
-
-        ttk.Label(crop_lf, text="config.yaml:").grid(
-            row=0, column=0, sticky='w', pady=2)
-        cfg_ent = ttk.Entry(crop_lf, textvariable=self._dlc_config_var, width=20)
-        cfg_ent.grid(row=0, column=1, sticky='ew', padx=4, pady=2)
-        ttk.Button(crop_lf, text="Browse",
-                   command=self._browse_dlc_config).grid(
-            row=0, column=2, sticky='w', pady=2)
-
-        ttk.Label(crop_lf, text="X offset (px):").grid(
-            row=1, column=0, sticky='w', pady=2)
-        ttk.Spinbox(crop_lf, from_=0, to=4000, textvariable=self._crop_x_var,
-                    width=8).grid(row=1, column=1, sticky='w', padx=4, pady=2)
-
-        ttk.Label(crop_lf, text="Y offset (px):").grid(
-            row=2, column=0, sticky='w', pady=2)
-        ttk.Spinbox(crop_lf, from_=0, to=4000, textvariable=self._crop_y_var,
-                    width=8).grid(row=2, column=1, sticky='w', padx=4, pady=2)
-
-        ttk.Button(crop_lf, text="Detect from config.yaml",
-                   command=self._detect_crop_from_config).grid(
-            row=3, column=0, columnspan=3, sticky='ew', pady=(6, 2))
-
-        crop_lf.columnconfigure(1, weight=1)
+        # Paw Contour + DLC Crop Offset panels removed 2026-08-28: the
+        # Contact Detection section above governs the contour gate (preset,
+        # method, area band), per-paw ROI is editable inside the contour
+        # preview, and crop offsets are editable in the brightness preview.
+        # All backing vars remain live and persisted.
 
         # DLC Confidence Filter
         dlc_lf = ttk.LabelFrame(adv_inner, text="DLC Confidence Filter", padding=5)
@@ -3628,6 +3606,8 @@ class GaitLimbTab(ttk.Frame):
             self._contact_method_var.set(str(preset['contact_method']))
         if 'contour_area_threshold' in preset:
             self._contour_area_thresh_var.set(int(preset['contour_area_threshold']))
+        if 'contour_area_max' in preset:
+            self._contour_area_max_var.set(int(preset['contour_area_max']))
         if 'exclude_licking' in preset:
             # Only enable if licking predictions are actually available on disk;
             # otherwise leave the toggle off (the control is disabled with a hint).
@@ -3670,6 +3650,15 @@ class GaitLimbTab(ttk.Frame):
 
         if self._key_df is None:
             notes.append("no key file — treatment will be blank")
+        # Licking exclusion is part of the deployed contact gate: a licking paw is at the
+        # mouth, not on the floor, and licking rates differ between groups, so including
+        # those frames biases the intensity ratio. If predictions are absent the toggle
+        # is silently off — say so, and say how to fix it.
+        if (getattr(self, '_contact_method_var', None) is not None
+                and self._contact_method_var.get() == 'contour_area'
+                and not self._exclude_lick_var.get()):
+            notes.append("licking frames will NOT be excluded — score licking first "
+                         "(Run Classifiers), then Rescan; the manuscript gate drops them")
 
         if self._use_brightness_var.get() and sel:
             sel_names = {self._sess_tree.item(i, 'values')[0] for i in sel}
@@ -3787,6 +3776,7 @@ class GaitLimbTab(ttk.Frame):
                                    for role in self.ROLES},
             'contour_forelimbs':  self._contour_forelimbs_var.get(),
             'contour_area_threshold': self._contour_area_thresh_var.get(),
+            'contour_area_max': self._contour_area_max_var.get(),
             'exclude_licking':    bool(self._exclude_lick_var.get()),
             'lick_behavior':      self._lick_behavior_var.get(),
             'lick_threshold':     float(self._lick_thresh_var.get()),
@@ -4803,22 +4793,28 @@ class GaitLimbTab(ttk.Frame):
         # height/brightness contact masks. The DLC-likelihood filter is applied
         # downstream in _metrics, exactly as for every other contact method.
         if params.get('contact_method') == 'contour_area' and paw_contour_data:
-            _area_thr = float(params.get('contour_area_threshold', 20))
+            # Band, not floor: the upper bound excludes contours that spilled off the paw
+            # onto the body or background, which bias intensity down asymmetrically.
+            _area_thr = float(params.get('contour_area_threshold', 1500))
+            _area_max = float(params.get('contour_area_max', 5000)) or float('inf')
+            _in_band = lambda a: (a > _area_thr) & (a <= _area_max)
             _hind = [r for r in ('HL', 'HR')
                      if r in paw_contour_data and 'areas' in paw_contour_data[r]]
             if len(_hind) == 2:
                 _aHL = np.asarray(paw_contour_data['HL']['areas'])[:n_frames]
                 _aHR = np.asarray(paw_contour_data['HR']['areas'])[:n_frames]
-                _both = pd.Series((_aHL > _area_thr) & (_aHR > _area_thr),
+                _both = pd.Series(_in_band(_aHL) & _in_band(_aHR),
                                   dtype=bool).reset_index(drop=True)
                 contact_masks['HL'] = _both
                 contact_masks['HR'] = _both.copy()
-                self._log(f"  Contact: contour-area gate (>{_area_thr:.0f} px^2, both hind).")
+                self._log(f"  Contact: contour-area band ({_area_thr:.0f}-{_area_max:.0f} "
+                          f"px^2, both hind).")
             elif len(_hind) == 1:
                 _r = _hind[0]
                 _a = np.asarray(paw_contour_data[_r]['areas'])[:n_frames]
-                contact_masks[_r] = pd.Series(_a > _area_thr, dtype=bool).reset_index(drop=True)
-                self._log(f"  Contact: contour-area gate (>{_area_thr:.0f} px^2, {_r} only).")
+                contact_masks[_r] = pd.Series(_in_band(_a), dtype=bool).reset_index(drop=True)
+                self._log(f"  Contact: contour-area band ({_area_thr:.0f}-{_area_max:.0f} "
+                          f"px^2, {_r} only).")
             else:
                 self._log("  Contour-area contact selected but no hind contour data was "
                           "extracted; keeping the existing contact masks.")
@@ -5463,7 +5459,8 @@ class GaitLimbTab(ttk.Frame):
         '_median_filter_var', '_min_bout_var', '_min_stance_ms_var',
         '_use_likelihood_var', '_likelihood_thresh_var', '_loco_filter_var',
         '_loco_thresh_var', '_paw_contour_var', '_contour_forelimbs_var',
-        '_contour_area_thresh_var', '_exclude_lick_var', '_lick_behavior_var',
+        '_contour_area_thresh_var', '_contour_area_max_var', '_injured_paw_var',
+        '_exclude_lick_var', '_lick_behavior_var',
         '_lick_thresh_var', '_gate_4paw_var', '_use_fore_var', '_preset_var',
         '_key_file_var', '_prefix_var',
     )
@@ -5622,8 +5619,7 @@ class GaitLimbTab(ttk.Frame):
 
     def _load_bundle_file(self, path):
         try:
-            with open(path, 'rb') as f:
-                bundle = pickle.load(f)
+            bundle = _robust_unpickle(path)
         except Exception as e:
             self._log_ui(f"(could not load session cache: {e})")
             return False
@@ -7095,6 +7091,58 @@ class GaitLimbTab(ttk.Frame):
 
         outer_nb.bind('<<NotebookTabChanged>>', _check_deferred, add='+')
 
+        # ── Paw Contact headline group ─────────────────────────────────────
+        # The primary readout (injured/contralateral contact ratios) surfaced
+        # first so users land on it; full breakdowns remain under Paw Contour.
+        _hl_bdf = bdf
+        _hl_area = 'paw_area_ratio_hind'
+        _hl_int = 'contact_intensity_ratio_hind'
+        _hl_inj = (self._injured_paw_var.get() or 'HL').upper()
+        _hl_contra = 'HR' if _hl_inj == 'HL' else 'HL'
+
+        def _hl_col(src, rk):
+            # Stored ratios are literal HL/HR; invert at display time when the
+            # injured paw is HR so graphs read injured/contralateral.
+            if src is None or rk not in src.columns or _hl_inj == 'HL':
+                return rk
+            dc = rk + '_injflip'
+            if dc not in src.columns:
+                v = pd.to_numeric(src[rk], errors='coerce')
+                src[dc] = np.where(v > 0, 1.0 / v, np.nan)
+            return dc
+
+        show_contour_pref = _sets.get('paw_contour', True)
+        if show_contour_pref and any(
+                rk in df.columns and df[rk].notna().any()
+                for rk in (_hl_area, _hl_int)):
+            headline_group = _make_group('Paw Contact')
+            hl_sel = self._make_metric_selector(
+                headline_group, 'Ratios', desc_lbl, _tab_descs)
+            for rk, nice in ((_hl_area, 'Paw Area Ratio'),
+                             (_hl_int, 'Intensity Ratio')):
+                ylbl = f'{nice} {_hl_inj}/{_hl_contra}'
+                desc = (f'{nice.lower().capitalize()}, injured/contralateral '
+                        f'({_hl_inj}/{_hl_contra}). Below 1.0 = injured paw '
+                        'bears less. Contour-area gate, all frames.')
+                if rk in df.columns and df[rk].notna().any():
+                    self._register_metric(
+                        hl_sel, nice, 'bar', df, _hl_col(df, rk),
+                        reference=1.0, y_label=ylbl, graph_cfg=graph_cfg,
+                        description=desc)
+                if (_hl_bdf is not None and rk in _hl_bdf.columns
+                        and _hl_bdf[rk].notna().any()):
+                    self._register_metric(
+                        hl_sel, f'{nice} \u2014 TC', 'timecourse', _hl_bdf,
+                        _hl_col(_hl_bdf, rk), reference=1.0, y_label=ylbl,
+                        graph_cfg=graph_cfg,
+                        description=f'{desc} Across time bins.')
+            if hl_sel['registry']:
+                hl_sel['show'](0)
+            _tab_descs['Paw Contact'] = (
+                'Headline paw-contact ratios (injured/contralateral) from the '
+                'contour-area gate. Full per-paw breakdowns are under '
+                'Paw Contour.')
+
         # ── Limb Use group ────────────────────────────────────────────────
         wb_group   = _make_group("Limb Use") if show_wb else None
         hind_sel    = (self._make_metric_selector(wb_group, "Hind Paw",
@@ -7672,36 +7720,57 @@ class GaitLimbTab(ttk.Frame):
                         ratio_sel = self._make_metric_selector(
                             parent_nb, 'Ratios', desc_lbl, _tab_descs)
                         ylbl_sfx = ' (stance)' if stance_suffix else ''
+                        # Stored ratio columns are literal HL/HR. Relabel (and
+                        # invert when the injured paw is HR) at display time so
+                        # every ratio graph reads injured/contralateral.
+                        inj = (self._injured_paw_var.get() or 'HL').upper()
+                        contra = 'HR' if inj == 'HL' else 'HL'
+
+                        def _disp_col(src, rk):
+                            if src is None or rk not in src.columns or inj == 'HL':
+                                return rk
+                            dc = rk + '_injflip'
+                            if dc not in src.columns:
+                                v = pd.to_numeric(src[rk], errors='coerce')
+                                src[dc] = np.where(v > 0, 1.0 / v, np.nan)
+                            return dc
                         if ratio_key in df_src.columns and df_src[ratio_key].notna().any():
                             _reg(ratio_sel, 'Area Ratio Hind', 'bar',
-                                 df_src, ratio_key, reference=1.0,
-                                 y_label=f'Paw area ratio HL/HR{ylbl_sfx}',
+                                 df_src, _disp_col(df_src, ratio_key), reference=1.0,
+                                 y_label=f'Paw area ratio {inj}/{contra}{ylbl_sfx}',
                                  graph_cfg=graph_cfg,
-                                 description='HL/HR paw area ratio. 1.0 = equal.')
+                                 description=f'{inj}/{contra} (injured/contralateral) '
+                                             'paw area ratio. 1.0 = equal.')
                         if (intensity_ratio_key in df_src.columns
                                 and df_src[intensity_ratio_key].notna().any()):
                             _reg(ratio_sel, 'Intensity Ratio Hind', 'bar',
-                                 df_src, intensity_ratio_key, reference=1.0,
-                                 y_label=f'Intensity ratio HL/HR{ylbl_sfx}',
+                                 df_src, _disp_col(df_src, intensity_ratio_key),
+                                 reference=1.0,
+                                 y_label=f'Intensity ratio {inj}/{contra}{ylbl_sfx}',
                                  graph_cfg=graph_cfg,
-                                 description='HL/HR intensity ratio. 1.0 = equal.')
+                                 description=f'{inj}/{contra} (injured/contralateral) '
+                                             'intensity ratio. 1.0 = equal.')
                         if bdf_src is not None:
                             if (ratio_key in bdf_src.columns
                                     and bdf_src[ratio_key].notna().any()):
                                 _reg(ratio_sel, 'Area Ratio \u2014 TC',
-                                     'timecourse', bdf_src, ratio_key,
+                                     'timecourse', bdf_src,
+                                     _disp_col(bdf_src, ratio_key),
                                      reference=1.0,
-                                     y_label=f'Paw area ratio HL/HR{ylbl_sfx}',
+                                     y_label=f'Paw area ratio {inj}/{contra}{ylbl_sfx}',
                                      graph_cfg=graph_cfg,
-                                     description='HL/HR area ratio across time bins.')
+                                     description=f'{inj}/{contra} area ratio '
+                                                 'across time bins.')
                             if (intensity_ratio_key in bdf_src.columns
                                     and bdf_src[intensity_ratio_key].notna().any()):
                                 _reg(ratio_sel, 'Intensity Ratio \u2014 TC',
                                      'timecourse', bdf_src,
-                                     intensity_ratio_key, reference=1.0,
-                                     y_label=f'Intensity ratio HL/HR{ylbl_sfx}',
+                                     _disp_col(bdf_src, intensity_ratio_key),
+                                     reference=1.0,
+                                     y_label=f'Intensity ratio {inj}/{contra}{ylbl_sfx}',
                                      graph_cfg=graph_cfg,
-                                     description='HL/HR intensity ratio across time bins.')
+                                     description=f'{inj}/{contra} intensity ratio '
+                                                 'across time bins.')
                         if ratio_sel['registry']:
                             ratio_sel['show'](0)
 
@@ -7826,7 +7895,11 @@ class GaitLimbTab(ttk.Frame):
                 _tab_descs['Full Stance'] = 'Contour metrics restricted to frames where ALL contour paws are simultaneously in ground contact.'
                 _tab_descs['Filtered Contour'] = ('Contour metrics filtered by solidity, aspect ratio, and circularity thresholds. '
                                                   'Adjust thresholds in Filter Preview and click Apply to update.')
-                _tab_descs['Ratios'] = 'Left/Right paw contour ratios (HL/HR). Reference 1.0 = equal between sides.'
+                _ratio_inj = (self._injured_paw_var.get() or 'HL').upper()
+                _ratio_contra = 'HR' if _ratio_inj == 'HL' else 'HL'
+                _tab_descs['Ratios'] = (
+                    f'Hind-paw contour ratios shown as injured/contralateral '
+                    f'({_ratio_inj}/{_ratio_contra}). Reference 1.0 = equal between sides.')
                 _tab_descs['Shape'] = ('Mean paw contour outline averaged across contact frames. '
                                        'Normalized by contour area for size-independent shape comparison. '
                                        '\u00b11 SD envelope shown as shaded region.')
