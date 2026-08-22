@@ -2,12 +2,12 @@
 """
 Shared "Sessions" picker for the analysis tabs.
 
-A compact button that reads "Sessions: All (6)" / "Sessions: 4 of 6" and opens
-a table popup (like the Gait tab's session list): one row per session with an
-include tick plus informative columns (Subject / Group / Video / Cache —
-whatever the tab supplies). Clicking a row toggles it; All / None act on the
-whole cohort. Everything is included by default, so tabs behave exactly as
-before unless the user opts out of sessions.
+A compact button that reads "Sessions: All (6)" / "Sessions: 4 of 6" and
+expands an inline session table right under it (no separate window): one row
+per session with an include tick plus informative columns (Subject / Group /
+Video / Cache — whatever the tab supplies). Clicking a row toggles it;
+All / None act on the whole cohort. Everything is included by default, so
+tabs behave exactly as before unless the user opts out of sessions.
 
 Usage:
     flt = SessionFilter(parent, on_change=self._refresh)
@@ -117,20 +117,16 @@ class SessionFilter(ttk.Frame):
             self._fill_tree()
         self._changed()
 
-    # ── popup table ────────────────────────────────────────────────────────
+    # ── inline table panel (expands in place under the button) ─────────────
 
     def _open_popup(self):
+        """Toggle the inline session table under the button."""
         if self._popup is not None and self._popup.winfo_exists():
-            self._popup.destroy()
-            self._popup = None
+            self._close_popup()
             return
-        win = tk.Toplevel(self)
-        self._popup = win
-        win.wm_overrideredirect(True)
-        win.attributes("-topmost", True)
-
-        frame = ttk.Frame(win, relief="solid", borderwidth=1, padding=4)
-        frame.pack(fill="both", expand=True)
+        frame = ttk.Frame(self, padding=(2, 3, 2, 2))
+        frame.pack(fill="x")
+        self._popup = frame
 
         bar = ttk.Frame(frame)
         bar.pack(fill="x", pady=(0, 3))
@@ -141,45 +137,29 @@ class SessionFilter(ttk.Frame):
                                                                padx=(4, 0))
         self._count_lbl = ttk.Label(bar, text="", foreground="#666666")
         self._count_lbl.pack(side="left", padx=8)
-        ttk.Button(bar, text="Close", width=6,
-                   command=self._close_popup).pack(side="right")
 
+        tf = ttk.Frame(frame)
+        tf.pack(fill="x")
         cols = ["include", "session"] + [c.lower() for c in self._columns]
-        tree = ttk.Treeview(frame, columns=cols, show="headings",
-                            height=min(max(len(self._included), 3), 14),
+        tree = ttk.Treeview(tf, columns=cols, show="headings",
+                            height=min(max(len(self._included), 3), 10),
                             selectmode="none")
         tree.heading("include", text="✓")
-        tree.column("include", width=34, anchor="center", stretch=False)
+        tree.column("include", width=30, anchor="center", stretch=False)
         tree.heading("session", text="Session")
-        tree.column("session", width=170, stretch=True)
+        tree.column("session", width=140, stretch=True)
         for c in self._columns:
             tree.heading(c.lower(), text=c)
-            tree.column(c.lower(), width=90 if c in ("Subject", "Group")
-                        else 70, stretch=False)
-        vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+            tree.column(c.lower(), width=70 if c in ("Subject", "Group")
+                        else 55, stretch=False)
+        vsb = ttk.Scrollbar(tf, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=vsb.set)
-        tree.pack(side="left", fill="both", expand=True)
+        tree.pack(side="left", fill="x", expand=True)
         vsb.pack(side="right", fill="y")
         tree.bind("<Button-1>", self._on_tree_click)
         self._tree = tree
         self._fill_tree()
-
-        ttk.Label(frame, text="").pack()  # spacing under the tree
-
-        # place under the button; keep on-screen
-        win.update_idletasks()
-        x = self._btn.winfo_rootx()
-        y = self._btn.winfo_rooty() + self._btn.winfo_height() + 2
-        w, h = win.winfo_reqwidth(), win.winfo_reqheight()
-        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
-        x = min(x, sw - w - 8)
-        y = min(y, sh - h - 8)
-        win.geometry(f"+{x}+{y}")
-
-        # dismiss when the user clicks elsewhere
-        win.bind("<FocusOut>", lambda e: self._close_popup())
-        win.bind("<Escape>", lambda e: self._close_popup())
-        win.focus_set()
+        self._update_text()
 
     def _close_popup(self, *_):
         if self._popup is not None:
@@ -188,6 +168,7 @@ class SessionFilter(ttk.Frame):
             except Exception:
                 pass
             self._popup = None
+        self._update_text()
 
     def _fill_tree(self):
         tree = self._tree
@@ -231,4 +212,5 @@ class SessionFilter(ttk.Frame):
             txt = f"{self._label}: All ({total})"
         else:
             txt = f"{self._label}: {n_sel} of {total}"
-        self._btn.configure(text=txt + "  ▾")
+        opened = self._popup is not None and self._popup.winfo_exists()
+        self._btn.configure(text=txt + ("  ▴" if opened else "  ▾"))

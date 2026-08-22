@@ -240,9 +240,8 @@ class GaitLimbTabV2(ttk.Frame):
             pass
 
         self._build_data_panel(rail)
-        self._build_quicksetup(rail)
+        self._build_quicksetup(rail)     # preset + Run/Cancel + readiness
         self._build_settings_panel(rail)
-        self._build_run_panel(rail)
         self._build_export_panel(rail)
 
         # ── RIGHT: results pane (graphs + tables + log) ──
@@ -259,6 +258,49 @@ class GaitLimbTabV2(ttk.Frame):
                                    self._on_tab_shown, add='+')
         except Exception:
             pass
+
+    def _build_quicksetup(self, parent):
+        """Preset chooser with Run/Cancel beside it, readiness underneath."""
+        lf = ttk.LabelFrame(parent, text="Quick Setup", padding=6)
+        lf.pack(fill='x', padx=4, pady=(6, 2))
+        row = ttk.Frame(lf)
+        row.pack(fill='x')
+        ttk.Label(row, text="Preset:").pack(side='left')
+        self._preset_var = tk.StringVar(value='Paw contact (manuscript gate)')
+        self._preset_combo = ttk.Combobox(
+            row, textvariable=self._preset_var, state='readonly',
+            width=26, values=list(self.GAIT_PRESETS.keys()))
+        self._preset_combo.pack(side='left', padx=4)
+        self._preset_combo.bind('<<ComboboxSelected>>', self._apply_gait_preset)
+        self._tip(self._preset_combo,
+                  "One-click setup for common runs. Sets the brightness / contour /\n"
+                  "forepaw options for you so you don't have to know their\n"
+                  "dependencies. Fine-tune anything afterward in the sections below.")
+        self._run_btn = ttk.Button(row, text="▶  Run Analysis",
+                                   command=self._start_analysis,
+                                   state='disabled')
+        self._run_btn.pack(side='left', padx=(8, 2))
+        self._cancel_btn = ttk.Button(row, text="■", width=3,
+                                      command=self._cancel_analysis,
+                                      state='disabled')
+        self._cancel_btn.pack(side='left', padx=2)
+        self._tip(self._cancel_btn, "Cancel the running analysis.")
+
+        # Readiness strip — always shows the next actionable step.
+        self._readiness_lbl = ttk.Label(
+            lf, text='', foreground='grey', wraplength=380,
+            justify='left', font=(FONT_FAMILY, 8))
+        self._readiness_lbl.pack(fill='x', pady=(3, 0))
+
+        # Progress bar (hidden until analysis runs; shown/hidden by
+        # _start_analysis / _on_analysis_complete).
+        self._progress_frame = ttk.Frame(lf)
+        self._progress = ttk.Progressbar(self._progress_frame,
+                                         mode='determinate')
+        self._progress.pack(fill='x', padx=4, pady=(0, 1))
+        self._sub_progress_label = ttk.Label(
+            self._progress_frame, text="", font=('TkDefaultFont', 8))
+        self._sub_progress_label.pack(fill='x', padx=4, pady=(0, 2))
 
     # ── Left: Data (key file first, then the session picker) ───────────────
 
@@ -377,55 +419,6 @@ class GaitLimbTabV2(ttk.Frame):
         frame = ttk.Frame(parent)
         frame.pack(fill='x', padx=2)
         return frame
-
-    def _build_quicksetup(self, parent):
-        """One-click preset chooser (moved out of the old settings top strip)."""
-        lf = ttk.LabelFrame(parent, text="Quick Setup", padding=6)
-        lf.pack(fill='x', padx=4, pady=(6, 2))
-        row = ttk.Frame(lf)
-        row.pack(fill='x')
-        ttk.Label(row, text="Preset:").pack(side='left')
-        self._preset_var = tk.StringVar(value='Paw contact (manuscript gate)')
-        self._preset_combo = ttk.Combobox(
-            row, textvariable=self._preset_var, state='readonly',
-            width=28, values=list(self.GAIT_PRESETS.keys()))
-        self._preset_combo.pack(side='left', padx=4)
-        self._preset_combo.bind('<<ComboboxSelected>>', self._apply_gait_preset)
-        self._tip(self._preset_combo,
-                  "One-click setup for common runs. Sets the brightness / contour /\n"
-                  "forepaw options for you so you don't have to know their\n"
-                  "dependencies. Fine-tune anything afterward in the sections below.")
-
-    def _build_run_panel(self, parent):
-        """Run / Cancel + readiness + progress, grouped at the bottom of the rail."""
-        lf = ttk.LabelFrame(parent, text="Run", padding=6)
-        lf.pack(fill='x', padx=4, pady=(8, 10))
-        run_frame = ttk.Frame(lf)
-        run_frame.pack(fill='x')
-        self._run_btn = ttk.Button(run_frame, text="▶  Run Analysis",
-                                   command=self._start_analysis, state='disabled')
-        self._run_btn.pack(side='left', padx=2)
-        self._cancel_btn = ttk.Button(run_frame, text="■  Cancel",
-                                      command=self._cancel_analysis,
-                                      state='disabled')
-        self._cancel_btn.pack(side='left', padx=2)
-
-        # Readiness strip — always shows the next actionable step.
-        self._readiness_lbl = ttk.Label(
-            lf, text='', foreground='grey', wraplength=520,
-            justify='left', font=(FONT_FAMILY, 8))
-        self._readiness_lbl.pack(fill='x', pady=(3, 0))
-
-        # Progress bar (hidden until analysis runs; shown/hidden by
-        # _start_analysis / _on_analysis_complete).
-        self._progress_frame = ttk.Frame(lf)
-        self._progress = ttk.Progressbar(self._progress_frame, mode='determinate')
-        self._progress.pack(fill='x', padx=4, pady=(0, 1))
-        self._sub_progress_label = ttk.Label(
-            self._progress_frame, text="", font=('TkDefaultFont', 8))
-        self._sub_progress_label.pack(fill='x', padx=4, pady=(0, 2))
-
-    # ── Left: Sessions ──────────────────────────────────────────────────────
 
     def _build_settings_panel(self, parent):
         # ── Parameter vars (declared up front so any tab can build them) ──
