@@ -91,12 +91,6 @@ class LocomotionTab(ttk.Frame):
         self._scan_status = tk.StringVar(value="Not scanned.")
         ttk.Label(df_, textvariable=self._scan_status, foreground="#666666",
                   justify="left", wraplength=240).pack(anchor="w", padx=6)
-        _T(ttk.Button(df_, text="Preview video…",
-                      command=self._open_video_preview),
-           "Play a session's video with the tracked trajectory overlaid -- "
-           "sanity-check what the distance numbers are integrating.").pack(
-            fill="x", padx=6, pady=(4, 2))
-
         krow = ttk.Frame(df_)
         krow.pack(fill="x", padx=6, pady=(4, 2))
         ttk.Label(krow, text="Key file:").pack(side="left")
@@ -152,6 +146,11 @@ class LocomotionTab(ttk.Frame):
         bsp.bind("<Return>", lambda e: self.refresh())
         Tip(bsp, "Width of the time bins; clamps automatically so short "
                  "sessions still yield a timecourse.")
+        _T(ttk.Button(st, text="Preview video…",
+                      command=self._open_video_preview),
+           "Play a session's video with the tracked trajectory overlaid -- "
+           "sanity-check what the distance numbers are integrating.").pack(
+            fill="x", padx=6, pady=(2, 6))
 
         # View selection lives in a dropdown ABOVE the graph (see the
         # right-side top bar below); only its backing var is created here.
