@@ -1,0 +1,68 @@
+{
+  "project": "E:/PixelPaws_practice",
+  "preset": "Paw contact (manuscript gate)",
+  "note": "bin_seconds/bin_unit overridden to 30 s for the 2-min practice clips (preset 5-min bins would produce 0 bins)",
+  "key_file": "E:/PixelPaws_practice\\practice_key.csv",
+  "params": {
+    "contact_threshold": 15,
+    "height_window": 500,
+    "bin_seconds": 30,
+    "bin_unit": "seconds",
+    "fallback_fps": 60.0,
+    "use_brightness": true,
+    "brt_threshold": 0,
+    "brt_weight": 1.0,
+    "roi_sizes": {
+      "HL": 20,
+      "HR": 20,
+      "FL": 15,
+      "FR": 15
+    },
+    "crop_offset_x": 0,
+    "crop_offset_y": 0,
+    "extraction_stride": 1,
+    "contact_method": "contour_area",
+    "speed_threshold": "auto",
+    "median_filter_ms": 50,
+    "min_bout_ms": 30,
+    "min_stance_ms": 100,
+    "use_likelihood": false,
+    "likelihood_threshold": 0.6,
+    "loco_filter": false,
+    "loco_threshold": 20.0,
+    "paw_contour": true,
+    "contour_roi_sizes": {
+      "HL": 50,
+      "HR": 50,
+      "FL": 40,
+      "FR": 40
+    },
+    "contour_forelimbs": false,
+    "contour_area_threshold": 1500,
+    "contour_area_max": 5000,
+    "exclude_licking": true,
+    "lick_behavior": "Left_licking",
+    "lick_threshold": 0.5,
+    "gate_4paw": false
+  },
+  "paw_map": {
+    "HL": "hlpaw",
+    "HR": "hrpaw",
+    "FL": "",
+    "FR": ""
+  },
+  "sessions": [
+    "mouse1_veh",
+    "mouse2_veh",
+    "mouse3_veh",
+    "mouse4_drug",
+    "mouse5_drug",
+    "mouse6_drug"
+  ],
+  "not_done": [],
+  "pawlike_thresholds": {
+    "solidity": 1.0,
+    "aspect_ratio": 1.6,
+    "circularity": 0.1
+  }
+}

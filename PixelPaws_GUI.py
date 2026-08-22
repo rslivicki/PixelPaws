@@ -132,11 +132,19 @@ try:
 except ImportError:
     UNSUPERVISED_TAB_AVAILABLE = False
 
+# Gait & Limb: prefer the rebuilt tab (gait_core + gait_views); fall back to
+# the legacy monolith if the new modules are unavailable.
+GAIT_TAB_IS_V2 = False
 try:
-    from gait_limb_tab import GaitLimbTab
+    from gait_tab_v2 import GaitLimbTabV2 as GaitLimbTab
     GAIT_LIMB_TAB_AVAILABLE = True
+    GAIT_TAB_IS_V2 = True
 except ImportError:
-    GAIT_LIMB_TAB_AVAILABLE = False
+    try:
+        from gait_limb_tab import GaitLimbTab
+        GAIT_LIMB_TAB_AVAILABLE = True
+    except ImportError:
+        GAIT_LIMB_TAB_AVAILABLE = False
 
 try:
     from body_contact_tab import BodyContactTab
@@ -602,6 +610,8 @@ class PixelPawsGUI:
                        + (["🔀 Transitions"] if INCLUDE_DEV_TABS else [])
                        + (["📈 Single-Classifier (legacy)"]
                           if INCLUDE_DEV_TABS else [])
+                       + (["🐾 Gait & Limb (legacy)"]
+                          if INCLUDE_DEV_TABS else [])
                        + (["🫃 Body Contact"] if INCLUDE_DEV_TABS else []),
             "Tools": ["🛠 Tools"],
             "Train & Evaluate": ["🎬 Predict & Review", "📊 Evaluate",
@@ -677,6 +687,19 @@ class PixelPawsGUI:
             self.notebook.add(self.wb_tab_frame, text="🐾 Gait & Limb Use")
             self.wb_tab = GaitLimbTab(self.wb_tab_frame, self)
             self.wb_tab.pack(fill='both', expand=True)
+
+        # Legacy Gait & Limb tab, kept for comparison during the v2 rollout.
+        if INCLUDE_DEV_TABS and GAIT_TAB_IS_V2:
+            try:
+                from gait_limb_tab import GaitLimbTab as _LegacyGaitTab
+                self.gait_legacy_frame = ttk.Frame(self.notebook)
+                self.notebook.add(self.gait_legacy_frame,
+                                  text="🐾 Gait & Limb (legacy)")
+                self.gait_legacy_tab = _LegacyGaitTab(
+                    self.gait_legacy_frame, self)
+                self.gait_legacy_tab.pack(fill='both', expand=True)
+            except Exception as _lg_err:
+                print(f"Legacy gait tab unavailable: {_lg_err}")
 
         # Body Contact analysis tab (centroid + tailbase, midline keypoints)
         if INCLUDE_DEV_TABS and BODY_CONTACT_TAB_AVAILABLE:
@@ -4174,6 +4197,8 @@ class PixelPawsGUI:
         # Sync weight bearing tab
         if GAIT_LIMB_TAB_AVAILABLE and hasattr(self, 'wb_tab'):
             self.wb_tab.on_project_changed()
+        if hasattr(self, 'gait_legacy_tab'):
+            self.gait_legacy_tab.on_project_changed()
 
         # Write back (merge) so any newly set fields are persisted immediately
         self.save_project_config(folder)

@@ -1,3 +1,38 @@
+# 2026-08-21 — Gait & Limb rebuilt (gait_core + gait_views + gait_tab_v2)
+
+Phase B of the analysis-tab rebuild. Compute extracted verbatim into headless
+`gait_core.py` (golden-tested equal to the old tab on the practice project:
+full frame equality on summary + bins, identical md5-keyed cache files on
+re-extraction); the old graph window's full reachable surface ported into
+`gait_views.py` (21 categories / up to 209 graphs as a registry); the tab
+rebuilt as `gait_tab_v2.py` — results render in the right pane behind
+Category → Graph dropdowns with the shared 🎨⚙ style dialog, a gait-specific
+Display… dialog, Σ Stats flips, and per-graph CSV/PNG export. The old
+`gait_limb_tab.py` remains the fallback import and a "Gait & Limb (legacy)"
+tab under INCLUDE_DEV_TABS. On-disk formats unchanged (caches, sidecars,
+session bundles schema v1, legacy weight_bearing_analysis/ reads).
+
+**Intentional behavior changes / fixes**
+- Adjust Contact now runs the SAME metrics implementation as the analysis
+  (`gait_core.compute_all_metrics`), so licking exclusion and the 4-paw gate
+  stay in force during recompute — the old 680-line drifted copy silently
+  dropped both (wrong denominators) and skipped the mm-per-pixel threshold
+  scaling. Same-parameter recompute now reproduces the run exactly
+  (test-asserted).
+- Readiness/run preflight video check read `s['video_path']` (never set) —
+  every session was warned "lacks video" whenever brightness was on. Fixed
+  (`s['video']`).
+- Injured-paw ratio flip is non-mutating and display-only; the old
+  implementation wrote flipped `_injflip` columns into the DataFrames and
+  leaked them into Bins CSV exports.
+- The Σ-stats bin footnote checked `bin_start_min` (a column that never
+  existed) — now `bin_start_s`; embedded figures are tagged so closing a
+  graph actually frees its matplotlib figure.
+- The 800-line graph-settings dialog is replaced by the shared plot-style
+  dialog + a compact Display… dialog; ~1,550 lines of unreachable code
+  (cache-detail dialogs, bin-graphs suite, grouped contour tabs, DLC-config
+  browser) were not ported.
+
 # 2026-08-28 — Single-Classifier Analysis rebuilt (analysis_core + single_classifier_tab)
 
 Ground-up rebuild on the shared architecture. Compute extracted verbatim into

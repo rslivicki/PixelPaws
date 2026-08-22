@@ -415,6 +415,21 @@ with a note. Binned tables export as CSV.
 
 The Gait & Limb Use tab analyzes paw contact patterns, gait timing, and limb symmetry from DLC pose data — no force plate or pressure mat needed.
 
+Rebuilt on the app's standard layout: a left rail that reads top-to-bottom
+(Sessions → Quick Setup preset → Setup → Detection → collapsed Advanced → Run
+with a readiness strip that always names the next actionable step), and results
+that render directly in the right pane — pick a **Category** (Paw Contact, Limb
+Use, Contact %/Brightness, Gait Timing/Spatial/Symmetry, Movement, Coordination,
+Paw Contour, Statistics) and then a **Graph** from the dropdowns; each graph
+offers CSV/PNG export, the shared 🎨⚙ style dialog, a **Display…** dialog for
+gait-specific options (treatment order, per-treatment markers, timecourse
+window/re-bin), and a **Σ Stats** flip to that metric's statistics. Analyses run
+on a worker thread with live progress and Cancel; results auto-save as session
+bundles you can reload from the results pane. The compute engine and the
+**Adjust Contact** re-analysis now share one metrics implementation, so
+adjusted-contact results always apply the same licking-exclusion and 4-paw
+gating as the original run.
+
 **Paw contact detection.** Four methods are available:
 - *Contour area* (default) — a paw is "in contact" when its Otsu-segmented contour falls
   within a plausible paw-sized area band (1,500–5,000 px² by default). This is the
@@ -428,7 +443,7 @@ The Gait & Limb Use tab analyzes paw contact patterns, gait timing, and limb sym
 **Injured / injected paw.** Set which hind paw carries the injury or injection in the
 Paw Mapping panel (default HL). Every ratio graph is then shown as injured/contralateral,
 so values below 1.0 always mean the injured paw bears less — no need to mentally invert
-when the manipulated side is HR. The results window opens on a **Paw Contact** group with
+when the manipulated side is HR. The results pane opens on the **Paw Contact** category with
 these headline ratios; per-paw breakdowns live under Paw Contour.
 
 **Metrics computed per session:**
