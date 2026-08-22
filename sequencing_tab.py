@@ -93,20 +93,45 @@ class SequencingTab(ttk.Frame):
         # -- pipeline ---------------------------------------------------
         pf = ttk.LabelFrame(left, text="Pipeline")
         pf.pack(fill="x", pady=(0, 6))
+        # Data folder → Key file → Sessions: same order on every analysis tab.
         row = ttk.Frame(pf)
         row.pack(fill="x", padx=6, pady=(6, 2))
-        ttk.Label(row, text="Results folder:").pack(anchor="w")
+        ttk.Label(row, text="Results folder:").pack(side="left")
         self._results_var = tk.StringVar(value="")
         _T(ttk.Entry(row, textvariable=self._results_var),
            "Folder of *_predictions.csv written by Run Classifiers. "
-           "Per-behavior subfolders are scanned recursively.").pack(fill="x", pady=1)
-        btns = ttk.Frame(pf)
-        btns.pack(fill="x", padx=6, pady=2)
-        _T(ttk.Button(btns, text="Browse…", command=self._browse_results, width=9),
+           "Per-behavior subfolders are scanned recursively.").pack(
+            side="left", fill="x", expand=True, padx=(4, 4))
+        _T(ttk.Button(row, text="Browse", command=self._browse_results,
+                      width=7),
            "Pick a results folder and scan it.").pack(side="left")
-        _T(ttk.Button(btns, text="Scan", command=self.scan_results, width=9),
+
+        krow = ttk.Frame(pf)
+        krow.pack(fill="x", padx=6, pady=(4, 2))
+        ttk.Label(krow, text="Key file:").pack(side="left")
+        self._key_status = tk.StringVar(value="none — required for groups")
+        ttk.Label(krow, textvariable=self._key_status, foreground="#666666",
+                  justify="left", wraplength=170).pack(side="left", padx=(4, 4))
+        _T(ttk.Button(krow, text="Browse", command=self._browse_key, width=7),
+           "CSV/XLSX with Subject and Treatment columns. Optional Animal "
+           "(or Pair/Block) column marks rows sharing a mouse and switches "
+           "on within-animal permutation.").pack(side="right")
+        ttk.Label(pf, foreground="#888888", wraplength=240, justify="left",
+                  text="Key columns: Subject, Treatment, and optionally Animal "
+                       "(or Pair/Block) naming which rows share a mouse — that "
+                       "switches on within-animal permutation.").pack(
+            anchor="w", padx=6, pady=(0, 2))
+
+        # Sessions picker + Rescan on one row.
+        sess_row = ttk.Frame(pf)
+        sess_row.pack(fill="x", padx=6, pady=(4, 2))
+        self._session_filter = SessionFilter(sess_row)
+        self._session_filter.pack(side="left", fill="x", expand=True)
+        _T(ttk.Button(sess_row, text="Rescan", command=self.scan_results,
+                      width=7),
            "Find sessions and behaviors in the results folder, order the "
-           "priority list, and auto-locate a key file.").pack(side="left", padx=(6, 0))
+           "priority list, and auto-locate a key file.").pack(side="left",
+                                                              padx=(4, 0))
         self._scan_status = tk.StringVar(value="Not scanned.")
         ttk.Label(pf, textvariable=self._scan_status, foreground="#666666",
                   justify="left").pack(anchor="w", padx=6)
@@ -126,26 +151,6 @@ class SequencingTab(ttk.Frame):
            "Move the selected behavior up in priority.").pack(side="left")
         _T(ttk.Button(pb, text="▼", width=3, command=lambda: self._move_prio(+1)),
            "Move the selected behavior down in priority.").pack(side="left", padx=(4, 0))
-
-        row = ttk.Frame(pf)
-        row.pack(fill="x", padx=6, pady=(2, 2))
-        ttk.Label(row, text="Key file:").pack(side="left")
-        _T(ttk.Button(row, text="Browse…", command=self._browse_key, width=9),
-           "CSV/XLSX with Subject and Treatment columns. Optional Animal "
-           "(or Pair/Block) column marks rows sharing a mouse and switches "
-           "on within-animal permutation.").pack(side="right")
-        self._key_status = tk.StringVar(value="none — required for groups")
-        ttk.Label(pf, textvariable=self._key_status, foreground="#666666",
-                  justify="left", wraplength=240).pack(anchor="w", padx=6)
-
-        # Optional per-session filter (all included by default).
-        self._session_filter = SessionFilter(pf)
-        self._session_filter.pack(anchor="w", padx=6, pady=(2, 1))
-        ttk.Label(pf, foreground="#888888", wraplength=240, justify="left",
-                  text="Key columns: Subject, Treatment, and optionally Animal "
-                       "(or Pair/Block) naming which rows share a mouse — that "
-                       "switches on within-animal permutation.").pack(
-            anchor="w", padx=6, pady=(2, 2))
 
         # (Compute + status live at the BOTTOM of the rail, below the view/
         # threshold options; the Transitions import button was removed --

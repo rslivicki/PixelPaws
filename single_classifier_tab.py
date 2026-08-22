@@ -103,41 +103,43 @@ class SingleClassifierTab(ttk.Frame):
         # ---------------- Data ----------------
         df_ = ttk.LabelFrame(left, text="Data")
         df_.pack(fill="x", pady=(0, 6))
-        prow = ttk.Frame(df_)
-        prow.pack(fill="x", padx=6, pady=(6, 1))
-        self._scan_status = tk.StringVar(value="No project scanned.")
-        ttk.Label(prow, textvariable=self._scan_status, foreground="#666666",
-                  wraplength=200, justify="left").pack(side="left")
-        _T(ttk.Button(prow, text="Rescan", width=7,
-                      command=lambda: self.scan_project_folder()),
-           "Re-scan the project for prediction folders and key files."
-           ).pack(side="right")
 
+        # Key file first, then Sessions — same order on every analysis tab.
         krow = ttk.Frame(df_)
-        krow.pack(fill="x", padx=6, pady=1)
+        krow.pack(fill="x", padx=6, pady=(6, 1))
         ttk.Label(krow, text="Key file:").pack(side="left")
-        _T(ttk.Button(krow, text="Generate…", width=9,
-                      command=self._generate_key),
-           "Create a key file: type a Treatment for each video subject; "
-           "saved as key_file.csv in the project.").pack(side="right")
-        _T(ttk.Button(krow, text="Browse…", width=8,
-                      command=self._browse_key),
-           "Pick a key file (CSV/XLSX with Subject and Treatment columns)."
-           ).pack(side="right", padx=(0, 4))
         self.key_file_var = tk.StringVar(value="")
-        self._key_combo = ttk.Combobox(df_, textvariable=self.key_file_var,
-                                       state="readonly")
-        self._key_combo.pack(fill="x", padx=6, pady=1)
+        self._key_combo = ttk.Combobox(krow, textvariable=self.key_file_var,
+                                       state="readonly", width=14)
+        self._key_combo.pack(side="left", fill="x", expand=True, padx=(4, 4))
         self._key_combo.bind("<<ComboboxSelected>>", self._on_key_pick)
         Tip(self._key_combo, "Key files discovered in the project; groups "
                              "come from the Treatment column.")
+        _T(ttk.Button(krow, text="Browse", width=7,
+                      command=self._browse_key),
+           "Pick a key file (CSV/XLSX with Subject and Treatment columns)."
+           ).pack(side="left")
+        _T(ttk.Button(krow, text="Generate…", width=9,
+                      command=self._generate_key),
+           "Create a key file: type a Treatment for each video subject; "
+           "saved as key_file.csv in the project.").pack(side="left",
+                                                         padx=(4, 0))
         self._key_status = tk.StringVar(value="no key loaded")
         ttk.Label(df_, textvariable=self._key_status, foreground="#666666",
                   wraplength=270, justify="left").pack(anchor="w", padx=6)
 
-        # Optional per-session filter (all included by default).
-        self._session_filter = SessionFilter(df_)
-        self._session_filter.pack(anchor="w", padx=6, pady=(2, 1))
+        # Sessions picker + Rescan on one row.
+        sess_row = ttk.Frame(df_)
+        sess_row.pack(fill="x", padx=6, pady=(4, 1))
+        self._session_filter = SessionFilter(sess_row)
+        self._session_filter.pack(side="left", fill="x", expand=True)
+        _T(ttk.Button(sess_row, text="Rescan", width=7,
+                      command=lambda: self.scan_project_folder()),
+           "Re-scan the project for prediction folders and key files."
+           ).pack(side="left", padx=(4, 0))
+        self._scan_status = tk.StringVar(value="No project scanned.")
+        ttk.Label(df_, textvariable=self._scan_status, foreground="#666666",
+                  wraplength=270, justify="left").pack(anchor="w", padx=6)
 
         srow = ttk.Frame(df_)
         srow.pack(fill="x", padx=6, pady=(2, 1))

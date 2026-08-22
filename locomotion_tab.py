@@ -84,28 +84,32 @@ class LocomotionTab(ttk.Frame):
         # -- data -------------------------------------------------------
         df_ = ttk.LabelFrame(left, text="Data")
         df_.pack(fill="x", pady=(0, 6))
-        _T(ttk.Button(df_, text="Scan project videos", command=self.scan_sessions),
-           "Find video + DLC .h5 pairs in the project's videos/ folder, read "
-           "each video's fps and PawCapture spatial calibration, and list the "
-           "tracked body parts.").pack(fill="x", padx=6, pady=(6, 2))
-        self._scan_status = tk.StringVar(value="Not scanned.")
-        ttk.Label(df_, textvariable=self._scan_status, foreground="#666666",
-                  justify="left", wraplength=240).pack(anchor="w", padx=6)
+        # Key file first, then Sessions — same order on every analysis tab.
         krow = ttk.Frame(df_)
-        krow.pack(fill="x", padx=6, pady=(4, 2))
+        krow.pack(fill="x", padx=6, pady=(6, 2))
         ttk.Label(krow, text="Key file:").pack(side="left")
-        _T(ttk.Button(krow, text="Browse…", command=self._browse_key, width=9),
+        self._key_status = tk.StringVar(value="none — sessions plotted ungrouped")
+        ttk.Label(krow, textvariable=self._key_status, foreground="#666666",
+                  justify="left", wraplength=170).pack(side="left", padx=(4, 4))
+        _T(ttk.Button(krow, text="Browse", command=self._browse_key, width=7),
            "CSV/XLSX with Subject and Treatment columns; subjects match whole "
            "underscore tokens of the session name. Any number of groups is "
            "supported.").pack(side="right")
-        self._key_status = tk.StringVar(value="none — sessions plotted ungrouped")
-        ttk.Label(df_, textvariable=self._key_status, foreground="#666666",
+
+        # Sessions picker + Rescan on one row.
+        sess_row = ttk.Frame(df_)
+        sess_row.pack(fill="x", padx=6, pady=(4, 2))
+        self._session_filter = SessionFilter(sess_row, on_change=self.refresh)
+        self._session_filter.pack(side="left", fill="x", expand=True)
+        _T(ttk.Button(sess_row, text="Rescan", command=self.scan_sessions,
+                      width=7),
+           "Find video + DLC .h5 pairs in the project's videos/ folder, read "
+           "each video's fps and PawCapture spatial calibration, and list the "
+           "tracked body parts.").pack(side="left", padx=(4, 0))
+        self._scan_status = tk.StringVar(value="Not scanned.")
+        ttk.Label(df_, textvariable=self._scan_status, foreground="#666666",
                   justify="left", wraplength=240).pack(anchor="w", padx=6,
                                                        pady=(0, 6))
-
-        # Optional per-session filter (all included by default).
-        self._session_filter = SessionFilter(df_, on_change=self.refresh)
-        self._session_filter.pack(anchor="w", padx=6, pady=(0, 6))
 
         # -- settings ---------------------------------------------------
         st = ttk.LabelFrame(left, text="Tracking settings")

@@ -112,41 +112,44 @@ class MultiClassifierTab(ttk.Frame):
         # -- data -------------------------------------------------------
         df_ = ttk.LabelFrame(left, text="Data")
         df_.pack(fill="x", pady=(0, 6))
+        # Data folder → Key file → Sessions: same order on every analysis tab.
         row = ttk.Frame(df_)
         row.pack(fill="x", padx=6, pady=(6, 2))
-        ttk.Label(row, text="Results folder:").pack(anchor="w")
+        ttk.Label(row, text="Results folder:").pack(side="left")
         self._results_var = tk.StringVar(value="")
         _T(ttk.Entry(row, textvariable=self._results_var),
            "Results folder written by Run Classifiers. The consolidated "
            "per-frame sheets in its per_frame/ subfolder feed this tab.").pack(
-            fill="x", pady=1)
-        btns = ttk.Frame(df_)
-        btns.pack(fill="x", padx=6, pady=2)
-        _T(ttk.Button(btns, text="Browse…", command=self._browse_results, width=9),
+            side="left", fill="x", expand=True, padx=(4, 4))
+        _T(ttk.Button(row, text="Browse", command=self._browse_results,
+                      width=7),
            "Pick a results folder and scan it.").pack(side="left")
-        _T(ttk.Button(btns, text="Scan", command=self.scan_results, width=9),
-           "Find the per-session sheets, list the behaviors, and auto-locate "
-           "a key file.").pack(side="left", padx=(6, 0))
-        self._scan_status = tk.StringVar(value="Not scanned.")
-        ttk.Label(df_, textvariable=self._scan_status, foreground="#666666",
-                  justify="left", wraplength=240).pack(anchor="w", padx=6)
 
         krow = ttk.Frame(df_)
         krow.pack(fill="x", padx=6, pady=(4, 2))
         ttk.Label(krow, text="Key file:").pack(side="left")
-        _T(ttk.Button(krow, text="Browse…", command=self._browse_key, width=9),
+        self._key_status = tk.StringVar(value="none — sessions plotted ungrouped")
+        ttk.Label(krow, textvariable=self._key_status, foreground="#666666",
+                  justify="left", wraplength=170).pack(side="left", padx=(4, 4))
+        _T(ttk.Button(krow, text="Browse", command=self._browse_key, width=7),
            "CSV/XLSX with Subject and Treatment columns. Subjects are matched "
            "as whole underscore-separated tokens of the session name, so "
            "'mouse1' matches 'mouse1_veh'. Any number of groups is "
            "supported.").pack(side="right")
-        self._key_status = tk.StringVar(value="none — sessions plotted ungrouped")
-        ttk.Label(df_, textvariable=self._key_status, foreground="#666666",
+
+        # Sessions picker + Rescan on one row.
+        sess_row = ttk.Frame(df_)
+        sess_row.pack(fill="x", padx=6, pady=(4, 2))
+        self._session_filter = SessionFilter(sess_row, on_change=self.refresh)
+        self._session_filter.pack(side="left", fill="x", expand=True)
+        _T(ttk.Button(sess_row, text="Rescan", command=self.scan_results,
+                      width=7),
+           "Find the per-session sheets, list the behaviors, and auto-locate "
+           "a key file.").pack(side="left", padx=(4, 0))
+        self._scan_status = tk.StringVar(value="Not scanned.")
+        ttk.Label(df_, textvariable=self._scan_status, foreground="#666666",
                   justify="left", wraplength=240).pack(anchor="w", padx=6,
                                                        pady=(0, 6))
-
-        # Optional per-session filter (all included by default).
-        self._session_filter = SessionFilter(df_, on_change=self.refresh)
-        self._session_filter.pack(anchor="w", padx=6, pady=(0, 6))
 
         # -- options (view selection lives in the dropdown above the graph)
         vf = ttk.LabelFrame(left, text="Options")
