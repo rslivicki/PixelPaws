@@ -365,7 +365,8 @@ class MultiClassifierTab(ttk.Frame):
             self._beh_list.insert("end", b)
         self._beh_list.select_set(0, "end")
         self._session_combo.configure(values=sorted(self._frames))
-        self._session_filter.set_sessions(sorted(self._frames))
+        self._session_filter.set_sessions(sorted(self._frames),
+                                          key_df=self._key_df)
         if self._frames and not self._session_var.get():
             self._session_var.set(sorted(self._frames)[0])
         self._scan_status.set(
@@ -430,6 +431,9 @@ class MultiClassifierTab(ttk.Frame):
         self._key_df = out[out["Subject"] != ""]
         self._key_status.set(f"{os.path.basename(path)} — "
                              f"{self._key_df['Treatment'].nunique()} group(s)")
+        if self._frames:
+            self._session_filter.set_sessions(sorted(self._frames),
+                                              key_df=self._key_df)
 
     def _agg_sessions(self):
         """Sessions feeding group aggregations, after the optional filter."""

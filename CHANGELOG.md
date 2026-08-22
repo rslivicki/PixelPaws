@@ -1,3 +1,16 @@
+# 2026-08-22 — Unified session picker (table popup) across tabs
+
+- The Sessions dropdown now opens a gait-style **session table** (include
+  tick + Subject / Group / Video / Cache columns where available; click a
+  row to toggle it, All/None shortcuts). Same shared widget on the
+  Single-Classifier, Multi-Classifier, Sequencing, Locomotion, and now
+  **Gait & Limb** tabs.
+- Gait rail unified with the other tabs: a **Data** section leads with the
+  key file, then the compact Sessions picker (the old full-height session
+  tree is gone; its Subject/Video/Cache info lives in the picker's table).
+  Previews and readiness follow the picker's included sessions.
+- Sequencing ordination boundary now defaults to **95% ellipse**.
+
 # 2026-08-22 — Session filters + calmer gait results pane
 
 - All analysis tabs (Single-Classifier, Multi-Classifier, Sequencing,

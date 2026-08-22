@@ -62,6 +62,7 @@ from ui_utils import (ToolTip as _ToolTip,
                       _bind_tight_layout_on_resize, _draw_canvas_fit,
                       bind_mousewheel, FONT_FAMILY)
 from ui_tooltip import Tip, collapsible
+from ui_session_filter import SessionFilter
 
 import gait_core as gc
 from gait_core import find_session_triplets
@@ -238,7 +239,7 @@ class GaitLimbTabV2(ttk.Frame):
         except Exception:
             pass
 
-        self._build_sessions_panel(rail)
+        self._build_data_panel(rail)
         self._build_quicksetup(rail)
         self._build_settings_panel(rail)
         self._build_run_panel(rail)
@@ -258,6 +259,115 @@ class GaitLimbTabV2(ttk.Frame):
                                    self._on_tab_shown, add='+')
         except Exception:
             pass
+
+    # ── Left: Data (key file first, then the session picker) ───────────────
+
+    def _build_data_panel(self, parent):
+        self._override_folder_var = tk.StringVar(value='')
+
+        lf = ttk.LabelFrame(parent, text="Data", padding=6)
+        lf.pack(fill='x', padx=4, pady=4)
+
+        # Key file first — same order as the other analysis tabs.
+        kf_row = ttk.Frame(lf)
+        kf_row.pack(fill='x', pady=2)
+        ttk.Label(kf_row, text="Key file:", width=8).pack(side='left')
+        self._key_file_var = tk.StringVar()
+        self._key_combo = ttk.Combobox(kf_row, textvariable=self._key_file_var,
+                                       state='normal', width=16)
+        self._key_combo.pack(side='left', padx=3, fill='x', expand=True)
+        self._key_combo.bind('<<ComboboxSelected>>', self._on_key_combo_selected)
+        ttk.Button(kf_row, text="Browse", width=7,
+                   command=self._browse_key_file).pack(side='left')
+        ttk.Button(kf_row, text="Generate…", width=9,
+                   command=self._generate_key_file).pack(side='left', padx=(4, 0))
+
+        pfx_row = ttk.Frame(lf)
+        pfx_row.pack(fill='x', pady=2)
+        ttk.Label(pfx_row, text="Prefix:", width=8).pack(side='left')
+        self._prefix_var = tk.StringVar()
+        pfx_ent = ttk.Entry(pfx_row, textvariable=self._prefix_var, width=16)
+        pfx_ent.pack(side='left', padx=3)
+        self._tip(pfx_ent,
+                  "Filename prefix to strip before extracting subject ID.\n"
+                  "e.g. '260129_Formalin_' → next underscore-token = subject.")
+
+        self._key_status_lbl = ttk.Label(lf, text='No key file loaded',
+                                         foreground='grey', wraplength=380,
+                                         justify='left')
+        self._key_status_lbl.pack(anchor='w', pady=(0, 4))
+
+        # Sessions — same dropdown-table picker as the other tabs
+        # (opens the session table with Subject / Video / Cache columns).
+        sess_row = ttk.Frame(lf)
+        sess_row.pack(fill='x', pady=2)
+        self._session_filter = SessionFilter(sess_row,
+                                             on_change=self._update_readiness)
+        self._session_filter.pack(side='left', fill='x', expand=True)
+        ttk.Button(sess_row, text="Rescan", width=7,
+                   command=self._scan_sessions).pack(side='left', padx=(4, 0))
+        _br = ttk.Button(sess_row, text="Browse…", width=8,
+                         command=self._browse_sessions_folder)
+        _br.pack(side='left', padx=(4, 0))
+        self._tip(_br, "Analyze sessions from a different folder than the\n"
+                       "current project.")
+        self._sess_lbl = ttk.Label(lf, text='', foreground='grey')
+        self._sess_lbl.pack(anchor='w', pady=(2, 0))
+        self._folder_lbl = ttk.Label(lf, text='', foreground='grey',
+                                     wraplength=380, font=(FONT_FAMILY, 8))
+        self._folder_lbl.pack(anchor='w')
+
+    # ── Session scanning (feeds the picker) ────────────────────────────────
+
+    def _scan_sessions(self):
+        folder = (self._override_folder_var.get()
+                  or self.app.current_project_folder.get())
+        if not folder or not os.path.isdir(folder):
+            return
+
+        try:
+            self._sessions = find_session_triplets(folder, require_labels=False)
+        except Exception as e:
+            self._log_ui(f"Session scan error: {e}")
+            self._sessions = []
+
+        # Auto-detect body parts from first available DLC h5
+        for sess in self._sessions:
+            if sess.get('dlc') and os.path.isfile(sess['dlc']):
+                self._auto_populate_bodyparts(sess['dlc'])
+                break
+
+        self._publish_sessions(folder)
+
+        n = len(self._sessions)
+        self._sess_lbl.config(text=f'{n} session{"s" if n != 1 else ""} found')
+        self._folder_lbl.config(
+            text=os.path.basename(folder) if folder else '')
+
+        self._scan_key_files(folder)
+        self._refresh_lick_behaviors()
+        self._update_readiness()
+
+    def _publish_sessions(self, folder=None):
+        """Feed the session picker: name + Subject / Video / Cache columns."""
+        folder = folder or (self._override_folder_var.get()
+                            or self.app.current_project_folder.get())
+        extra = {}
+        for sess in self._sessions:
+            name = sess['session_name']
+            has_vid = '✓' if (sess.get('video')
+                              and os.path.isfile(sess['video'])) else '✗'
+            extra[name] = {'Subject': self._resolve_subject(name),
+                           'Video': has_vid,
+                           'Cache': self._session_cache_status(name, folder)}
+        self._session_filter.set_sessions(
+            [s['session_name'] for s in self._sessions], extra=extra)
+
+    def _select_all(self):
+        self._session_filter.select_all(True)
+
+    def _clear_selection(self):
+        self._session_filter.select_all(False)
 
     def _rail_section(self, parent, title):
         """A bold section header + content frame stacked in the rail (replaces the
@@ -317,49 +427,6 @@ class GaitLimbTabV2(ttk.Frame):
 
     # ── Left: Sessions ──────────────────────────────────────────────────────
 
-    def _build_sessions_panel(self, parent):
-        self._override_folder_var = tk.StringVar(value='')
-
-        lf = ttk.LabelFrame(parent, text="Sessions", padding=5)
-        lf.pack(fill='x', padx=4, pady=4)
-
-        btn_row = ttk.Frame(lf)
-        btn_row.pack(fill='x', pady=(0, 4))
-        ttk.Button(btn_row, text="Scan",
-                   command=self._scan_sessions).pack(side='left', padx=2)
-        ttk.Button(btn_row, text="All",
-                   command=self._select_all).pack(side='left', padx=2)
-        ttk.Button(btn_row, text="Clear",
-                   command=self._clear_selection).pack(side='left', padx=2)
-        ttk.Button(btn_row, text="Browse…",
-                   command=self._browse_sessions_folder).pack(side='left', padx=2)
-
-        cols = ('name', 'subject', 'vid', 'cache')
-        self._sess_tree = ttk.Treeview(lf, columns=cols, show='headings',
-                                       selectmode='extended', height=9)
-        self._sess_tree.heading('name',    text='Session')
-        self._sess_tree.heading('subject', text='Subject')
-        self._sess_tree.heading('vid',     text='Video?')
-        self._sess_tree.heading('cache',   text='Cache')
-        self._sess_tree.column('name',    width=120, stretch=True)
-        self._sess_tree.column('subject', width=60,  stretch=False)
-        self._sess_tree.column('vid',     width=45,  stretch=False)
-        self._sess_tree.column('cache',   width=80,  stretch=False)
-
-        sb = ttk.Scrollbar(lf, orient='vertical', command=self._sess_tree.yview)
-        self._sess_tree.config(yscrollcommand=sb.set)
-        self._sess_tree.pack(side='left', fill='both', expand=True)
-        sb.pack(side='right', fill='y')
-        self._sess_tree.bind('<<TreeviewSelect>>', self._update_readiness)
-
-        self._sess_lbl = ttk.Label(parent, text='', foreground='grey')
-        self._sess_lbl.pack(anchor='w', padx=6, pady=(2, 0))
-        self._folder_lbl = ttk.Label(parent, text='', foreground='grey',
-                                      wraplength=200, font=(FONT_FAMILY, 8))
-        self._folder_lbl.pack(anchor='w', padx=6)
-
-    # ── Middle: Settings ─────────────────────────────────────────────────────
-
     def _build_settings_panel(self, parent):
         # ── Parameter vars (declared up front so any tab can build them) ──
         self._contact_thresh_var = tk.IntVar(value=15)
@@ -395,36 +462,6 @@ class GaitLimbTabV2(ttk.Frame):
         adv_inner    = collapsible(parent, "Advanced", collapsed=True,
                                    fill='x', padx=2, pady=(10, 0))
 
-        kf_lf = ttk.LabelFrame(setup_inner, text="Key File", padding=5)
-        kf_lf.pack(fill='x', pady=(0, 6), padx=2)
-
-        kf_row = ttk.Frame(kf_lf)
-        kf_row.pack(fill='x', pady=2)
-        ttk.Label(kf_row, text="File:", width=7).pack(side='left')
-        self._key_file_var = tk.StringVar()
-        self._key_combo = ttk.Combobox(kf_row, textvariable=self._key_file_var,
-                                       state='normal', width=22)
-        self._key_combo.pack(side='left', padx=3)
-        self._key_combo.bind('<<ComboboxSelected>>', self._on_key_combo_selected)
-        ttk.Button(kf_row, text="Browse", width=7,
-                   command=self._browse_key_file).pack(side='left')
-        ttk.Button(kf_row, text="Generate…", width=9,
-                   command=self._generate_key_file).pack(side='left', padx=(4, 0))
-
-        pfx_row = ttk.Frame(kf_lf)
-        pfx_row.pack(fill='x', pady=2)
-        ttk.Label(pfx_row, text="Prefix:", width=7).pack(side='left')
-        self._prefix_var = tk.StringVar()
-        pfx_ent = ttk.Entry(pfx_row, textvariable=self._prefix_var, width=22)
-        pfx_ent.pack(side='left', padx=3)
-        self._tip(pfx_ent,
-                  "Filename prefix to strip before extracting subject ID.\n"
-                  "e.g. '260129_Formalin_' → next underscore-token = subject.")
-
-        self._key_status_lbl = ttk.Label(kf_lf, text='No key file loaded',
-                                         foreground='grey', wraplength=230,
-                                         justify='left')
-        self._key_status_lbl.pack(anchor='w', pady=(2, 0))
 
         pm_lf = ttk.LabelFrame(setup_inner, text="Paw Mapping", padding=5)
         pm_lf.pack(fill='x', pady=(0, 6), padx=2)
@@ -1322,41 +1359,6 @@ class GaitLimbTabV2(ttk.Frame):
             self._override_folder_var.set(folder)
             self._scan_sessions()
 
-    def _scan_sessions(self):
-        folder = self._override_folder_var.get() or self.app.current_project_folder.get()
-        if not folder or not os.path.isdir(folder):
-            return
-
-        try:
-            self._sessions = find_session_triplets(folder, require_labels=False)
-        except Exception as e:
-            self._log_ui(f"Session scan error: {e}")
-            self._sessions = []
-
-        for item in self._sess_tree.get_children():
-            self._sess_tree.delete(item)
-
-        # Auto-detect body parts from first available DLC h5
-        for sess in self._sessions:
-            if sess.get('dlc') and os.path.isfile(sess['dlc']):
-                self._auto_populate_bodyparts(sess['dlc'])
-                break
-
-        for sess in self._sessions:
-            subj = self._resolve_subject(sess['session_name'])
-            has_vid = '✓' if (sess.get('video') and os.path.isfile(sess['video'])) else '✗'
-            cache = self._session_cache_status(sess['session_name'], folder)
-            self._sess_tree.insert('', 'end',
-                                   values=(sess['session_name'], subj, has_vid, cache))
-
-        n = len(self._sessions)
-        self._sess_lbl.config(text=f'{n} session{"s" if n != 1 else ""} found')
-        self._folder_lbl.config(
-            text=os.path.basename(folder) if folder else '')
-
-        self._scan_key_files(folder)
-        self._refresh_lick_behaviors()
-
     def _session_cache_status(self, session_name, folder=None):
         """Report which extraction caches exist for a session: 'brt+contour',
         'brt', 'contour', or '—'. Checks both the current and legacy cache dirs."""
@@ -1381,16 +1383,6 @@ class GaitLimbTabV2(ttk.Frame):
         if has_brt:
             return 'brt'
         return '—'
-
-    def _select_all(self):
-        self._sess_tree.selection_set(self._sess_tree.get_children())
-
-    def _clear_selection(self):
-        self._sess_tree.selection_remove(self._sess_tree.get_children())
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # Body part detection
-    # ═══════════════════════════════════════════════════════════════════════
 
     def _auto_populate_bodyparts(self, h5_path: str):
         """Detect body parts from a DLC h5 file and fill paw comboboxes."""
@@ -1652,11 +1644,9 @@ class GaitLimbTabV2(ttk.Frame):
             foreground='green')
         self._log_ui(f"Key file loaded: {os.path.basename(path)}")
 
-        # Refresh subject column in session tree now that key is known
-        for item in self._sess_tree.get_children():
-            vals = list(self._sess_tree.item(item, 'values'))
-            vals[1] = self._resolve_subject(vals[0])
-            self._sess_tree.item(item, values=vals)
+        # Refresh the picker's Subject column now that the key is known.
+        if getattr(self, '_sessions', None):
+            self._publish_sessions()
 
     # ═══════════════════════════════════════════════════════════════════════
     # Subject / treatment resolution
@@ -1767,9 +1757,10 @@ class GaitLimbTabV2(ttk.Frame):
         """
         issues, notes = [], []
 
-        sel = self._sess_tree.selection() if hasattr(self, '_sess_tree') else ()
+        sel = (self._session_filter.selected()
+               if hasattr(self, '_session_filter') else [])
         if not sel:
-            issues.append("Select at least one session (① Sessions)")
+            issues.append("Select at least one session (Data → Sessions)")
 
         hl = self._role_vars['HL'].get().strip() if 'HL' in self._role_vars else ''
         hr = self._role_vars['HR'].get().strip() if 'HR' in self._role_vars else ''
@@ -1789,7 +1780,7 @@ class GaitLimbTabV2(ttk.Frame):
                          "(Run Classifiers), then Rescan; the manuscript gate drops them")
 
         if self._use_brightness_var.get() and sel:
-            sel_names = {self._sess_tree.item(i, 'values')[0] for i in sel}
+            sel_names = set(sel)
             missing = [s['session_name'] for s in self._sessions
                        if s['session_name'] in sel_names and not s.get('video')]
             if missing:
@@ -1819,7 +1810,7 @@ class GaitLimbTabV2(ttk.Frame):
             self._readiness_lbl.config(text="⚠ " + "  •  ".join(issues),
                                        foreground='#b00020')
             return
-        n_sel = len(self._sess_tree.selection())
+        n_sel = len(self._session_filter.selected())
         bits = [f"✓ {n_sel} session(s)", "✓ paws HL,HR"]
         bits += ["⚠ " + n for n in notes]
         self._readiness_lbl.config(
@@ -1834,8 +1825,7 @@ class GaitLimbTabV2(ttk.Frame):
             return
 
         # --- find a usable session (needs video + DLC) ---
-        selected = [self._sess_tree.item(i, 'values')[0]
-                    for i in self._sess_tree.selection()]
+        selected = self._session_filter.selected()
         candidates = [s for s in self._sessions
                       if (not selected or s['session_name'] in selected)
                       and s.get('video') and os.path.isfile(s['video'])
@@ -2222,8 +2212,7 @@ class GaitLimbTabV2(ttk.Frame):
             return
 
         # --- find a usable session (needs video + DLC) ---
-        selected = [self._sess_tree.item(i, 'values')[0]
-                    for i in self._sess_tree.selection()]
+        selected = self._session_filter.selected()
         candidates = [s for s in self._sessions
                       if (not selected or s['session_name'] in selected)
                       and s.get('video') and os.path.isfile(s['video'])
@@ -2543,8 +2532,7 @@ class GaitLimbTabV2(ttk.Frame):
             return
 
         # --- find a usable session (needs video + DLC) ---
-        selected = [self._sess_tree.item(i, 'values')[0]
-                    for i in self._sess_tree.selection()]
+        selected = self._session_filter.selected()
         candidates = [s for s in self._sessions
                       if (not selected or s['session_name'] in selected)
                       and s.get('video') and os.path.isfile(s['video'])
@@ -2888,14 +2876,12 @@ class GaitLimbTabV2(ttk.Frame):
                 "Please resolve:\n\n• " + "\n• ".join(issues), parent=self)
             return
 
-        selected_items = self._sess_tree.selection()
-        if not selected_items:
+        selected_names = set(self._session_filter.selected())
+        if not selected_names:
             messagebox.showwarning("No sessions",
                                    "Select at least one session.", parent=self)
             return
 
-        selected_names = {self._sess_tree.item(i, 'values')[0]
-                          for i in selected_items}
         sessions = [s for s in self._sessions
                     if s['session_name'] in selected_names]
 

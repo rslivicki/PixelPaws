@@ -458,7 +458,8 @@ class SingleClassifierTab(ttk.Frame):
             self._beh_list.insert("end", b)
         self._beh_list.select_set(0, "end")
         self._session_filter.set_sessions(
-            sorted({self._session_of(f) for f in self._files}))
+            sorted({self._session_of(f) for f in self._files}),
+            key_df=self.key_df)
 
     @staticmethod
     def _session_of(f):
@@ -494,6 +495,10 @@ class SingleClassifierTab(ttk.Frame):
         self._key_status.set(f"{len(self.key_df)} subjects · "
                              f"{len(groups)} group(s): "
                              + ", ".join(map(str, groups))[:80])
+        if self._files:
+            self._session_filter.set_sessions(
+                sorted({self._session_of(f) for f in self._files}),
+                key_df=self.key_df)
 
     def _on_key_pick(self, _evt=None):
         idx = self._key_combo.current()

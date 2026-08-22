@@ -343,7 +343,10 @@ class LocomotionTab(ttk.Frame):
         else:
             self._scan_status.set("No video + DLC .h5 pairs found — run pose "
                                   "tracking first.")
-        self._session_filter.set_sessions(sorted(self._sessions))
+        self._session_filter.set_sessions(
+            sorted(self._sessions), key_df=self._key_df,
+            extra={s: {"Cal": ("✓" if i.get("mm") else "—")}
+                   for s, i in self._sessions.items()})
         if self._key_df is None:
             self._autofind_key()
         self.refresh()
@@ -395,6 +398,11 @@ class LocomotionTab(ttk.Frame):
         self._key_df = out[out["Subject"] != ""]
         self._key_status.set(f"{os.path.basename(path)} — "
                              f"{self._key_df['Treatment'].nunique()} group(s)")
+        if self._sessions:
+            self._session_filter.set_sessions(
+                sorted(self._sessions), key_df=self._key_df,
+                extra={s: {"Cal": ("✓" if i.get("mm") else "—")}
+                       for s, i in self._sessions.items()})
 
     def _group_of(self, session):
         if self._key_df is None:

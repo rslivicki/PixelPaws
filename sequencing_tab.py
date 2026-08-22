@@ -188,7 +188,7 @@ class SequencingTab(ttk.Frame):
         bf = ttk.Frame(of)
         bf.pack(fill="x", padx=6, pady=(2, 6))
         ttk.Label(bf, text="Boundary:").pack(side="left")
-        self._boundary = tk.StringVar(value="None")
+        self._boundary = tk.StringVar(value="95% ellipse")
         cb = ttk.Combobox(bf, textvariable=self._boundary, width=12, state="readonly",
                           values=["None", "95% ellipse", "Convex hull"])
         cb.pack(side="left", padx=(4, 0))
@@ -352,7 +352,7 @@ class SequencingTab(ttk.Frame):
             behaviors.add(beh)
         sessions = sorted({s for s, _b in self._files})
         self._behaviors = sorted(behaviors, key=_template_rank)
-        self._session_filter.set_sessions(sessions)
+        self._session_filter.set_sessions(sessions, key_df=self._key_df)
         self._prio_list.delete(0, "end")
         for b in self._behaviors:
             self._prio_list.insert("end", b)
@@ -412,6 +412,9 @@ class SequencingTab(ttk.Frame):
                 df = df.rename(columns={cols[opt]: "Animal"})
                 break
         self._key_df = df
+        if self._files:
+            self._session_filter.set_sessions(
+                sorted({s for s, _b in self._files}), key_df=self._key_df)
         paired = "Animal" in df.columns
         self._key_status.set(os.path.basename(path)
                              + (" (paired: Animal column)" if paired else ""))
