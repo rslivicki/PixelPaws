@@ -342,6 +342,13 @@ def scan_project(project_folder: str) -> dict:
             pred_folders[folder_path] = validated or len(fpaths)
 
     # ── Validate key files ────────────────────────────────────────────
+    # Reject results-table exports (they carry Subject+Treatment too) and
+    # rank candidates, sharing the hardened project_config rules so a saved
+    # analysis export cannot become the auto-loaded key.
+    try:
+        from project_config import _KEY_RESULTS_COLS
+    except Exception:                                      # pragma: no cover
+        _KEY_RESULTS_COLS = set()
     key_candidates: List[str] = []
     for full_path in key_candidates_raw:
         try:
@@ -349,10 +356,21 @@ def scan_project(project_folder: str) -> dict:
                 cols = pd.read_excel(full_path, nrows=0).columns.tolist()
             else:
                 cols = pd.read_csv(full_path, nrows=0).columns.tolist()
-            if 'Subject' in cols and 'Treatment' in cols:
-                key_candidates.append(full_path)
+            if 'Subject' not in cols or 'Treatment' not in cols:
+                continue
+            base = os.path.basename(full_path).lower()
+            if (_KEY_RESULTS_COLS & set(cols)) and 'key' not in base:
+                warnings.append(f"ignored {os.path.basename(full_path)} as a "
+                                f"key candidate (looks like a results export)")
+                continue
+            key_candidates.append(full_path)
         except Exception as _key_err:
             warnings.append(f"could not read key file {os.path.basename(full_path)}: {_key_err}")
+    # Rank: key_file.csv, then 'key' in name, then shallower paths.
+    key_candidates.sort(key=lambda p: (
+        0 if os.path.basename(p).lower() == 'key_file.csv' else 1,
+        0 if 'key' in os.path.basename(p).lower() else 1,
+        p.count(os.sep), p.lower()))
 
     sorted_pred = sorted(pred_folders.items(), key=lambda x: x[1], reverse=True)
 

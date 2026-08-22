@@ -1,3 +1,47 @@
+# 2026-08-22 — Code-audit sweep (two review passes over the recent rebuilds)
+
+Correctness
+- Single-Classifier now resets on project switch (`on_project_changed`):
+  previously the old project's key/results/files survived and could be
+  re-analyzed or displayed against the new project; its key discovery also
+  now uses the hardened, ranked candidate list (a saved
+  `analysis_results.csv` can no longer become the auto-loaded key). Same
+  hardening applied to the Transitions tab and gait_core scanners; the
+  results-column veto now spares files with "key" in the name.
+- Multi/Sequencing no longer auto-scan the previous project's results
+  folder after a switch; Multi and Locomotion reset the Sessions picker.
+- The Sessions filter is now honored everywhere it was leaking: Multi's
+  traces session dropdown, Locomotion's video preview, trails CSV export,
+  cm/px unit decision, bin clamp and status line, and both tabs'
+  group panels; excluding every session now says so instead of crashing
+  (Multi) or silently computing the full cohort (Sequencing).
+- Sequencing's ordination finally has a legend (group + n); groups too
+  small for a 95% ellipse are named on the plot.
+- Gait: the locomotion preview no longer crashes (missing `_debounce`);
+  Adjust Contact offers the default contour-area method (with its band)
+  instead of silently switching the gate off; loading a saved bundle
+  restores the key file and fore-paw widget state; the Browse… override
+  folder now also governs lick predictions, saved sessions, and exports;
+  the 4-paw gate without fore paws is a run blocker instead of a silent
+  no-op.
+- Gait display knobs (injured paw, stats settings) re-render the current
+  graph immediately; stats settings persist with session bundles; the
+  Full-Stance contour categories are reachable again via Display…;
+  a per-bin post-hoc toggle joins the Statistics box.
+
+Consistency
+- Multi and Locomotion stats say "omnibus tests only" for 3+ groups;
+  Sequencing notes that pairwise PERMANOVAs are not run — matching the
+  Single-Classifier/Gait protected-testing notes.
+- Stale text swept (old section numbers, removed-panel references); the
+  gait run outcome now shows in the always-visible results pane; dead
+  code removed (Sequencing's unreachable pull-from-Transitions path,
+  leftover color shims, orphaned vars/imports).
+- README refreshed: the Single-Classifier section no longer describes the
+  pre-rebuild dialogs, Multi lists all four views, Locomotion lists all
+  seven + the preview, the Gait rail order matches the UI, and a shared
+  "Choosing which sessions to analyze" section documents the picker.
+
 # 2026-08-22 — Fixes from a simulated 4-group end-user run
 
 - **Key discovery no longer hijacked by results exports.** Exported results

@@ -140,7 +140,8 @@ class MultiClassifierTab(ttk.Frame):
         # Sessions picker + Rescan on one row.
         sess_row = ttk.Frame(df_)
         sess_row.pack(fill="x", padx=6, pady=(4, 2))
-        self._session_filter = SessionFilter(sess_row, on_change=self.refresh)
+        self._session_filter = SessionFilter(
+            sess_row, on_change=self._on_filter_change)
         self._session_filter.pack(side="left", fill="x", expand=True)
         _T(ttk.Button(sess_row, text="Rescan", command=self.scan_results,
                       width=7),
@@ -322,6 +323,7 @@ class MultiClassifierTab(ttk.Frame):
     # ------------------------------------------------------------------ data
 
     def _autofill_results(self):
+        self._results_var.set("")   # never keep the previous project's folder
         proj = getattr(self.app, "current_project_folder", None)
         if hasattr(proj, "get"):
             proj = proj.get()
@@ -367,9 +369,9 @@ class MultiClassifierTab(ttk.Frame):
         for b in self._behaviors:
             self._beh_list.insert("end", b)
         self._beh_list.select_set(0, "end")
-        self._session_combo.configure(values=sorted(self._frames))
         self._session_filter.set_sessions(sorted(self._frames),
                                           key_df=self._key_df)
+        self._session_combo.configure(values=self._agg_sessions())
         if self._frames and not self._session_var.get():
             self._session_var.set(sorted(self._frames)[0])
         self._scan_status.set(
@@ -438,6 +440,14 @@ class MultiClassifierTab(ttk.Frame):
             self._session_filter.set_sessions(sorted(self._frames),
                                               key_df=self._key_df)
 
+    def _on_filter_change(self):
+        """Filter edited: keep the traces combo and current pick legal."""
+        act = self._agg_sessions()
+        self._session_combo.configure(values=act)
+        if self._session_var.get() not in act:
+            self._session_var.set(act[0] if act else "")
+        self.refresh()
+
     def _agg_sessions(self):
         """Sessions feeding group aggregations, after the optional filter."""
         return [s for s in sorted(self._frames)
@@ -461,9 +471,6 @@ class MultiClassifierTab(ttk.Frame):
         import plot_style
         return plot_style.get_colors(self._project(), groups)
 
-    def _edit_colors(self):
-        self._edit_plot_options()
-
     def _edit_plot_options(self):
         import plot_style
         plot_style.open_options_dialog(self, self._project(),
@@ -474,7 +481,7 @@ class MultiClassifierTab(ttk.Frame):
         """Ordered unique groups over scanned sessions (key order first)."""
         if self._key_df is None:
             return []
-        found = {self._group_of(s) for s in self._frames}
+        found = {self._group_of(s) for s in self._agg_sessions()}
         return [g for g in self._key_df["Treatment"].unique() if g in found]
 
     def _sheet(self, session):
@@ -758,6 +765,12 @@ class MultiClassifierTab(ttk.Frame):
 
     def _draw_occupancy(self):
         sessions = self._agg_sessions()
+        if not sessions:
+            ax = self._fig.add_subplot(111)
+            ax.text(0.5, 0.5, "No sessions included — open Sessions and "
+                              "tick at least one.", ha="center", va="center")
+            ax.set_axis_off()
+            return
         prio = None
         occ = {}                                    # {session: fractions}
         for s in sessions:
@@ -869,6 +882,12 @@ class MultiClassifierTab(ttk.Frame):
         probability-over-time panels)."""
         bin_min = max(float(self._bin_var.get()), 0.1)
         sessions = self._agg_sessions()
+        if not sessions:
+            ax = self._fig.add_subplot(111)
+            ax.text(0.5, 0.5, "No sessions included — open Sessions and "
+                              "tick at least one.", ha="center", va="center")
+            ax.set_axis_off()
+            return
         # Clamp the bin so short sessions still yield a timecourse (>= 4 bins
         # for the shortest session, floor 0.1 min).
         shortest = min(len(self._sheet(s)) for s in sessions)
@@ -1107,10 +1126,11 @@ class MultiClassifierTab(ttk.Frame):
             rows_by_g = {g: np.array([occ[s_] for s_ in sessions
                                       if self._group_of(s_) == g])
                          for g in groups}
-            return plot_style.stats_table(
+            txt = plot_style.stats_table(
                 "State occupancy (% of session time, priority-resolved)",
                 labels, rows_by_g, opts, test_fn=self._group_test,
                 unit="% of session time")
+            return txt + self._pairwise_note(groups)
         # summary + timecourse + traces: per-behavior session values
         beh = [b for b in self._priority()
                if b in self._selected_behaviors()]
@@ -1131,8 +1151,17 @@ class MultiClassifierTab(ttk.Frame):
         rows_by_g = {g: np.array([per[s_] for s_ in sessions
                                   if self._group_of(s_) == g])
                      for g in groups}
-        return plot_style.stats_table(title, beh, rows_by_g, opts,
-                                      test_fn=self._group_test, unit=unit)
+        return (plot_style.stats_table(title, beh, rows_by_g, opts,
+                                       test_fn=self._group_test, unit=unit)
+                + self._pairwise_note(groups))
+
+    @staticmethod
+    def _pairwise_note(groups):
+        if len(groups) > 2:
+            return ("\n\nNote: omnibus tests only (ANOVA/Kruskal–Wallis "
+                    "across all groups); pairwise comparisons are not "
+                    "computed on this tab.")
+        return ""
 
     def on_project_changed(self):
         self._frames = {}
@@ -1143,6 +1172,8 @@ class MultiClassifierTab(ttk.Frame):
         self._session_combo.configure(values=[])
         self._prio_list.delete(0, "end")
         self._beh_list.delete(0, "end")
+        self._session_filter.set_sessions([])
+        self._session_filter._close_popup()
         self._scan_status.set("Not scanned.")
         self._key_status.set("none — sessions plotted ungrouped")
         self._autofill_results()

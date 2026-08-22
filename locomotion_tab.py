@@ -355,8 +355,10 @@ class LocomotionTab(ttk.Frame):
         self.refresh()
 
     def _unit(self):
-        """('cm', factor_from_px) when every session is calibrated, else px."""
-        infos = list(self._sessions.values())
+        """('cm', factor_from_px) when every INCLUDED session is calibrated,
+        else px (excluding an uncalibrated session restores cm)."""
+        act = self._active_sessions() or sorted(self._sessions)
+        infos = [self._sessions[k] for k in act]
         if infos and all(i["mm"] for i in infos):
             return "cm", None            # per-session factor applied individually
         return "px", None
@@ -419,7 +421,7 @@ class LocomotionTab(ttk.Frame):
     def _groups_present(self):
         if self._key_df is None:
             return []
-        found = {self._group_of(s) for s in self._sessions}
+        found = {self._group_of(s) for s in self._active_sessions()}
         return [g for g in self._key_df["Treatment"].unique() if g in found]
 
     # ------------------------------------------------------------------ compute
@@ -493,8 +495,9 @@ class LocomotionTab(ttk.Frame):
         plus (bin_min, unit)."""
         unit, _ = self._unit()
         bin_min = max(float(self._bin_var.get()), 0.1)
+        _act = self._active_sessions() or sorted(self._sessions)
         shortest = min(len(self._displacement(s)) / self._sessions[s]["fps"]
-                       for s in self._sessions) / 60.0
+                       for s in _act) / 60.0
         if bin_min > shortest / 4 > 0:
             bin_min = max(round(shortest / 4, 2), 0.1)
         out = {}
@@ -679,11 +682,15 @@ class LocomotionTab(ttk.Frame):
         for sp_ in ("top", "right"):
             ax.spines[sp_].set_visible(False)
         plot_style.apply_frame_options(ax, opts)
-        ncal = sum(1 for i in self._sessions.values() if i["mm"])
-        n = len(self._sessions)
+        _act = self._active_sessions()
+        ncal = sum(1 for k in _act if self._sessions[k]["mm"])
+        n = len(_act)
         note = "" if ncal == n else (
             f"  |  {n - ncal} uncalibrated session(s) — px units")
-        self._status.set(f"{n} session(s); {len(groups) or 'no'} group(s); "
+        _ex = len(self._sessions) - n
+        self._status.set(f"{n} session(s)"
+                         + (f" ({_ex} excluded)" if _ex else "")
+                         + f"; {len(groups) or 'no'} group(s); "
                          f"{bin_min:g}-min bins; unit {unit}{note}")
 
     def _norm_xy(self, session):
@@ -894,9 +901,10 @@ class LocomotionTab(ttk.Frame):
         rail.pack(side="left", fill="y")
 
         ttk.Label(rail, text="Session:").pack(anchor="w")
-        sess_var = tk.StringVar(value=sorted(self._sessions)[0])
+        _prev_sessions = self._active_sessions() or sorted(self._sessions)
+        sess_var = tk.StringVar(value=_prev_sessions[0])
         sess_cb = ttk.Combobox(rail, textvariable=sess_var, state="readonly",
-                               values=sorted(self._sessions), width=20)
+                               values=_prev_sessions, width=20)
         sess_cb.pack(anchor="w", pady=(0, 6))
 
         ttk.Label(rail, text="Frame:").pack(anchor="w")
@@ -1052,7 +1060,7 @@ class LocomotionTab(ttk.Frame):
                                 "representative", "heatmap"):
             # normalized trajectory, long format
             rows = []
-            for s_ in sorted(self._sessions):
+            for s_ in self._active_sessions():
                 nx, ny = self._norm_xy(s_)
                 fps = self._sessions[s_]["fps"]
                 grp = self._group_of(s_) or ""
@@ -1095,10 +1103,6 @@ class LocomotionTab(ttk.Frame):
                                 parent=self)
 
     # ------------------------------------------------------------------ hooks
-
-    def _edit_colors(self):
-        # colors now live inside the combined style dialog
-        self._edit_plot_options()
 
     def _edit_plot_options(self):
         import plot_style
@@ -1151,6 +1155,8 @@ class LocomotionTab(ttk.Frame):
         self._sessions = {}
         self._traj_cache = {}
         self._key_df = None
+        self._session_filter.set_sessions([])
+        self._session_filter._close_popup()
         self._scan_status.set("Not scanned.")
         self._key_status.set("none — sessions plotted ungrouped")
         self.refresh()

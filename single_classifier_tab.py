@@ -131,7 +131,9 @@ class SingleClassifierTab(ttk.Frame):
         # Sessions picker + Rescan on one row.
         sess_row = ttk.Frame(df_)
         sess_row.pack(fill="x", padx=6, pady=(4, 1))
-        self._session_filter = SessionFilter(sess_row)
+        self._session_filter = SessionFilter(
+            sess_row, on_change=lambda: self._scan_status.set(
+                "Session selection changed — press ▶ Run analysis."))
         self._session_filter.pack(side="left", fill="x", expand=True)
         _T(ttk.Button(sess_row, text="Rescan", width=7,
                       command=lambda: self.scan_project_folder()),
@@ -452,6 +454,26 @@ class SingleClassifierTab(ttk.Frame):
                 and self._files and self.key_df is not None):
             self.run_analysis(silent=False)
 
+    def on_project_changed(self):
+        """Called by PixelPaws_GUI when the project folder changes: drop the
+        previous project's key/files/results so nothing stale can be
+        analyzed or displayed, then rescan (which auto-runs when ready)."""
+        self.key_df = None
+        self.key_file_path = None
+        self.key_file_var.set("")
+        self.results_df = None
+        self.perframe_data = {}
+        self._files = []
+        self._behaviors = {}
+        self._subjects_rows = []
+        self.pred_folder_var.set("")
+        self._beh_list.delete(0, "end")
+        self._session_filter.set_sessions([])
+        self._key_status.set("no key loaded")
+        self._subjects_status.set("")
+        self._scan_status.set("No project scanned.")
+        self.scan_project_folder()
+
     def _scan_pred_folder(self, folder):
         import analysis_core as core
         self._files, self._behaviors = core.scan_predictions(folder)
@@ -645,9 +667,15 @@ class SingleClassifierTab(ttk.Frame):
         files = self._files_for_run()
         if not files:
             if not silent:
-                messagebox.showwarning("No predictions",
-                                       "Scan a predictions folder first.",
-                                       parent=self)
+                if self._files:
+                    messagebox.showwarning(
+                        "No sessions included",
+                        "Every session is excluded — open the Sessions "
+                        "picker and tick at least one.", parent=self)
+                else:
+                    messagebox.showwarning("No predictions",
+                                           "Scan a predictions folder first.",
+                                           parent=self)
             return
         cfg = self._build_cfg()
         if silent:

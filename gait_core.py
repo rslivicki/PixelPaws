@@ -340,8 +340,17 @@ def scan_key_files(folder):
                     cols = pd.read_excel(full, nrows=0).columns.tolist()
                 else:
                     cols = pd.read_csv(full, nrows=0).columns.tolist()
-                if 'Subject' in cols and 'Treatment' in cols:
-                    candidates.append(full)
+                if 'Subject' not in cols or 'Treatment' not in cols:
+                    continue
+                # exported results tables carry Subject+Treatment too
+                try:
+                    from project_config import _KEY_RESULTS_COLS
+                except Exception:
+                    _KEY_RESULTS_COLS = set()
+                if ((_KEY_RESULTS_COLS & set(cols))
+                        and 'key' not in fname.lower()):
+                    continue
+                candidates.append(full)
             except Exception:
                 pass
     return candidates

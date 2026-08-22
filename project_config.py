@@ -235,9 +235,14 @@ def find_key_files(project_folder: str) -> List[str]:
             except Exception:
                 continue
             header = [h.strip() for h in header]
-            if ('Subject' in header and 'Treatment' in header
-                    and not (_KEY_RESULTS_COLS & set(header))):
-                out.append(path)
+            if 'Subject' not in header or 'Treatment' not in header:
+                continue
+            # Results-table veto — but never veto a file the user has
+            # clearly named as a key (a legit key may carry an extra
+            # results-flavored note column).
+            if (_KEY_RESULTS_COLS & set(header)) and 'key' not in low:
+                continue
+            out.append(path)
 
     def _rank(path):
         rel = os.path.relpath(path, root)

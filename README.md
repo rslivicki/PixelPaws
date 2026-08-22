@@ -354,6 +354,16 @@ Results include:
 
 All outputs are saved to `evaluations/` as a text report and image files.
 
+### Choosing which sessions to analyze
+
+Every analysis tab (Single-Classifier, Multi-Classifier, Sequencing, Locomotion,
+and Gait & Limb) shares the same Data-section layout — data folder where
+applicable, then the key file, then a **Sessions** button. Clicking it opens a
+session table (include tick plus Subject/Group and, where known, Video/Cache/
+calibration columns); click rows to include or exclude them, with All/None
+shortcuts. Everything is included by default, so you only touch it to leave
+sessions out of the graphs, statistics, and exports.
+
 ### Single-Classifier Analysis Tab
 
 Rebuilt on the app's standard layout: everything auto-populates when a project opens
@@ -379,33 +389,35 @@ image export.
    (total time, bout count, mean bout duration, % time, bout frequency, latency) are
    always computed.
 
-**Optional graph types (Settings panel):**
-- *Show individual animal traces on time course* — overlays faint per-animal lines behind the mean ± error, letting you see the spread in the raw data.
-- *Show cumulative time plot* — running total of behavior time over the session, mean ± error per treatment.
-- *Show latency to first bout* — for each animal, the time of the first bin with any detected behavior; displayed as a bar + scatter plot per treatment. Animals with no bouts are excluded and noted on the graph.
-- *Formalin phase analysis* — splits the session into Acute (default 0–10 min) and Phase II (default 10–60 min) windows.
-- *Bout analysis graph* — bar + scatter plots of bout count and mean bout duration per treatment group.
-- *Heatmap* — time-bin × animal matrix color-coded by behavior intensity, with two variants: all-time (total seconds per bin) and bouts-only (bout count per bin).
-- *Cumulative bouts* — running bout count over the session, mean ± error per treatment group.
-- *Statistical testing* — adds significance markers using two-way ANOVA (time × treatment) with Tukey HSD post-hoc for the time course, and one-way ANOVA or t-test for the bar graphs.
-- *Statistics summary tab* — a tabbed output showing the full ANOVA table (F-statistics, p-values, effect sizes) alongside the graphs.
+**Graphs.** Everything renders in the right pane behind the **Graph** dropdown:
+Time Course (with optional faint per-animal traces), Individual Traces, Total
+Time, Bout Analysis, Phase Analysis (Formalin preset: Acute 0–10 min and
+Phase II 10–60 min by default), two heatmaps (time and bouts), two cumulative
+views, Mean Timecourse (1 Hz), and Latency (animals with no bouts are excluded
+and noted). A Metric dropdown switches time / bouts / bout duration /
+frequency / % time where applicable. Styling (colors, error bars SEM/SD/95% CI,
+lines, markers, significance style) lives in the shared 🎨⚙ dialog.
 
-**Graph Settings dialog.** Click **Generate Graphs** to open the dialog before plotting:
-1. *Time window* — maximum minutes to display.
-2. *Error bars* — SEM or SD.
-3. *Heatmap palette* — colormap for the time-bin heatmap tab.
-4. *Groups to Include* — checkboxes for each treatment group. Unchecking a group immediately grays out its color swatch in the preview. Gradient mode redistributes colors across the remaining included groups.
-5. *Treatment order* — drag items in the list to reorder left-to-right display.
-6. *Colors* — choose individual colors per group (with a custom color picker) or use gradient mode to assign a colormap gradient across dose levels, with vehicle/control automatically rendered white with a black outline.
+**Statistics.** Enable statistics to annotate graphs and use the **Σ Stats**
+flip for the current graph's tables: group descriptives, the omnibus test
+(Welch/Mann-Whitney for 2 groups, ANOVA/Kruskal-Wallis for more) with effect
+sizes, Bonferroni-corrected pairwise comparisons (computed when the omnibus is
+significant — otherwise the view says so), and two-way ANOVA with per-bin
+Bonferroni post-hocs for timecourse views.
 
-Each graph opens in a tabbed window with **Save Figure** (PNG/PDF/SVG at 300 dpi) and **Export Data** (CSV) buttons.
+**Exports.** Export CSV writes the full results table with a `.meta.json`
+provenance sidecar; Export figure saves the current graph (PNG/PDF/SVG).
 
 ### Locomotion Tab
 
 Distance traveled and velocity straight from the pose skeleton — no classifiers needed.
-The animal's centroid trajectory is likelihood-gated, median-smoothed, and integrated with
-a jitter dead-band; views show distance per bin, cumulative distance, and mean velocity,
-as mean and SEM lines per group (any number of groups) with an annotated group test.
+The animal's trunk-centroid trajectory is likelihood-gated, median-smoothed, and
+integrated with a jitter dead-band. Seven views behind the Graph dropdown: distance per
+bin, cumulative distance, and mean velocity (mean ± error lines per group, any number of
+groups, with an annotated group test), plus four normalized-arena views — per-animal
+trails, group overlays, a representative animal per group, and an occupancy heatmap with
+its own colormap dropdown. **Preview video…** (under Tracking settings) plays any session
+with the tracked trajectory overlaid so you can sanity-check what the numbers integrate.
 Units are real centimeters whenever every video carries the PawCapture spatial
 calibration (the `mm_per_pixel` tag, preserved through the intake transcode and shown in
 the pose-tracking dialog's Calibration column); uncalibrated projects fall back to pixels
@@ -415,18 +427,22 @@ with a note. Binned tables export as CSV.
 
 The Gait & Limb Use tab analyzes paw contact patterns, gait timing, and limb symmetry from DLC pose data — no force plate or pressure mat needed.
 
-Rebuilt on the app's standard layout: a left rail that reads top-to-bottom
-(Sessions → Quick Setup preset → Setup → Detection → collapsed Advanced → Run
-with a readiness strip that always names the next actionable step), and results
-that render directly in the right pane — pick a **Category** (Paw Contact, Limb
-Use, Contact %/Brightness, Gait Timing/Spatial/Symmetry, Movement, Coordination,
-Paw Contour, Statistics) and then a **Graph** from the dropdowns; each graph
-offers CSV/PNG export, the shared 🎨⚙ style dialog, a **Display…** dialog for
-gait-specific options (treatment order, per-treatment markers, timecourse
-window/re-bin), and a **Σ Stats** flip to that metric's statistics. Analyses run
-on a worker thread with live progress and Cancel; results auto-save as session
-bundles you can reload from the results pane. The compute engine and the
-**Adjust Contact** re-analysis now share one metrics implementation, so
+Rebuilt on the app's standard layout: a left rail that reads top-to-bottom —
+**Data** (key file first, then the Sessions picker with Rescan/Browse…) →
+**Quick Setup** (a preset with ▶ Run Analysis and Cancel right beside it, and a
+readiness strip that always names the next actionable step) → Setup → Detection
+→ collapsed Advanced → **Results & Export** (CSV exports, Adjust Contact, saved
+sessions, log). Results render directly in the right pane — pick a **Category**
+(Paw Contact, Limb Use, Contact %/Brightness, Gait Timing/Spatial/Symmetry,
+Movement, Coordination, Paw Contour, Statistics) and then a **Graph** from the
+dropdowns; each graph offers CSV/PNG export, the shared 🎨⚙ style dialog, a
+**Display…** dialog for gait-specific options (treatment order, per-treatment
+markers, timecourse window/re-bin, Full-Stance contour categories), and a
+**Σ Stats** flip to that metric's statistics. A collapsed **Session table**
+strip under the graph holds the per-session results table. Analyses run on a
+worker thread with live progress and Cancel; results auto-save as session
+bundles you can reload from Results & Export. The compute engine and the
+**Adjust Contact** re-analysis share one metrics implementation, so
 adjusted-contact results always apply the same licking-exclusion and 4-paw
 gating as the original run.
 
@@ -459,17 +475,20 @@ these headline ratios; per-paw breakdowns live under Paw Contour.
 
 **Time binning.** All metrics can be computed in user-defined time bins (e.g., 5-minute windows) for tracking changes over a session.
 
-**Batch processing.** Select multiple sessions and run analysis across all of them. Results are saved to `gait_limb_analysis/` inside the project folder as CSV files and summary plots.
+**Batch processing.** All discovered sessions are included by default; untick any in the Sessions picker to exclude them, then Run. Extraction caches and session bundles live in `gait_limb_analysis/`; use Export Summary / Export Bins for CSV output.
 
 ### Multi-Classifier Analysis Tab
 
 Cross-classifier views of a scored cohort, fed by the consolidated per-frame sheets that
-Run Classifiers writes to `results/per_frame/`. Three views, each scaling to any number
+Run Classifiers writes to `results/per_frame/`. Four views, each scaling to any number
 of groups:
 
 - **Probability traces** — one panel per behavior for a chosen session: the classifier's
   frame-by-frame probability with predicted bouts shaded (the format of the manuscript's
   supplementary probability plots)
+- **Probability lines (all behaviors, per group)** — every selected behavior's
+  probability overlaid on one panel per group over an adjustable rolling window
+  (the supplement's all-behavior trace format)
 - **State occupancy** — every frame resolved to a single state by the priority order
   (unscored = no classifier fired), shown as % of session time per state, mean and SEM
   per group with per-animal points

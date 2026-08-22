@@ -4170,7 +4170,11 @@ class PixelPawsGUI:
         if hasattr(self, 'analysis_tab') and self.analysis_tab is not None:
             if hasattr(self.analysis_tab, 'analysis_project_var'):
                 self.analysis_tab.analysis_project_var.set(folder)
-                # Defer scan slightly so the tab finishes any pending layout
+            if hasattr(self.analysis_tab, 'on_project_changed'):
+                # Clears the previous project's key/files/results, then
+                # rescans (deferred so the tab finishes any pending layout).
+                self.root.after(200, self.analysis_tab.on_project_changed)
+            elif hasattr(self.analysis_tab, 'analysis_project_var'):
                 self.root.after(200, lambda: self.analysis_tab.scan_project_folder(folder))
             if hasattr(self.analysis_tab, '_dash_subjects_overview'):
                 self.root.after(250, self.analysis_tab._dash_subjects_overview)

@@ -14,9 +14,6 @@ Pipeline:  results folder -> scan *_predictions.csv -> per-frame priority resolu
            -> bout-level syntax analysis (pipeline/syntax_analysis.py):
               quasi-independence residuals, rarefied pooled networks, exact-enumeration
               PERMANOVA (Behrens-Fisher F2), PCoA.
-
-"Pull from Transitions" remains available as a secondary source for unsupervised /
-already-computed sequences, but the native pipeline is the primary path.
 """
 from __future__ import annotations
 
@@ -125,7 +122,9 @@ class SequencingTab(ttk.Frame):
         # Sessions picker + Rescan on one row.
         sess_row = ttk.Frame(pf)
         sess_row.pack(fill="x", padx=6, pady=(4, 2))
-        self._session_filter = SessionFilter(sess_row)
+        self._session_filter = SessionFilter(
+            sess_row, on_change=lambda: self._status.set(
+                "Session selection changed - press Compute."))
         self._session_filter.pack(side="left", fill="x", expand=True)
         _T(ttk.Button(sess_row, text="Rescan", command=self.scan_results,
                       width=7),
@@ -305,6 +304,7 @@ class SequencingTab(ttk.Frame):
     # ------------------------------------------------------------------ pipeline
 
     def _autofill_results(self):
+        self._results_var.set("")   # never keep the previous project's folder
         proj = getattr(self.app, "current_project_folder", None)
         if hasattr(proj, "get"):        # the GUI stores this as a tk.StringVar
             proj = proj.get()
@@ -451,8 +451,11 @@ class SequencingTab(ttk.Frame):
                                 "sequencing compares groups.")
             return
         self._behaviors = list(self._prio_list.get(0, "end"))
-        sessions = (self._session_filter.selected()
-                    or sorted({s for s, _b in self._files}))
+        sessions = self._session_filter.selected()
+        if not sessions:
+            self._status.set("No sessions included - open Sessions and tick "
+                             "at least one, then Compute.")
+            return
         prio = self._behaviors                     # index 0 = highest priority
         seqs, group_of, strata_of = {}, {}, {}
         skipped = []
@@ -525,50 +528,6 @@ class SequencingTab(ttk.Frame):
         self.refresh()
 
     # -------------------------------------------------- secondary source
-
-    def pull_from_transitions(self):
-        tt = getattr(self.app, "transitions_tab", None)
-        seqs = getattr(tt, "_state_seqs", None) if tt else None
-        if not seqs:
-            messagebox.showinfo("No data",
-                                "The Transitions tab has no computed sequences.")
-            return
-        group_of = {n: tt._session_group(n) for n in seqs}
-        if not any(group_of.values()):
-            messagebox.showinfo("No groups",
-                                "Load a key file on the Transitions tab first.")
-            return
-        named = [s for s in tt._states if s != 0]
-        keep_idx = {sid: i for i, sid in enumerate(named)}
-        labels = [tt._state_name(s) for s in named]
-        subs = getattr(tt, "_session_subjects", None) or {}
-        strata_of = {n: subs.get(n, n) for n in seqs}
-        kdf = getattr(tt, "_key_df", None)
-        if kdf is not None:
-            pcol = next((c for c in ("Animal", "Pair", "Block") if c in kdf.columns), None)
-            if pcol:
-                m = {str(r["Subject"]): str(r[pcol]) for _, r in kdf.iterrows()}
-                strata_of = {n: m.get(str(subs.get(n, n)), subs.get(n, n)) for n in seqs}
-        rep = len(set(strata_of.values())) < len([n for n in seqs if group_of.get(n)])
-        self._cohort = SA.SyntaxCohort(seqs, group_of, keep_idx, labels,
-                                       min_bouts=int(self._min_bouts.get()),
-                                       strata_of=strata_of if rep else None)
-        if not self._cohort.sessions:
-            self._cohort = None
-            self._status.set("Every pulled session fell under the bout floor.")
-            return
-        order = getattr(tt, "_ordered_groups", None)
-        self._groups = order(self._cohort.groups) if order else list(self._cohort.groups)
-        self._ref_combo["values"] = self._groups
-        if self._ref.get() not in self._groups:
-            self._ref.set(self._groups[0])
-        c = self._cohort
-        self._status.set(f"[from Transitions] {len(c.sessions)} session(s), "
-                         f"{len(self._groups)} group(s)"
-                         + ("\npaired (within-animal)" if c.strata is not None else ""))
-        self.refresh()
-
-    # ------------------------------------------------------------------ drawing
 
     def _gcol(self, gi):
         try:
@@ -655,12 +614,14 @@ class SequencingTab(ttk.Frame):
         c, groups = self._cohort, self._groups
         xy, pcvar, _ = c.ordination()
         pts = SA.dodge(xy) if self._dodge.get() else xy
+        no_ellipse = []          # groups too small/degenerate for a 95% ellipse
         ax = self._fig.add_subplot(111)
         for gi, g in enumerate(groups):
             m = c.groups_per_session == g
             col = self._gcol(gi)
             if self._boundary.get() == "95% ellipse":
-                SA.ellipse(ax, xy[m], col)
+                if not SA.ellipse(ax, xy[m], col):
+                    no_ellipse.append(str(g))
             elif self._boundary.get() == "Convex hull":
                 SA.hull(ax, xy[m], col)
             # marker_size is in pt; scatter s is pt^2 (4.0 -> ~46, the old
@@ -671,7 +632,8 @@ class SequencingTab(ttk.Frame):
                        marker=_MARKS[gi % len(_MARKS)],
                        facecolors="none", edgecolors=col,
                        linewidth=max(float(_o["line_width"]) * 0.8, 0.5),
-                       alpha=float(_o["marker_alpha"]))
+                       alpha=float(_o["marker_alpha"]),
+                       label=f"{g} (n={int(m.sum())})")
             if self._centroids.get() and m.sum() > 1:
                 ax.scatter(*xy[m].mean(0), s=150, marker="+", color=col,
                            linewidth=1.8, zorder=4)
@@ -692,6 +654,10 @@ class SequencingTab(ttk.Frame):
             sp.set_color("#DDDDDD")
         ax.set_aspect("equal", adjustable="datalim")
         ax.legend(frameon=False, fontsize=8, loc="best")
+        if no_ellipse:
+            ax.annotate("no ellipse (n < 3): " + ", ".join(no_ellipse),
+                        xy=(0.01, 0.01), xycoords="axes fraction",
+                        fontsize=7, color="#888888")
 
     # ------------------------------------------------------------------ misc
 
@@ -725,6 +691,9 @@ class SequencingTab(ttk.Frame):
             F2, p, R2 = c.test()
             lines.append(f"PERMANOVA (Behrens-Fisher F2): "
                          f"F2={F2:.3g}  p={p:.4g}  R\u00b2={R2:.3g}")
+            if len(self._groups) > 2:
+                lines.append("(global test across all groups; pairwise "
+                             "PERMANOVAs are not run)")
         except Exception as e:
             lines.append(f"PERMANOVA unavailable: {e}")
         lines.append(f"groups: {', '.join(map(str, self._groups))}")
