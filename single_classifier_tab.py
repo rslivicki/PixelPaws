@@ -84,10 +84,10 @@ class SingleClassifierTab(ttk.Frame):
             Tip(w, tip)
             return w
 
-        left_outer = ttk.Frame(self, width=300)
+        left_outer = ttk.Frame(self, width=340)
         left_outer.pack(side="left", fill="y", padx=(8, 4), pady=8)
         left_outer.pack_propagate(False)
-        canvas = tk.Canvas(left_outer, highlightthickness=0, width=290)
+        canvas = tk.Canvas(left_outer, highlightthickness=0, width=330)
         vsb = ttk.Scrollbar(left_outer, orient="vertical",
                             command=canvas.yview)
         canvas.configure(yscrollcommand=vsb.set)

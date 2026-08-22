@@ -66,10 +66,10 @@ class LocomotionTab(ttk.Frame):
             Tip(widget, tip)
             return widget
 
-        left_outer = ttk.Frame(self, width=280)
+        left_outer = ttk.Frame(self, width=340)
         left_outer.pack(side="left", fill="y", padx=(8, 4), pady=8)
         left_outer.pack_propagate(False)
-        canvas = tk.Canvas(left_outer, highlightthickness=0, width=270)
+        canvas = tk.Canvas(left_outer, highlightthickness=0, width=330)
         vsb = ttk.Scrollbar(left_outer, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
