@@ -3,11 +3,12 @@
 Shared "Sessions" picker for the analysis tabs.
 
 A compact button that reads "Sessions: All (6)" / "Sessions: 4 of 6" and
-expands an inline session table right under it (no separate window): one row
-per session with an include tick plus informative columns (Subject / Group /
-Video / Cache — whatever the tab supplies). Clicking a row toggles it;
-All / None act on the whole cohort. Everything is included by default, so
-tabs behave exactly as before unless the user opts out of sessions.
+opens a small "Sessions" window with the session table (the rails are too
+narrow to host it inline): one row per session with an include tick plus
+informative columns (Subject / Group / Video / Cache — whatever the tab
+supplies). Clicking a row toggles it; All / None act on the whole cohort.
+Everything is included by default, so tabs behave exactly as before unless
+the user opts out of sessions.
 
 Usage:
     flt = SessionFilter(parent, on_change=self._refresh)
@@ -117,19 +118,24 @@ class SessionFilter(ttk.Frame):
             self._fill_tree()
         self._changed()
 
-    # ── inline table panel (expands in place under the button) ─────────────
+    # ── pop-out session table (small titled dialog near the button) ────────
 
     def _open_popup(self):
-        """Toggle the inline session table under the button."""
+        """Toggle the session-table window."""
         if self._popup is not None and self._popup.winfo_exists():
             self._close_popup()
             return
-        frame = ttk.Frame(self, padding=(2, 3, 2, 2))
-        frame.pack(fill="x")
-        self._popup = frame
+        win = tk.Toplevel(self)
+        self._popup = win
+        win.title("Sessions")
+        win.transient(self.winfo_toplevel())
+        win.resizable(True, True)
+
+        frame = ttk.Frame(win, padding=6)
+        frame.pack(fill="both", expand=True)
 
         bar = ttk.Frame(frame)
-        bar.pack(fill="x", pady=(0, 3))
+        bar.pack(fill="x", pady=(0, 4))
         ttk.Button(bar, text="All", width=5,
                    command=lambda: self.select_all(True)).pack(side="left")
         ttk.Button(bar, text="None", width=6,
@@ -137,28 +143,43 @@ class SessionFilter(ttk.Frame):
                                                                padx=(4, 0))
         self._count_lbl = ttk.Label(bar, text="", foreground="#666666")
         self._count_lbl.pack(side="left", padx=8)
+        ttk.Button(bar, text="Close", width=6,
+                   command=self._close_popup).pack(side="right")
+        ttk.Label(frame, text="Click a row to include / exclude it.",
+                  foreground="#888888").pack(anchor="w", pady=(0, 3))
 
         tf = ttk.Frame(frame)
-        tf.pack(fill="x")
+        tf.pack(fill="both", expand=True)
         cols = ["include", "session"] + [c.lower() for c in self._columns]
         tree = ttk.Treeview(tf, columns=cols, show="headings",
-                            height=min(max(len(self._included), 3), 10),
+                            height=min(max(len(self._included), 3), 16),
                             selectmode="none")
         tree.heading("include", text="✓")
-        tree.column("include", width=30, anchor="center", stretch=False)
+        tree.column("include", width=34, anchor="center", stretch=False)
         tree.heading("session", text="Session")
-        tree.column("session", width=140, stretch=True)
+        tree.column("session", width=180, stretch=True)
         for c in self._columns:
             tree.heading(c.lower(), text=c)
-            tree.column(c.lower(), width=70 if c in ("Subject", "Group")
-                        else 55, stretch=False)
+            tree.column(c.lower(), width=95 if c in ("Subject", "Group")
+                        else 70, stretch=False)
         vsb = ttk.Scrollbar(tf, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=vsb.set)
-        tree.pack(side="left", fill="x", expand=True)
+        tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
         tree.bind("<Button-1>", self._on_tree_click)
         self._tree = tree
         self._fill_tree()
+
+        # place near the button, kept on-screen
+        win.update_idletasks()
+        x = self._btn.winfo_rootx()
+        y = self._btn.winfo_rooty() + self._btn.winfo_height() + 4
+        w, h = win.winfo_reqwidth(), win.winfo_reqheight()
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        win.geometry(f"+{min(x, sw - w - 12)}+{min(y, sh - h - 48)}")
+
+        win.bind("<Escape>", self._close_popup)
+        win.protocol("WM_DELETE_WINDOW", self._close_popup)
         self._update_text()
 
     def _close_popup(self, *_):
