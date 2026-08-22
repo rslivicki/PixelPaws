@@ -1,3 +1,15 @@
+# 2026-08-22 — Session filters + calmer gait results pane
+
+- All analysis tabs (Single-Classifier, Multi-Classifier, Sequencing,
+  Locomotion) get a compact **Sessions** dropdown under the key file
+  (shared `ui_session_filter.SessionFilter`): everything included by
+  default; untick sessions to exclude them from graphs and stats.
+  Sequencing's old session Listbox is replaced by the same dropdown.
+- Gait & Limb right pane decluttered to match the Multi-Classifier layout:
+  exports, Adjust Contact, saved sessions, and the log moved into a
+  "Results & Export" rail section; the per-session table and run summary
+  live in a collapsed "Session table" strip under the graph.
+
 # 2026-08-21 — Gait & Limb rebuilt (gait_core + gait_views + gait_tab_v2)
 
 Phase B of the analysis-tab rebuild. Compute extracted verbatim into headless

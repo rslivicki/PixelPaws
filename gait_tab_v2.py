@@ -242,6 +242,7 @@ class GaitLimbTabV2(ttk.Frame):
         self._build_quicksetup(rail)
         self._build_settings_panel(rail)
         self._build_run_panel(rail)
+        self._build_export_panel(rail)
 
         # ── RIGHT: results pane (graphs + tables + log) ──
         right = ttk.Frame(paned)
@@ -801,12 +802,12 @@ class GaitLimbTabV2(ttk.Frame):
                                    wraplength=900, justify='left')
         self._desc_lbl.pack(fill='x', padx=10, pady=(0, 2))
 
-        # Bottom: run results & log (collapsible, packed before the graph
-        # container so it keeps its place at the bottom).
-        bottom = collapsible(parent, "Run results, exports & log",
-                             collapsed=False, side='bottom', fill='x',
+        # Bottom: per-session table + run summary (collapsed by default —
+        # packed before the graph container so it keeps the bottom slot).
+        bottom = collapsible(parent, "Session table",
+                             collapsed=True, side='bottom', fill='x',
                              padx=6, pady=(0, 6))
-        self._build_bottom_results(bottom)
+        self._build_session_table(bottom)
 
         # Graph container — gait_views renders the selected entry in here.
         self._graph_container = ttk.Frame(parent)
@@ -817,15 +818,18 @@ class GaitLimbTabV2(ttk.Frame):
             foreground='grey')
         self._placeholder_lbl.pack(expand=True)
 
-    def _build_bottom_results(self, parent):
-        btn_row = ttk.Frame(parent)
-        btn_row.pack(fill='x', padx=4, pady=(2, 2))
+    def _build_export_panel(self, parent):
+        """Rail section: exports, Adjust Contact, saved sessions, log."""
+        lf = ttk.LabelFrame(parent, text="Results & Export", padding=6)
+        lf.pack(fill='x', padx=4, pady=(0, 8))
 
-        self._export_sum_btn = ttk.Button(btn_row, text="Export Summary CSV",
+        btn_row = ttk.Frame(lf)
+        btn_row.pack(fill='x', pady=(0, 2))
+        self._export_sum_btn = ttk.Button(btn_row, text="Export Summary",
                                           command=self._export_summary,
                                           state='disabled')
         self._export_sum_btn.pack(side='left', padx=2)
-        self._export_bin_btn = ttk.Button(btn_row, text="Export Bins CSV",
+        self._export_bin_btn = ttk.Button(btn_row, text="Export Bins",
                                           command=self._export_bins,
                                           state='disabled')
         self._export_bin_btn.pack(side='left', padx=2)
@@ -839,24 +843,39 @@ class GaitLimbTabV2(ttk.Frame):
             "the analysis itself.")
 
         # Saved sessions — pick a previous run and reload it (no re-analysis).
-        saved_row = ttk.Frame(parent)
-        saved_row.pack(fill='x', padx=4, pady=(0, 2))
-        ttk.Label(saved_row, text="Saved sessions:").pack(side='left')
-        self._saved_combo = ttk.Combobox(saved_row, state='readonly', width=34,
+        saved_row = ttk.Frame(lf)
+        saved_row.pack(fill='x', pady=(0, 2))
+        ttk.Label(saved_row, text="Saved:").pack(side='left')
+        self._saved_combo = ttk.Combobox(saved_row, state='readonly', width=26,
                                          values=[])
         self._saved_combo.pack(side='left', padx=(4, 2))
-        self._saved_load_btn = ttk.Button(saved_row, text="Load",
+        self._saved_load_btn = ttk.Button(saved_row, text="Load", width=5,
                                           command=self._load_selected_session,
                                           state='disabled')
-        self._saved_load_btn.pack(side='left', padx=2)
-        ttk.Button(saved_row, text="Save…",
+        self._saved_load_btn.pack(side='left', padx=1)
+        ttk.Button(saved_row, text="Save…", width=6,
                    command=self._save_current_session_named).pack(side='left',
-                                                                  padx=2)
-        self._saved_del_btn = ttk.Button(saved_row, text="Delete",
+                                                                  padx=1)
+        self._saved_del_btn = ttk.Button(saved_row, text="Del", width=4,
                                          command=self._delete_selected_session,
                                          state='disabled')
-        self._saved_del_btn.pack(side='left', padx=2)
+        self._saved_del_btn.pack(side='left', padx=1)
+        Tip(self._saved_combo,
+            "Previous runs auto-save here; pick one and Load to restore\n"
+            "results without re-analyzing.")
 
+        # Log
+        log_lf = ttk.LabelFrame(lf, text="Log", padding=3)
+        log_lf.pack(fill='x', pady=(2, 0))
+        self._log_text = tk.Text(log_lf, height=4, wrap='word',
+                                 state='disabled', font=('Consolas', 8))
+        log_sb = ttk.Scrollbar(log_lf, orient='vertical',
+                               command=self._log_text.yview)
+        self._log_text.config(yscrollcommand=log_sb.set)
+        self._log_text.pack(side='left', fill='both', expand=True)
+        log_sb.pack(side='right', fill='y')
+
+    def _build_session_table(self, parent):
         # Run outcome (N analyzed · M skipped/failed) — set by _on_analysis_complete
         self._outcome_lbl = ttk.Label(parent, text='', font=(FONT_FAMILY, 9))
         self._outcome_lbl.pack(anchor='w', padx=6, pady=(0, 2))
@@ -881,7 +900,7 @@ class GaitLimbTabV2(ttk.Frame):
                     'hl_c', 'hr_c', 'fl_c', 'fr_c',
                     'stance_h', 'stance_r', 'duty_h', 'duty_r', 'stride_l')
         self._res_tree = ttk.Treeview(tree_frame, columns=res_cols,
-                                      show='headings', height=14)
+                                      show='headings', height=8)
         hdrs = [
             ('session',   'Session',   130),
             ('subject',   'Subject',    70),
@@ -981,17 +1000,6 @@ class GaitLimbTabV2(ttk.Frame):
         tree_frame.grid_rowconfigure(0, weight=1)
         tree_frame.grid_columnconfigure(0, weight=1)
 
-
-        # Log
-        log_lf = ttk.LabelFrame(parent, text="Log", padding=3)
-        log_lf.pack(fill='x', padx=4, pady=(0, 2))
-        self._log_text = tk.Text(log_lf, height=3, wrap='word',
-                                 state='disabled', font=('Consolas', 8))
-        log_sb = ttk.Scrollbar(log_lf, orient='vertical',
-                               command=self._log_text.yview)
-        self._log_text.config(yscrollcommand=log_sb.set)
-        self._log_text.pack(side='left', fill='both', expand=True)
-        log_sb.pack(side='right', fill='y')
 
     # ═══════════════════════════════════════════════════════════════════════
     # Graph registry: Category → Graph dropdowns driven by gait_views

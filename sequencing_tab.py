@@ -69,6 +69,7 @@ class SequencingTab(ttk.Frame):
 
     def _build_ui(self):
         from ui_tooltip import Tip
+        from ui_session_filter import SessionFilter
 
         def _T(widget, tip):
             Tip(widget, tip)
@@ -110,14 +111,6 @@ class SequencingTab(ttk.Frame):
         ttk.Label(pf, textvariable=self._scan_status, foreground="#666666",
                   justify="left").pack(anchor="w", padx=6)
 
-        ttk.Label(pf, text="Sessions:").pack(anchor="w", padx=6, pady=(4, 0))
-        self._sess_list = tk.Listbox(pf, selectmode="extended", height=6,
-                                     exportselection=False)
-        self._sess_list.pack(fill="x", padx=6, pady=1)
-        Tip(self._sess_list,
-            "Sessions included in the cohort. Highlighted rows are included; "
-            "Ctrl/Shift-click to exclude sessions before Compute.")
-
         from ui_tooltip import collapsible
         prio_body = collapsible(pf, "Priority (top wins a frame)",
                                 collapsed=True, fill="x", padx=6, pady=(4, 2))
@@ -144,6 +137,10 @@ class SequencingTab(ttk.Frame):
         self._key_status = tk.StringVar(value="none — required for groups")
         ttk.Label(pf, textvariable=self._key_status, foreground="#666666",
                   justify="left", wraplength=240).pack(anchor="w", padx=6)
+
+        # Optional per-session filter (all included by default).
+        self._session_filter = SessionFilter(pf)
+        self._session_filter.pack(anchor="w", padx=6, pady=(2, 1))
         ttk.Label(pf, foreground="#888888", wraplength=240, justify="left",
                   text="Key columns: Subject, Treatment, and optionally Animal "
                        "(or Pair/Block) naming which rows share a mouse — that "
@@ -355,10 +352,7 @@ class SequencingTab(ttk.Frame):
             behaviors.add(beh)
         sessions = sorted({s for s, _b in self._files})
         self._behaviors = sorted(behaviors, key=_template_rank)
-        self._sess_list.delete(0, "end")
-        for s in sessions:
-            self._sess_list.insert("end", s)
-        self._sess_list.select_set(0, "end")
+        self._session_filter.set_sessions(sessions)
         self._prio_list.delete(0, "end")
         for b in self._behaviors:
             self._prio_list.insert("end", b)
@@ -449,8 +443,8 @@ class SequencingTab(ttk.Frame):
                                 "sequencing compares groups.")
             return
         self._behaviors = list(self._prio_list.get(0, "end"))
-        sessions = [self._sess_list.get(i) for i in self._sess_list.curselection()] \
-            or list(self._sess_list.get(0, "end"))
+        sessions = (self._session_filter.selected()
+                    or sorted({s for s, _b in self._files}))
         prio = self._behaviors                     # index 0 = highest priority
         seqs, group_of, strata_of = {}, {}, {}
         skipped = []
@@ -738,7 +732,7 @@ class SequencingTab(ttk.Frame):
         self._groups = []
         self._files = {}
         self._key_df = None
-        self._sess_list.delete(0, "end")
+        self._session_filter.set_sessions([])
         self._prio_list.delete(0, "end")
         self._key_status.set("none — required for groups")
         self._scan_status.set("Not scanned.")

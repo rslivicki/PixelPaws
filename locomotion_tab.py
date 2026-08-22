@@ -30,6 +30,7 @@ from matplotlib.backends.backend_tkagg import (FigureCanvasTkAgg,
                                                NavigationToolbar2Tk)
 
 from ui_tooltip import Tip
+from ui_session_filter import SessionFilter
 
 _GROUP_COLS = ["#8D99AE", "#CC79A7", "#3b528b", "#21918c", "#f59f00", "#2f9e44"]
 _VIDEO_EXTS = (".mp4", ".avi", ".mov", ".mkv")
@@ -107,6 +108,10 @@ class LocomotionTab(ttk.Frame):
         ttk.Label(df_, textvariable=self._key_status, foreground="#666666",
                   justify="left", wraplength=240).pack(anchor="w", padx=6,
                                                        pady=(0, 6))
+
+        # Optional per-session filter (all included by default).
+        self._session_filter = SessionFilter(df_, on_change=self.refresh)
+        self._session_filter.pack(anchor="w", padx=6, pady=(0, 6))
 
         # -- settings ---------------------------------------------------
         st = ttk.LabelFrame(left, text="Tracking settings")
@@ -338,6 +343,7 @@ class LocomotionTab(ttk.Frame):
         else:
             self._scan_status.set("No video + DLC .h5 pairs found — run pose "
                                   "tracking first.")
+        self._session_filter.set_sessions(sorted(self._sessions))
         if self._key_df is None:
             self._autofind_key()
         self.refresh()
@@ -482,6 +488,8 @@ class LocomotionTab(ttk.Frame):
             bin_min = max(round(shortest / 4, 2), 0.1)
         out = {}
         for s, info in self._sessions.items():
+            if not self._session_filter.allows(s):
+                continue
             disp = self._displacement(s)
             scale = (info["mm"] / 10.0) if (unit == "cm" and info["mm"]) else 1.0
             bin_frames = max(int(round(bin_min * 60 * info["fps"])), 1)
@@ -523,6 +531,11 @@ class LocomotionTab(ttk.Frame):
             return None
 
     # ------------------------------------------------------------------ views
+
+    def _active_sessions(self):
+        """Session names after the optional per-session filter."""
+        return [s for s in sorted(self._sessions)
+                if self._session_filter.allows(s)]
 
     def refresh(self):
         if getattr(self, "_stats_mode", None) is not None \
@@ -674,7 +687,7 @@ class LocomotionTab(ttk.Frame):
         return x / float(w), 1.0 - (y / float(h))
 
     def _draw_trails(self):
-        sessions = sorted(self._sessions)
+        sessions = self._active_sessions()
         groups = self._groups_present()
         import plot_style
         cmap = plot_style.get_colors(self._project(), groups)
@@ -719,7 +732,7 @@ class LocomotionTab(ttk.Frame):
 
     def _draw_grouptrails(self):
         """One panel per group with every member's trail overlaid."""
-        sessions = sorted(self._sessions)
+        sessions = self._active_sessions()
         groups = self._groups_present() or [None]
         import plot_style
         cmap = plot_style.get_colors(self._project(),
@@ -752,7 +765,7 @@ class LocomotionTab(ttk.Frame):
     def _draw_representative(self):
         """One panel per group: the animal whose total distance is closest
         to the group median (the standard 'representative example' pick)."""
-        sessions = sorted(self._sessions)
+        sessions = self._active_sessions()
         groups = self._groups_present() or [None]
         import plot_style
         cmap = plot_style.get_colors(self._project(),
@@ -796,7 +809,7 @@ class LocomotionTab(ttk.Frame):
                          "total distance.")
 
     def _draw_heatmap(self):
-        sessions = sorted(self._sessions)
+        sessions = self._active_sessions()
         groups = self._groups_present() or [None]
         BINS = 40
         maps = []
@@ -1097,7 +1110,7 @@ class LocomotionTab(ttk.Frame):
     def _stats_text(self):
         import plot_style
         opts = plot_style.get_options(self._project())
-        sessions = sorted(self._sessions)
+        sessions = self._active_sessions()
         groups = self._groups_present()
         per_sess, bin_min, unit = self._binned()
         tot = {s_: float(np.sum(v)) for s_, v in per_sess.items()}

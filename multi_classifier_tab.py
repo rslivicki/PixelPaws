@@ -31,6 +31,7 @@ from matplotlib.backends.backend_tkagg import (FigureCanvasTkAgg,
                                                NavigationToolbar2Tk)
 
 from ui_tooltip import Tip
+from ui_session_filter import SessionFilter
 
 # Okabe-Ito-adjacent cycle, matches the sequencing tab; cycles past 6 groups.
 _GROUP_COLS = ["#8D99AE", "#CC79A7", "#3b528b", "#21918c", "#f59f00", "#2f9e44"]
@@ -142,6 +143,10 @@ class MultiClassifierTab(ttk.Frame):
         ttk.Label(df_, textvariable=self._key_status, foreground="#666666",
                   justify="left", wraplength=240).pack(anchor="w", padx=6,
                                                        pady=(0, 6))
+
+        # Optional per-session filter (all included by default).
+        self._session_filter = SessionFilter(df_, on_change=self.refresh)
+        self._session_filter.pack(anchor="w", padx=6, pady=(0, 6))
 
         # -- options (view selection lives in the dropdown above the graph)
         vf = ttk.LabelFrame(left, text="Options")
@@ -360,6 +365,7 @@ class MultiClassifierTab(ttk.Frame):
             self._beh_list.insert("end", b)
         self._beh_list.select_set(0, "end")
         self._session_combo.configure(values=sorted(self._frames))
+        self._session_filter.set_sessions(sorted(self._frames))
         if self._frames and not self._session_var.get():
             self._session_var.set(sorted(self._frames)[0])
         self._scan_status.set(
@@ -424,6 +430,11 @@ class MultiClassifierTab(ttk.Frame):
         self._key_df = out[out["Subject"] != ""]
         self._key_status.set(f"{os.path.basename(path)} — "
                              f"{self._key_df['Treatment'].nunique()} group(s)")
+
+    def _agg_sessions(self):
+        """Sessions feeding group aggregations, after the optional filter."""
+        return [s for s in sorted(self._frames)
+                if self._session_filter.allows(s)]
 
     def _group_of(self, session):
         """Whole-token subject match (mouse1 matches mouse1_veh)."""
@@ -670,7 +681,7 @@ class MultiClassifierTab(ttk.Frame):
         opts = plot_style.get_options(self._project())
         win_s = max(float(self._win_var.get()), 1.0)
         win_f = max(int(round(win_s * self._fps)), 1)
-        sessions = sorted(self._frames)
+        sessions = self._agg_sessions()
         beh = [b for b in self._priority() if b in self._selected_behaviors()]
         if not beh:
             raise ValueError("select at least one behavior")
@@ -739,7 +750,7 @@ class MultiClassifierTab(ttk.Frame):
                          "per behavior.")
 
     def _draw_occupancy(self):
-        sessions = sorted(self._frames)
+        sessions = self._agg_sessions()
         prio = None
         occ = {}                                    # {session: fractions}
         for s in sessions:
@@ -850,7 +861,7 @@ class MultiClassifierTab(ttk.Frame):
         kind="prob": mean classifier probability (the supplement's
         probability-over-time panels)."""
         bin_min = max(float(self._bin_var.get()), 0.1)
-        sessions = sorted(self._frames)
+        sessions = self._agg_sessions()
         # Clamp the bin so short sessions still yield a timecourse (>= 4 bins
         # for the shortest session, floor 0.1 min).
         shortest = min(len(self._sheet(s)) for s in sessions)
@@ -973,7 +984,7 @@ class MultiClassifierTab(ttk.Frame):
             # rolling-mean probabilities at 1 Hz, long format
             win_s = max(float(self._win_var.get()), 1.0)
             win_f = max(int(round(win_s * self._fps)), 1)
-            sessions = sorted(self._frames)
+            sessions = self._agg_sessions()
             beh = [b for b in self._priority()
                    if b in self._selected_behaviors()]
             step = max(int(round(self._fps)), 1)
@@ -1002,7 +1013,7 @@ class MultiClassifierTab(ttk.Frame):
             d.insert(1, "time_min", d["frame"] / self._fps / 60.0)
             d.insert(0, "session", sess)
             return d, f"{sess}_probability_traces"
-        sessions = sorted(self._frames)
+        sessions = self._agg_sessions()
         if view == "occupancy":
             rows = []
             for s_ in sessions:
@@ -1072,7 +1083,7 @@ class MultiClassifierTab(ttk.Frame):
     def _stats_text(self):
         import plot_style
         opts = plot_style.get_options(self._project())
-        sessions = sorted(self._frames)
+        sessions = self._agg_sessions()
         groups = self._groups_present()
         view = self._view.get()
         if not groups:

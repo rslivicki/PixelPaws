@@ -32,6 +32,7 @@ from matplotlib.backends.backend_tkagg import (FigureCanvasTkAgg,
                                                NavigationToolbar2Tk)
 
 from ui_tooltip import Tip, collapsible
+from ui_session_filter import SessionFilter
 
 # Metric dropdown: (column, aggregation across bins, label)
 _METRICS = [
@@ -133,6 +134,10 @@ class SingleClassifierTab(ttk.Frame):
         self._key_status = tk.StringVar(value="no key loaded")
         ttk.Label(df_, textvariable=self._key_status, foreground="#666666",
                   wraplength=270, justify="left").pack(anchor="w", padx=6)
+
+        # Optional per-session filter (all included by default).
+        self._session_filter = SessionFilter(df_)
+        self._session_filter.pack(anchor="w", padx=6, pady=(2, 1))
 
         srow = ttk.Frame(df_)
         srow.pack(fill="x", padx=6, pady=(2, 1))
@@ -452,6 +457,28 @@ class SingleClassifierTab(ttk.Frame):
         for b in sorted(self._behaviors):
             self._beh_list.insert("end", b)
         self._beh_list.select_set(0, "end")
+        self._session_filter.set_sessions(
+            sorted({self._session_of(f) for f in self._files}))
+
+    @staticmethod
+    def _session_of(f):
+        """Session name of a prediction FileInfo: stem minus the
+        _predictions suffix and the classifier/behavior token (same
+        derivation the Sequencing tab uses)."""
+        stem = os.path.splitext(f.filename)[0]
+        for suf in ("_predictions", "_prediction"):
+            if stem.endswith(suf):
+                stem = stem[: -len(suf)]
+                break
+        for tok in ("_classifier", "_PixelPaws"):
+            if tok in stem:
+                stem = stem.split(tok)[0]
+                break
+        else:
+            beh = getattr(f, "behavior", "") or ""
+            if beh and stem.lower().endswith("_" + beh.lower()):
+                stem = stem[:-(len(beh) + 1)]
+        return stem
 
     def _selected_behaviors(self):
         sel = [self._beh_list.get(i) for i in self._beh_list.curselection()]
@@ -592,7 +619,8 @@ class SingleClassifierTab(ttk.Frame):
 
     def _files_for_run(self):
         beh = set(self._selected_behaviors())
-        return [f for f in self._files if f.behavior in beh]
+        return [f for f in self._files if f.behavior in beh
+                and self._session_filter.allows(self._session_of(f))]
 
     def run_analysis(self, silent=False):
         import analysis_core as core
