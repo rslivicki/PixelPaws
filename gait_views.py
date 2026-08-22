@@ -2263,6 +2263,12 @@ def add_wb_stats_section(host, parent_frame, title, df, metric,
                   foreground='darkblue').pack(anchor='w')
 
     # ── Pairwise comparisons (ANOVA + significant) ───────────────────
+    if not stats_res.get('pairwise') and len(treatments) > 2:
+        ttk.Label(section_frame,
+                  text="Pairwise comparisons omitted — omnibus not "
+                       "significant (protected testing).",
+                  font=(FONT_FAMILY, 9, 'italic'),
+                  foreground='gray').pack(anchor='w', pady=(4, 0))
     if 'pairwise' in stats_res and stats_res['pairwise']:
         ttk.Label(section_frame, text="Pairwise Comparisons:",
                   font=(FONT_FAMILY, 10, 'bold')).pack(anchor='w', pady=(10, 5))

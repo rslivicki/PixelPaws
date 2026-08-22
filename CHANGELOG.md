@@ -1,3 +1,26 @@
+# 2026-08-22 — Fixes from a simulated 4-group end-user run
+
+- **Key discovery no longer hijacked by results exports.** Exported results
+  CSVs carry Subject+Treatment columns and used to enter key-file discovery,
+  silently breaking auto-pick (the Gait tab then ran a whole cohort
+  ungrouped). `project_config.find_key_files` now rejects files whose header
+  looks like a results table; the Gait tab shares that discovery and
+  auto-picks the top candidate when it is unambiguous ('key' in the name or
+  the only candidate).
+- **Gait confirms before an ungrouped run.** A missing key file was only a
+  soft readiness note; Run now asks "Run ungrouped anyway?" before spending
+  minutes producing a cohort with blank Treatment.
+- **Protected pairwise testing is now explained.** With ≥3 groups and a
+  non-significant omnibus, the Single-Classifier Σ view and the Gait
+  statistics sections say "Pairwise comparisons omitted — omnibus not
+  significant (protected testing)" instead of silently showing nothing.
+- **Sequencing bout-floor dead end fixed.** When every session falls under
+  the floor, the status now reports the largest observed bout count and
+  points at the 'Animal floor (bouts)' control with a suggested value
+  (short recordings need far less than the manuscript's 100).
+- Gait cache-miss log lines now say *why* re-extraction is happening
+  (video/pose files or extraction settings changed since the last run).
+
 # 2026-08-22 — Unified session picker (table popup) across tabs
 
 - The Sessions dropdown now opens a gait-style **session table** (include

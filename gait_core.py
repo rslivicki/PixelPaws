@@ -1148,6 +1148,10 @@ def load_session_data(sess, paw_map, params, ctx,
             'extraction_stride': params.get('extraction_stride', 1),
         }
         _contour_cache_path = contour_cache_path(ctx, sess['session_name'], contour_cache_key)
+        if _contour_cache_path and not os.path.isfile(_contour_cache_path):
+            log("  Contour cache miss (video/pose files or extraction "
+                "settings changed since the last run) — extracting from "
+                "video (this may take a while).")
 
         # --- try contour cache load ---
         if _contour_cache_path and os.path.isfile(_contour_cache_path):
@@ -1222,7 +1226,9 @@ def load_session_data(sess, paw_map, params, ctx,
 
         # --- extract fresh if cache miss ---
         if not brightness_series:
-            log(f"  Brightness cache miss — extracting from video (this may take a while).")
+            log(f"  Brightness cache miss (video/pose files or extraction "
+                f"settings changed since the last run) — extracting from "
+                f"video (this may take a while).")
             try:
                 thresh_val  = params.get('brt_threshold', 0)
                 square_size = {active_paws[role]: roi_sizes.get(role, 50)

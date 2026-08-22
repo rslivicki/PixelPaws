@@ -405,6 +405,45 @@ class GaitLimbTabV2(ttk.Frame):
         self._session_filter.set_sessions(
             [s['session_name'] for s in self._sessions], extra=extra)
 
+    def _scan_key_files(self, folder: str):
+        """Find key-file candidates (Subject+Treatment; results exports
+        excluded) and auto-pick when the choice is unambiguous."""
+        candidates = []
+        try:
+            from project_config import find_key_files, _KEY_RESULTS_COLS
+            candidates = list(find_key_files(folder))  # ranked, csv only
+        except Exception:
+            _KEY_RESULTS_COLS = set()
+        # xlsx keys (find_key_files is csv-only)
+        _SKIP = {'__pycache__', '.git', '.claude', 'node_modules', '.idea'}
+        for root, dirs, files in os.walk(folder):
+            dirs[:] = [d for d in sorted(dirs)
+                       if d not in _SKIP and not d.startswith('.')]
+            for fname in files:
+                if not fname.lower().endswith('.xlsx'):
+                    continue
+                full = os.path.join(root, fname)
+                try:
+                    cols = set(pd.read_excel(full, nrows=0).columns)
+                except Exception:
+                    continue
+                if ('Subject' in cols and 'Treatment' in cols
+                        and not (_KEY_RESULTS_COLS & cols)):
+                    candidates.append(full)
+
+        self._key_scan_paths = candidates
+        labels = [os.path.relpath(p, folder).replace(os.sep, '/')
+                  for p in candidates]
+        self._key_combo.config(values=labels)
+        # Auto-pick the top-ranked candidate when the choice is unambiguous:
+        # it is the only candidate, or it is clearly named as a key.
+        if candidates and not self._key_file_var.get():
+            top = candidates[0]
+            if (len(candidates) == 1
+                    or 'key' in os.path.basename(top).lower()):
+                self._key_combo.current(0)
+                self._on_key_combo_selected()
+
     def _select_all(self):
         self._session_filter.select_all(True)
 
@@ -1508,38 +1547,6 @@ class GaitLimbTabV2(ttk.Frame):
             self._update_readiness()
         except Exception:
             pass
-
-    def _scan_key_files(self, folder: str):
-        """Walk project folder for CSV/XLSX files with Subject+Treatment cols."""
-        _SKIP    = {'__pycache__', '.git', '.claude', 'node_modules', '.idea'}
-        _PRED_KW = ('prediction', 'predictions', 'pred', 'bout', 'bouts')
-        candidates = []
-        for root, dirs, files in os.walk(folder):
-            dirs[:] = [d for d in sorted(dirs)
-                       if d not in _SKIP and not d.startswith('.')]
-            for fname in files:
-                fl = fname.lower()
-                if not fl.endswith(('.csv', '.xlsx')):
-                    continue
-                if any(kw in fl for kw in _PRED_KW):
-                    continue
-                full = os.path.join(root, fname)
-                try:
-                    if full.endswith('.xlsx'):
-                        cols = pd.read_excel(full, nrows=0).columns.tolist()
-                    else:
-                        cols = pd.read_csv(full, nrows=0).columns.tolist()
-                    if 'Subject' in cols and 'Treatment' in cols:
-                        candidates.append(full)
-                except Exception:
-                    pass
-
-        self._key_scan_paths = candidates
-        labels = [os.path.relpath(p, folder).replace(os.sep, '/') for p in candidates]
-        self._key_combo.config(values=labels)
-        if len(candidates) == 1 and not self._key_file_var.get():
-            self._key_combo.current(0)
-            self._on_key_combo_selected()
 
     def _on_key_combo_selected(self, event=None):
         idx = self._key_combo.current()
@@ -2874,6 +2881,18 @@ class GaitLimbTabV2(ttk.Frame):
             messagebox.showwarning("No sessions",
                                    "Select at least one session.", parent=self)
             return
+
+        # A missing key is only a soft readiness note, but the run is
+        # expensive — confirm before producing an ungrouped cohort.
+        if self._key_df is None:
+            if not messagebox.askyesno(
+                    "No key file",
+                    "No key file is loaded, so every session will be "
+                    "analyzed as one ungrouped cohort (blank Treatment).\n\n"
+                    "Load a key in Data → Key file to get group "
+                    "comparisons.\n\nRun ungrouped anyway?",
+                    parent=self):
+                return
 
         sessions = [s for s in self._sessions
                     if s['session_name'] in selected_names]

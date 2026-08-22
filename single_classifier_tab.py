@@ -1225,6 +1225,10 @@ class SingleClassifierTab(ttk.Frame):
                         f"  {pair.replace('_vs_', ' vs ')}: "
                         f"p={row['p_corrected']:.4g}"
                         f"{'  *' if row['significant'] else ''}")
+            elif len(groups) > 2:
+                lines.append(f"Pairwise comparisons omitted — omnibus not "
+                             f"significant at α={alpha:g} (protected "
+                             f"testing).")
         else:
             lines.append("No omnibus test (need ≥2 groups with n ≥ 2).")
         # timecourse stats for series views

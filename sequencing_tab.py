@@ -499,8 +499,16 @@ class SequencingTab(ttk.Frame):
                                        strata_of=strata_of if rep else None)
         if not self._cohort.sessions:
             self._cohort = None
-            self._status.set(f"Every session fell under the "
-                             f"{int(self._min_bouts.get())}-bout floor.")
+            # count with the SAME bout definition the floor uses
+            most = max((SA.bout_sequence(v, keep_idx).size
+                        for v in seqs.values()), default=0)
+            self._status.set(
+                f"Every session fell under the "
+                f"{int(self._min_bouts.get())}-bout floor "
+                f"(most bouts in any session: {most}).\n"
+                f"Short recordings need a lower floor: set 'Animal floor "
+                f"(bouts)' in Ordination options (e.g. {max(most // 2, 5)}) "
+                f"and Compute again.")
             return
         self._groups = list(dict.fromkeys(
             [group_of[s] for s in self._cohort.sessions]))

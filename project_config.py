@@ -197,6 +197,13 @@ _KEY_SKIP_DIRS = {'__pycache__', '.git', 'features', 'FeatureCache',
                   'per_frame', 'videos'}
 _KEY_SKIP_NAME_TOKENS = ('prediction', 'pred', 'bout', 'timebin', 'summary',
                          'frames')
+# Headers that mark a CSV as an exported RESULTS table, not a key file —
+# results exports carry Subject+Treatment too and would otherwise pollute
+# key discovery (and break auto-pick) the first time a user saves one
+# inside the project.
+_KEY_RESULTS_COLS = {'Total_Time_s', 'N_Bouts', 'Mean_Bout_Duration_s',
+                     'Percent_Time', 'Bin_Index', 'Latency_s',
+                     'bin_start_s', 'WBI_hind', 'unscored_pct'}
 
 
 def find_key_files(project_folder: str) -> List[str]:
@@ -228,7 +235,8 @@ def find_key_files(project_folder: str) -> List[str]:
             except Exception:
                 continue
             header = [h.strip() for h in header]
-            if 'Subject' in header and 'Treatment' in header:
+            if ('Subject' in header and 'Treatment' in header
+                    and not (_KEY_RESULTS_COLS & set(header))):
                 out.append(path)
 
     def _rank(path):
