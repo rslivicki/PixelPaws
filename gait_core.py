@@ -1,5 +1,5 @@
 """
-gait_core.py — headless Gait & Limb Use analysis compute
+gait_core.py - headless Gait & Limb Use analysis compute
 =========================================================
 
 Validated compute extracted VERBATIM from ``gait_limb_tab.py`` (the GUI tab),
@@ -12,27 +12,27 @@ with only the plumbing changed:
 
 Zero tkinter imports. The GUI tab(s) are built on top of this module.
 
-Architecture (the point of the extraction): ``analyze_session`` is three stages —
+Architecture (the point of the extraction): ``analyze_session`` is three stages -
 
-  1. ``load_session_data``    — DLC load, heights, fps, confidence/locomotion
+  1. ``load_session_data``    - DLC load, heights, fps, confidence/locomotion
                                 masks, contact masks, brightness + contour
                                 extraction (incl. byte-compatible caches),
                                 lick mask.  Produces the ``data`` dict (the
                                 same keys the old tab stashed per session in
                                 ``_session_intermediates``).
-  2. ``compute_selection_masks`` — licking-excluded base mask, 4-paw mask,
+  2. ``compute_selection_masks`` - licking-excluded base mask, 4-paw mask,
                                 analyzed mask.
-  3. ``compute_all_metrics``  — the ONE metrics implementation (the old
+  3. ``compute_all_metrics``  - the ONE metrics implementation (the old
                                 ``_metrics`` / ``_gait_block`` closures +
                                 summary/bins assembly).  The Adjust-Contact
                                 path (``recompute_with_contact``) rebuilds
                                 contact masks from cached arrays, rebuilds
                                 the selection masks (INCLUDING lick + 4-paw
-                                — fixing the drifted ``_recompute_contact``
+                                - fixing the drifted ``_recompute_contact``
                                 duplicate, which silently dropped them), and
                                 calls this same function.
 
-``params`` contract — the exact 33-key dict the old ``_start_analysis`` builds:
+``params`` contract - the exact 33-key dict the old ``_start_analysis`` builds:
 contact_threshold, height_window, bin_seconds, bin_unit, fallback_fps,
 use_brightness, brt_threshold, brt_weight, roi_sizes, crop_offset_x,
 crop_offset_y, extraction_stride, contact_method, speed_threshold,
@@ -81,16 +81,16 @@ except ImportError as _fst_err:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Presets (verbatim copy of GaitLimbTab.GAIT_PRESETS — the "manuscript" preset
+# Presets (verbatim copy of GaitLimbTab.GAIT_PRESETS - the "manuscript" preset
 # is the deployed default profile)
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROLES = ('HL', 'HR', 'FL', 'FR')
 
-# Quick-setup presets — each maps to the interdependent toggle vars so the
+# Quick-setup presets - each maps to the interdependent toggle vars so the
 # user never has to know that contour needs brightness needs video.
 GAIT_PRESETS = {
-    # Default profile — the manuscript's deployed paw-contact gate, as used for the
+    # Default profile - the manuscript's deployed paw-contact gate, as used for the
     # formalin/oxycodone dose analyses: contour ROI 50 half-size (100x100 px box),
     # Otsu per ROI per frame, contour-area band 1,500-5,000 px^2 on both hind paws,
     # licking excluded, 5-min bins. The DLC-likelihood frame filter is OFF: its
@@ -134,7 +134,7 @@ class GaitContext:
         licking-behavior predictions, and ``PixelPaws_project.json`` for
         mm-per-pixel calibration.
     pawlike_thresholds : dict
-        Paw-like contour filter thresholds — solidity / aspect_ratio /
+        Paw-like contour filter thresholds - solidity / aspect_ratio /
         circularity (old: ``self._pawlike_thresholds``; editable via the
         Filter Preview dialog).
     """
@@ -201,7 +201,7 @@ def scan_lick_behaviors(folder, sessions=()):
                    for sn in sessions)
 
     # Preferred: immediate behavior subfolders (results/{behavior}/…) that
-    # actually hold prediction files — this is the canonical batch layout.
+    # actually hold prediction files - this is the canonical batch layout.
     for entry in os.listdir(results):
         p = os.path.join(results, entry)
         if not os.path.isdir(p) or entry.lower() == 'per_frame':
@@ -262,7 +262,7 @@ def load_lick_mask(folder, session_name, behavior, thr, n_frames):
                 vals = (df[f'{behavior}_prob'].values.astype(float) >= float(thr))
         except Exception:
             vals = None
-    # 2) Per-behavior predictions CSV — match files for this session whose
+    # 2) Per-behavior predictions CSV - match files for this session whose
     #    extracted behavior name equals the chosen behavior.
     if vals is None:
         import glob as _glob
@@ -493,15 +493,15 @@ def compute_speed_contact(paw_x, paw_y, fps,
 
     Parameters
     ----------
-    paw_x, paw_y : array-like  — DLC x,y coordinates for one paw
-    fps           : float       — video frame rate
-    threshold     : float|'auto' — speed cutoff (px/s); 'auto' = 20th pctile
-    median_ms     : int          — median filter window in ms
-    min_bout_ms   : int          — debounce: remove bouts shorter than this
+    paw_x, paw_y : array-like  - DLC x,y coordinates for one paw
+    fps           : float       - video frame rate
+    threshold     : float|'auto' - speed cutoff (px/s); 'auto' = 20th pctile
+    median_ms     : int          - median filter window in ms
+    min_bout_ms   : int          - debounce: remove bouts shorter than this
 
     Returns
     -------
-    np.ndarray[bool] — True = stance (contact), False = swing
+    np.ndarray[bool] - True = stance (contact), False = swing
     """
     x = np.asarray(paw_x, dtype=float)
     y = np.asarray(paw_y, dtype=float)
@@ -558,16 +558,16 @@ def gait_bouts(mask, fps, min_stride_ms=0):
 
     Parameters
     ----------
-    mask : array-like of bool — per-frame contact mask
-    fps : float — frames per second
-    min_stride_ms : float — minimum stance bout duration in ms;
+    mask : array-like of bool - per-frame contact mask
+    fps : float - frames per second
+    min_stride_ms : float - minimum stance bout duration in ms;
         bouts shorter than this are discarded as noise (default 0 = no filter)
 
     Returns
     -------
-    stance_durs : list[float] — durations of stance bouts in seconds
-    swing_durs  : list[float] — durations of swing bouts in seconds
-    stance_onsets : list[int] — frame indices where stance begins
+    stance_durs : list[float] - durations of stance bouts in seconds
+    swing_durs  : list[float] - durations of swing bouts in seconds
+    stance_onsets : list[int] - frame indices where stance begins
     """
     n = len(mask)
     if n == 0:
@@ -618,7 +618,7 @@ def gait_bouts(mask, fps, min_stride_ms=0):
 
 def regularity_index(masks, fps, frame_slice, loco_filter_mask,
                      confidence_mask, min_stance_ms=0):
-    """Compute regularity index (RI) — percentage of normal step sequences.
+    """Compute regularity index (RI) - percentage of normal step sequences.
 
     RI = (NSSP × 4 / total_paw_placements) × 100
     where NSSP = number of normal step-sequence patterns.
@@ -668,7 +668,7 @@ def regularity_index(masks, fps, frame_slice, loco_filter_mask,
 
 def print_position(masks, paw_xy, hind_role, fore_role, fps, frame_slice,
                    loco_filter_mask, confidence_mask, min_stance_ms=0):
-    """Compute print position — distance between hind paw strike and
+    """Compute print position - distance between hind paw strike and
     most recent ipsilateral fore paw strike position (px).
 
     Returns float (mean distance in px) or NaN.
@@ -924,7 +924,7 @@ def apply_contour_area_contact(contact_masks, paw_contour_data, n_frames,
 
     A hind paw counts as in-contact when its contour area exceeds the
     threshold; both hind paws are gated together (matches the formalin
-    figures). Applied after contour extraction — replaces the
+    figures). Applied after contour extraction - replaces the
     height/brightness contact masks. The DLC-likelihood filter is applied
     downstream in the metrics stage, exactly as for every other contact
     method. Mutates and returns ``contact_masks``."""
@@ -1092,7 +1092,7 @@ def load_session_data(sess, paw_map, params, ctx,
         else:
             cx = cy = None
     else:
-        # NOTE: ``candidate`` is the loop variable above — this only executes
+        # NOTE: ``candidate`` is the loop variable above - this only executes
         # after ``break``, so it necessarily holds the name that matched
         # tb_x_col. Verified semantically sound; kept verbatim.
         tb_y_col = next((c for c in bp_ycord.columns
@@ -1159,7 +1159,7 @@ def load_session_data(sess, paw_map, params, ctx,
         _contour_cache_path = contour_cache_path(ctx, sess['session_name'], contour_cache_key)
         if _contour_cache_path and not os.path.isfile(_contour_cache_path):
             log("  Contour cache miss (video/pose files or extraction "
-                "settings changed since the last run) — extracting from "
+                "settings changed since the last run) - extracting from "
                 "video (this may take a while).")
 
         # --- try contour cache load ---
@@ -1236,7 +1236,7 @@ def load_session_data(sess, paw_map, params, ctx,
         # --- extract fresh if cache miss ---
         if not brightness_series:
             log(f"  Brightness cache miss (video/pose files or extraction "
-                f"settings changed since the last run) — extracting from "
+                f"settings changed since the last run) - extracting from "
                 f"video (this may take a while).")
             try:
                 thresh_val  = params.get('brt_threshold', 0)
@@ -1244,7 +1244,7 @@ def load_session_data(sess, paw_map, params, ctx,
                                for role in active_paws}
 
                 # When brightness doesn't affect contact detection (brt_weight==0),
-                # only decode frames where at least one paw is in contact — much faster.
+                # only decode frames where at least one paw is in contact - much faster.
                 hint_mask = None
                 if abs(params.get('brt_weight', 1.0)) < 1e-6 and contact_masks:
                     hint_mask = np.zeros(n_frames, dtype=bool)
@@ -1468,7 +1468,7 @@ def load_session_data(sess, paw_map, params, ctx,
                         break
 
                     if fi % stride != 0:
-                        cap.grab()   # advance without decoding — fast
+                        cap.grab()   # advance without decoding - fast
                         continue
 
                     ret, frame = cap.read()
@@ -1631,13 +1631,13 @@ def compute_all_metrics(data, selection_masks, params, frame_slice=None,
 
     Parameters
     ----------
-    data : dict — output of ``load_session_data`` (or the cached
+    data : dict - output of ``load_session_data`` (or the cached
         intermediates dict for the Adjust-Contact recompute path).
-    selection_masks : (analyzed_mask, base_mask, four_mask) — output of
+    selection_masks : (analyzed_mask, base_mask, four_mask) - output of
         ``compute_selection_masks``.
-    params : dict — the 33-key params contract (bin_seconds/bin_unit drive
+    params : dict - the 33-key params contract (bin_seconds/bin_unit drive
         the per-bin rows).
-    frame_slice : slice or None — when given, only the summary over that
+    frame_slice : slice or None - when given, only the summary over that
         slice is computed ('bins' comes back empty).
     """
     log = log or _noop_log
@@ -1710,7 +1710,7 @@ def compute_all_metrics(data, selection_masks, params, frame_slice=None,
             m['WBI_fore'] = round(cFL / tot * 100, 2) if tot > 0 else float('nan')
             m['SI_fore']  = round((cFL - cFR) / tot * 100, 2) if tot > 0 else float('nan')
 
-        # Per-paw WBI — each paw's fraction of total contact time
+        # Per-paw WBI - each paw's fraction of total contact time
         total_contact = sum(m[f'contact_pct_{r}'] for r in masks)
         if total_contact > 0:
             for role in masks:
@@ -2195,8 +2195,8 @@ def analyze_session(sess, paw_map, params, ctx,
     'intermediates' is the per-session data dict the old tab kept in
     ``_session_intermediates`` (height_df, bp_xcord/ycord/prob, fps,
     _used_fallback_fps, n_frames, active_paws, contact_masks, paw_xy,
-    brightness_series, paw_contour_data — incl. contour_shapes /
-    contour_solidities for the contour graph tabs —, confidence_mask,
+    brightness_series, paw_contour_data - incl. contour_shapes /
+    contour_solidities for the contour graph tabs -, confidence_mask,
     loco_mask, body_speed, frame_displacements, lick_mask, params), plus
     'session_name' and '_mm_per_px'. The graph window's contour tabs and the
     Adjust-Contact dialog (``recompute_with_contact``) consume it.
@@ -2230,7 +2230,7 @@ def analyze_session(sess, paw_map, params, ctx,
 def recompute_with_contact(cached_data, new_params, ctx, log=None):
     """Adjust-Contact path: rebuild contact masks from cached arrays with new
     contact parameters, rebuild the selection masks (INCLUDING the licking
-    exclusion and the 4-paw gate — the old ``_recompute_contact`` duplicate
+    exclusion and the 4-paw gate - the old ``_recompute_contact`` duplicate
     silently dropped both, producing wrong denominators), then run the SAME
     ``compute_all_metrics``.
 

@@ -1,5 +1,5 @@
 """
-analysis_core.py — Pure compute core for Single-Classifier Analysis
+analysis_core.py - Pure compute core for Single-Classifier Analysis
 ===================================================================
 
 Headless (NO tkinter) extraction of the validated compute code from
@@ -39,7 +39,7 @@ import pandas as pd
 class PhaseWindow:
     """A named phase window (e.g. formalin Acute / Phase II).
 
-    ``bin_index`` keeps the legacy sentinels: -1 for Acute, -2 for Phase II —
+    ``bin_index`` keeps the legacy sentinels: -1 for Acute, -2 for Phase II -
     phase rows are stored in results_df with these negative Bin_Index values.
     """
     name: str            # 'Acute', 'Phase_II', ... ('_' shown as ' ' in Bin label)
@@ -395,7 +395,7 @@ def subjects_overview(project_folder: str,
 
     Subjects are video basenames under <project>/videos (DLC/overlay outputs
     skipped).  Group comes from ``key_df``; if key_df is None the SINGLE key
-    discovery path (project_config.find_key_files + load_key_file) is used —
+    discovery path (project_config.find_key_files + load_key_file) is used -
     the old tab's duplicated ad-hoc key walk is not ported.
     """
     if not project_folder or not os.path.isdir(project_folder):
@@ -409,7 +409,7 @@ def subjects_overview(project_folder: str,
             for vf in _g.glob(os.path.join(vdir, _ext)):
                 _name = os.path.splitext(os.path.basename(vf))[0]
                 _low = _name.lower()
-                # skip DLC/overlay outputs (e.g. *_labeled, *DLC_Resnet*) — not real subjects
+                # skip DLC/overlay outputs (e.g. *_labeled, *DLC_Resnet*) - not real subjects
                 if '_labeled' in _low or 'dlc_' in _low or 'dlc_resnet' in _low:
                     continue
                 subjects.append(_name)
@@ -442,7 +442,7 @@ def subjects_overview(project_folder: str,
                 if s and s in subj:
                     grp = t
                     break
-        rows.append((subj, grp or '—'))
+        rows.append((subj, grp or '-'))
 
     # Default: grouped by treatment (sort by group, then subject).
     rows.sort(key=lambda r: (r[1], r[0]))
@@ -506,7 +506,7 @@ def pick_prediction_column(pred_df: pd.DataFrame) -> np.ndarray:
 
 def calculate_metrics(predictions, fps: float, bin_duration_sec: float) -> dict:
     """Calculate behavior metrics for a time bin (analysis_tab :1809, verbatim
-    minus the six always-True metric flags and minus AUC — AUC was a literal
+    minus the six always-True metric flags and minus AUC - AUC was a literal
     duplicate of Total_Time_s)."""
     metrics = {}
 
@@ -547,7 +547,7 @@ def calculate_metrics(predictions, fps: float, bin_duration_sec: float) -> dict:
 
 def _bin_rows(predictions, cfg: AnalysisConfig,
               subject: str, treatment: str, behavior_name: str) -> List[dict]:
-    """Per-bin rows for one prediction array (analysis_tab :1545-1605 — the
+    """Per-bin rows for one prediction array (analysis_tab :1545-1605 - the
     identical binning code appeared twice, in analyze_single_file and
     analyze_combined_behaviors; this is the single copy)."""
     fps = cfg.fps
@@ -649,7 +649,7 @@ def combine_predictions(prediction_arrays: Sequence[np.ndarray]) -> np.ndarray:
 
 def analyze_file(file_info: FileInfo, key_df: pd.DataFrame,
                  cfg: AnalysisConfig) -> Tuple[List[dict], Dict[tuple, np.ndarray]]:
-    """Analyze a single prediction file (analysis_tab :1482 logic — binning,
+    """Analyze a single prediction file (analysis_tab :1482 logic - binning,
     absolute Latency_s, Whole row, 1 Hz perframe via any()-per-second, phase
     rows when cfg.phases).
 
@@ -695,7 +695,7 @@ def _analyze_combined(files: Sequence[FileInfo], selected_behaviors: Sequence[st
                       skipped: List[str]) -> List[dict]:
     """Combined-behaviors analysis (analysis_tab :1691, minus prints; uses the
     ONE pick_prediction_column ladder instead of the drifted 3-rung copy).
-    NOTE: matches the old tab — combined mode stores NO perframe data."""
+    NOTE: matches the old tab - combined mode stores NO perframe data."""
     # Group files by subject
     subject_files: Dict[str, List[FileInfo]] = {}
     for file_info in files:
@@ -902,7 +902,7 @@ def perform_statistical_test(data_by_treatment: Dict[str, Sequence[float]],
 def timecourse_anova(df: pd.DataFrame, metric: str,
                      alpha: float = 0.05) -> Optional[dict]:
     """Two-way ANOVA (Time × Treatment) on a long results frame
-    (analysis_tab :4946 with the metric parameterized — fixes the hardcoded
+    (analysis_tab :4946 with the metric parameterized - fixes the hardcoded
     Total_Time_s).  Returns None if statsmodels is unavailable or the fit
     fails."""
     try:
@@ -935,7 +935,7 @@ _POSTHOC_COLUMNS = ['Bin_Start_Min', 'group_a', 'group_b',
 def timecourse_posthoc(df: pd.DataFrame, treatments: Sequence[str], metric: str,
                        alpha: float = 0.05,
                        paradigm: str = 'auto') -> pd.DataFrame:
-    """Per-bin pairwise post-hoc comparisons — THE single implementation
+    """Per-bin pairwise post-hoc comparisons - THE single implementation
     (modeled on the primary copy at analysis_tab :3238-3408) replacing the
     four drifted copies.
 

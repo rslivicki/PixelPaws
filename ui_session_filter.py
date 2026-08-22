@@ -5,7 +5,7 @@ Shared "Sessions" picker for the analysis tabs.
 A compact button that reads "Sessions: All (6)" / "Sessions: 4 of 6" and
 opens a small "Sessions" window with the session table (the rails are too
 narrow to host it inline): one row per session with an include tick plus
-informative columns (Subject / Group / Video / Cache — whatever the tab
+informative columns (Subject / Group / Video / Cache - whatever the tab
 supplies). Clicking a row toggles it; All / None act on the whole cohort.
 Everything is included by default, so tabs behave exactly as before unless
 the user opts out of sessions.
@@ -65,7 +65,7 @@ class SessionFilter(ttk.Frame):
         if Tip is not None:
             Tip(self._btn,
                 "Choose which sessions feed this tab's graphs and stats.\n"
-                "Opens a session table; everything is included by default —\n"
+                "Opens a session table; everything is included by default -\n"
                 "click rows to exclude them.")
 
     # ── public API ─────────────────────────────────────────────────────────
@@ -197,7 +197,7 @@ class SessionFilter(ttk.Frame):
             tree.delete(item)
         for n, inc in self._included.items():
             info = self._info.get(n, {})
-            vals = [("✓" if inc else "—"), n] + \
+            vals = [("✓" if inc else "✗"), n] + \
                    [info.get(c, "") for c in self._columns]
             tree.insert("", "end", iid=n, values=vals,
                         tags=("on" if inc else "off",))
@@ -228,7 +228,7 @@ class SessionFilter(ttk.Frame):
         total = len(self._included)
         n_sel = len(self.selected())
         if total == 0:
-            txt = f"{self._label}: —"
+            txt = f"{self._label}: -"
         elif n_sel == total:
             txt = f"{self._label}: All ({total})"
         else:

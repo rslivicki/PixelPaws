@@ -1,5 +1,5 @@
 """
-transitions_tab.py — PixelPaws Behavioral State Transition Analysis
+transitions_tab.py - PixelPaws Behavioral State Transition Analysis
 ====================================================================
 Computes transition probability matrices between behavioral states,
 visualizes ethograms, heatmaps, directed network graphs, and group
@@ -91,21 +91,21 @@ from io_utils import atomic_pickle_save, get_git_sha
 SESSION_SCHEMA_VERSION = 1
 
 # The compute-result members serialized into a saved session (all plain
-# numpy/dict/str — no tk vars, figures, or XGBoost models). Stored WITHOUT the
+# numpy/dict/str - no tk vars, figures, or XGBoost models). Stored WITHOUT the
 # leading underscore; save/load add it. Keep save & load in sync via this list.
 # `state_seqs`, `states`, `state_labels` are the required minimum to redraw.
 RESULT_FIELDS = [
     'state_seqs', 'state_seqs_full', 'states', 'state_labels', 'session_subjects',
     'matrices', 'windowed', 'temporal_probs', 'group_matrices', 'group_sem',
     'group_subject_matrices', 'effective_fps', 'frame_probs',
-    # unsupervised views (retired but cheap arrays — best-effort)
+    # unsupervised views (retired but cheap arrays - best-effort)
     'occupancy', 'latent_centroids', 'session_latent_map', 'n_latent',
     'group_occupancy', 'group_occupancy_sem', 'pca_scores', 'pca_loadings',
     'merge_info',
 ]
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Color model — shared palette constants
+# Color model - shared palette constants
 # ═══════════════════════════════════════════════════════════════════════════
 # Wong (Nature Methods) / Okabe-Ito 8-color colorblind-safe categorical palette.
 _OKABE_ITO = ['#000000', '#E69F00', '#56B4E9', '#009E73',
@@ -116,14 +116,14 @@ _SEQ_CMAPS = {'magma', 'plasma', 'viridis', 'inferno', 'cividis', 'turbo',
 # Zero-centered diverging cmap for group-difference heatmaps.
 _DIVERGING_CMAP = 'RdBu_r'
 
-# Results view menu — grouped with non-selectable '— header —' rows.
+# Results view menu - grouped with non-selectable '- header -' rows.
 _VIEW_MENU = [
-    '— Composition —', 'State Usage', 'State Composition',
-    '— Transitions —', 'Transition Matrix', 'Transition Graph',
+    '- Composition -', 'State Usage', 'State Composition',
+    '- Transitions -', 'Transition Matrix', 'Transition Graph',
     'Group Transition Graphs', 'Group Matrices', 'Transition Difference',
-    '— Sequencing —', 'Sequencing Networks', 'Sequencing Difference',
+    '- Sequencing -', 'Sequencing Networks', 'Sequencing Difference',
     'Sequencing Ordination',
-    '— Temporal —', 'Ethogram', 'Composition Over Time',
+    '- Temporal -', 'Ethogram', 'Composition Over Time',
     'Occupancy Over Time', 'Behavior × Group', 'Transition Timeline',
 ]
 # Old view name → new, so saved sessions/configs still resolve.
@@ -220,7 +220,7 @@ _METHODS_STATIC = {
         "values indicate transitions less probable.\n\n"
         "Statistical analysis. For every matrix cell, the per-animal transition "
         "probabilities of the group and of the reference were compared with a two-sided "
-        "Mann–Whitney U test, and the resulting p-values were adjusted across all cells "
+        "Mann-Whitney U test, and the resulting p-values were adjusted across all cells "
         "of the matrix using {correction}; cells surviving the α = {alpha} threshold are "
         "annotated with significance markers (* q<0.05, ** q<0.01, *** q<0.001).",
     'Ethogram':
@@ -267,19 +267,19 @@ _METHODS_STATIC = {
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Hover-help text — single source of truth for the tab's tooltips
+# Hover-help text - single source of truth for the tab's tooltips
 # ═══════════════════════════════════════════════════════════════════════════
 # Plain-language, one-or-two-sentence descriptions shown on mouse-over via
 # ui_utils.ToolTip (theme-aware; wraps at 320px). Keyed by short slug; attach
 # with self._tip(widget, 'slug'). Add a slug here, reference it at the widget.
 _HELP = {
     # Time Windows
-    'full_session':   "Analyze the whole session as one block — a single transition "
+    'full_session':   "Analyze the whole session as one block - a single transition "
                       "matrix / occupancy summary per session.",
     'time_range':     "Analyze only a fixed slice of the session, from Start to End "
                       "(seconds). Everything outside the range is ignored.",
     'sliding_windows': "Compute a separate result for each short window of time as it "
-                      "slides across the session — shows how behavior changes over the "
+                      "slides across the session - shows how behavior changes over the "
                       "session (e.g. habituation). Set the window length and step below.",
     'window_sec':     "Length of each analysis window, in seconds. Larger windows are "
                       "smoother but give fewer time points.",
@@ -288,7 +288,7 @@ _HELP = {
                       "window ⇒ back-to-back, non-overlapping bins.",
     'range_start':    "Start of the analyzed slice, in seconds from the recording start.",
     'range_end':      "End of the analyzed slice, in seconds from the recording start.",
-    'crop_first':     "Ignore everything after the first N minutes — useful to equalize "
+    'crop_first':     "Ignore everything after the first N minutes - useful to equalize "
                       "recordings of different lengths before comparing groups.",
     'prob_bin':       "Bin width (seconds) for the Temporal Probability view: each bin "
                       "reports the fraction of time spent in each state.",
@@ -314,14 +314,14 @@ _HELP = {
     # State source / classifiers / preset
     'preset_source':  "Load a ready-made set of classifiers: your project's classifiers, "
                       "the shared encyclopedia, or both (deduped, project wins). Loads them "
-                      "for review — you then click Compute.",
+                      "for review - you then click Compute.",
     'add_classifier': "Add one or more classifier .pkl files to the set used to label "
                       "each frame's state.",
     # Views / palettes
-    'open_graph_window': "Open the results in a large, resizable window (recommended) — plots "
+    'open_graph_window': "Open the results in a large, resizable window (recommended) - plots "
                       "fill the window with room for group panels, plus group order/colors, "
                       "per-view axis limits, and Save Figure.",
-    'view_combo':     "Choose what to plot from the computed results — occupancy, "
+    'view_combo':     "Choose what to plot from the computed results - occupancy, "
                       "ethograms, transition matrices/networks, temporal probabilities, "
                       "group comparisons, and more.",
     'heat_palette':   "Color map for the transition-matrix heatmap.",
@@ -334,12 +334,12 @@ _HELP = {
     'key_autofind':   "Search the project folder for a valid key file (one with Subject and "
                       "Treatment columns) and load it.",
     'session_group':  "The Treatment group this session's subject belongs to, from the key "
-                      "file. Shows '—' until a key file is loaded.",
+                      "file. Shows '-' until a key file is loaded.",
     # Run
     'compute':        "Run the loaded classifiers on the selected sessions and compute "
                       "transitions + occupancy. Honors 'Use cached features only'.",
-    'save_session':   "Save this completed run — all computed results plus the settings that "
-                      "produced them — to one file, so you can reopen the plots later without "
+    'save_session':   "Save this completed run - all computed results plus the settings that "
+                      "produced them - to one file, so you can reopen the plots later without "
                       "re-running the classifiers.",
     'load_session':   "Load a previously saved session and redraw every view instantly, with no "
                       "recompute. The last run is also auto-saved per project.",
@@ -357,15 +357,15 @@ def compute_transition_matrix(state_seq, states=None, normalize=True,
     Parameters
     ----------
     state_seq : array-like of int
-    states : list of int, optional – ordered state IDs (rows/cols).
+    states : list of int, optional - ordered state IDs (rows/cols).
         If None, derived from unique values in *state_seq*.
-    normalize : bool – row-normalize to probabilities.
-    zero_diagonal : bool – zero self-transition diagonal.
+    normalize : bool - row-normalize to probabilities.
+    zero_diagonal : bool - zero self-transition diagonal.
 
     Returns
     -------
     matrix : np.ndarray (n_states, n_states)
-    states : list of int – ordered state IDs matching rows/cols
+    states : list of int - ordered state IDs matching rows/cols
     """
     seq = np.asarray(state_seq, dtype=int)
     if states is None:
@@ -508,8 +508,8 @@ def cluster_transition_matrices(windowed_dict, k, states, n_init=100):
 
     Returns
     -------
-    centroids : np.ndarray (k, n_states, n_states) — centroid matrices
-    session_latent_map : dict {session: list of int} — latent state ID per window
+    centroids : np.ndarray (k, n_states, n_states) - centroid matrices
+    session_latent_map : dict {session: list of int} - latent state ID per window
     """
     from sklearn.cluster import KMeans
 
@@ -584,13 +584,13 @@ def reduce_clusters(processed_seqs, states, target_n):
     Parameters
     ----------
     processed_seqs : dict {session_name: np.array of int}
-    states : list of int — ordered state IDs
-    target_n : int — desired number of meta-clusters
+    states : list of int - ordered state IDs
+    target_n : int - desired number of meta-clusters
 
     Returns
     -------
     mapping : dict {old_id: new_id}
-    new_states : list of int — sorted new state IDs (0..target_n-1)
+    new_states : list of int - sorted new state IDs (0..target_n-1)
     merge_info : dict {new_id: list of old_ids}
     """
     from scipy.cluster.hierarchy import linkage, fcluster
@@ -792,7 +792,7 @@ class TransitionVideoPreview:
                                 (20, 100 + ci * 35),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.75,
                                 self._get_color_bgr(ci + 1), 2)
-                # Legend — only shown when assigned ≠ argmax
+                # Legend - only shown when assigned ≠ argmax
                 if state_id != 0 and state_id != argmax_ci + 1:
                     legend_y = 100 + len(probs) * 35 + 8
                     cv2.putText(frame, "< assigned   * highest prob",
@@ -1047,15 +1047,15 @@ class TransitionsTab(ttk.Frame):
         self.app = main_gui
 
         # Internal state
-        self._state_seqs = {}       # {session_name: np.array of int} — analysis-time, may be capped
-        self._state_seqs_full = {}  # {session_name: np.array of int} — uncapped, for UI 1:1 lookup
+        self._state_seqs = {}       # {session_name: np.array of int} - analysis-time, may be capped
+        self._state_seqs_full = {}  # {session_name: np.array of int} - uncapped, for UI 1:1 lookup
         self._states = []           # ordered state IDs
         self._state_labels = {}     # {state_id: user label}  e.g. {0: "Still"}
         self._matrices = {}         # {session_name: (matrix, states)}
         self._windowed = {}         # {session_name: [(t, mat), ...]}
         self._group_matrices = {}   # {group: mean_matrix}
         self._group_sem = {}        # {group: sem_matrix}
-        self._group_subject_matrices = {}  # {group: [matrix, ...]} — individual subjects
+        self._group_subject_matrices = {}  # {group: [matrix, ...]} - individual subjects
         self._frame_probs = {}  # {session_name: np.ndarray (n_frames × n_classifiers)}
         self._key_df = None
         self._session_subjects = {} # {session_name: subject}
@@ -1186,11 +1186,11 @@ class TransitionsTab(ttk.Frame):
         preset_combo.bind('<<ComboboxSelected>>', self._preset_load_from_dropdown)
         self._tip(preset_combo, 'preset_source')
         ttk.Label(preset_frame,
-                  text="Loads classifiers on all sessions — then click Compute.",
+                  text="Loads classifiers on all sessions - then click Compute.",
                   foreground='gray').pack(side='left', padx=10)
 
         # ── State from classifiers ────────────────────────────────────
-        # Supervised (trained-classifier) path only — the unsupervised/LUPE path is retired
+        # Supervised (trained-classifier) path only - the unsupervised/LUPE path is retired
         # for this release. _unsup_frame/_run_combo are still created (unpacked) so any legacy
         # references remain valid.
         src_frame = ttk.LabelFrame(sf, text="State from classifiers", padding=10)
@@ -1386,7 +1386,7 @@ class TransitionsTab(ttk.Frame):
 
         row += 1
         self._downsample_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(set_frame, text="Downsample to 20 Hz — mode of every N frames (LUPE)",
+        ttk.Checkbutton(set_frame, text="Downsample to 20 Hz - mode of every N frames (LUPE)",
                         variable=self._downsample_var).grid(
             row=row, column=0, columnspan=3, sticky='w', pady=(2, 0))
 
@@ -1515,10 +1515,10 @@ class TransitionsTab(ttk.Frame):
         self._tip(_crop_sp, 'crop_first')
         ttk.Label(dur_row, text="min").pack(side='left')
 
-        # (The former "Behavior Over Time palette" control was removed — all
+        # (The former "Behavior Over Time palette" control was removed - all
         # state-colored views now share the single State-colors palette.)
 
-        # Latent State Discovery (LUPE, unsupervised) retired for this release — keep the vars.
+        # Latent State Discovery (LUPE, unsupervised) retired for this release - keep the vars.
         self._discover_latent_var = tk.BooleanVar(value=False)
         self._n_latent_var = tk.IntVar(value=6)
 
@@ -1560,7 +1560,7 @@ class TransitionsTab(ttk.Frame):
         res_frame = ttk.LabelFrame(sf, text="Results", padding=10)
         res_frame.pack(fill='both', padx=20, pady=5, expand=True)
 
-        # Saved sessions — pick a previous run and reload it (no recompute).
+        # Saved sessions - pick a previous run and reload it (no recompute).
         saved_row = ttk.Frame(res_frame)
         saved_row.pack(fill='x', pady=(0, 5))
         ttk.Label(saved_row, text="Saved sessions:").pack(side='left', padx=(0, 5))
@@ -1632,7 +1632,7 @@ class TransitionsTab(ttk.Frame):
         # Compute / load). The main page shows a stats TABLE instead of a cramped
         # inline plot. `_fig`/`_canvas` are still created as the ACTIVE render
         # target (swapped to the window's figure while it is open), but the inline
-        # canvas is NOT packed — it renders off-screen when the window is closed.
+        # canvas is NOT packed - it renders off-screen when the window is closed.
         self._fig = plt.figure(figsize=(9, 5), constrained_layout=True) if MATPLOTLIB_AVAILABLE else None
         self._canvas = None
         if MATPLOTLIB_AVAILABLE:
@@ -1840,7 +1840,7 @@ class TransitionsTab(ttk.Frame):
 
     def _preset_load_from_dropdown(self, event=None):
         """Dropdown handler: load the chosen classifier set (deduped) WITHOUT starting
-        the compute — the user reviews the list / settings, then clicks Compute."""
+        the compute - the user reviews the list / settings, then clicks Compute."""
         label = (self._preset_source_var.get() or '').strip()
         source = {
             'Project + encyclopedia (deduped)': 'both',
@@ -1852,7 +1852,7 @@ class TransitionsTab(ttk.Frame):
         self._preset_compute_from_classifiers(source, start=False)
 
     def _preset_compute_from_classifiers(self, source='both', start=True):
-        """Load classifiers (deduped by behavior — project wins) and select all sessions.
+        """Load classifiers (deduped by behavior - project wins) and select all sessions.
         When `start` is True, also kick off the transitions + occupancy compute.
         `source`: 'both' (project + encyclopedia), 'encyclopedia' (encyclopedia only),
         or 'project' (project only)."""
@@ -1944,7 +1944,7 @@ class TransitionsTab(ttk.Frame):
         """Resolve each scanned session to its subject/group and fill the tree's
         Group column. Also pre-populates _session_subjects so group-aware views
         work before a compute (compute rebuilds it too). Safe with no key file
-        (every row shows '—')."""
+        (every row shows '-')."""
         tree = getattr(self, '_trans_tree', None)
         if tree is None:
             return
@@ -1954,7 +1954,7 @@ class TransitionsTab(ttk.Frame):
             for s in getattr(self, '_trans_sessions', []) or []
         }
         for iid in tree.get_children():
-            grp = self._session_group(iid) or '—'
+            grp = self._session_group(iid) or '-'
             tree.set(iid, 'group', grp)
 
     def _plot_occupancy(self):
@@ -2012,7 +2012,7 @@ class TransitionsTab(ttk.Frame):
         ax.set_xticks(x)
         ax.set_xticklabels(labels, rotation=30, ha='right', fontsize=9)
         ax.set_ylabel('% of time')
-        ax.set_title(f'State occupancy (% time) — {len(occ)} session(s)')
+        ax.set_title(f'State occupancy (% time) - {len(occ)} session(s)')
         ax.grid(axis='y', alpha=0.3)
 
     # ------------------------------------------------------------------
@@ -2020,7 +2020,7 @@ class TransitionsTab(ttk.Frame):
     # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
-    # Display time window — restrict any view to [tmin, tmax] minutes live,
+    # Display time window - restrict any view to [tmin, tmax] minutes live,
     # re-deriving occupancy / transition matrices from the windowed sequences.
     # ------------------------------------------------------------------
 
@@ -2217,7 +2217,7 @@ class TransitionsTab(ttk.Frame):
         ax.set_xticklabels(labels, rotation=30, ha='right', fontsize=9)
         _err_lbl = '95% CI' if self._error_mode_var.get().startswith('95') else 'SEM'
         ax.set_ylabel('% of time')
-        ax.set_title(f'State usage (% time) — per-animal, mean ± {_err_lbl}')
+        ax.set_title(f'State usage (% time) - per-animal, mean ± {_err_lbl}')
         ax.grid(axis='y', alpha=0.3)
         ax.legend(fontsize=8, loc='upper left', bbox_to_anchor=(1.01, 1),
                   borderaxespad=0)
@@ -2293,7 +2293,7 @@ class TransitionsTab(ttk.Frame):
             row=0, column=0, columnspan=2, padx=15, pady=(12, 8), sticky='w')
 
         fields = [
-            ("Threshold (0–1):",         'best_thresh',    0.5,
+            ("Threshold (0-1):",         'best_thresh',    0.5,
              dict(from_=0.0, to=1.0, increment=0.01, format='%.3f')),
             ("Min bout (frames):",       'min_bout',       0,
              dict(from_=0, to=9999, increment=1)),
@@ -2319,7 +2319,7 @@ class TransitionsTab(ttk.Frame):
             path = cd.get('_path', '')
             if not path or not os.path.isfile(path):
                 messagebox.showwarning("No file",
-                    "Original .pkl path not found — cannot reset.", parent=dlg)
+                    "Original .pkl path not found - cannot reset.", parent=dlg)
                 return
             try:
                 orig = _robust_load(path)
@@ -2400,7 +2400,7 @@ class TransitionsTab(ttk.Frame):
             var = tk.BooleanVar(value=True)
             self._trans_session_checked[name] = var
             self._trans_tree.insert('', 'end', iid=name,
-                                    values=("✓", name, "—", video_name))
+                                    values=("✓", name, "-", video_name))
 
         self._apply_pending_session_selection()
         self._refresh_session_groups()
@@ -2444,7 +2444,7 @@ class TransitionsTab(ttk.Frame):
         if self._pending_session_selection is None:
             return
         if not self._trans_session_checked:
-            return  # sessions not yet scanned — will be applied after _scan_trans_sessions
+            return  # sessions not yet scanned - will be applied after _scan_trans_sessions
         for name, bvar in self._trans_session_checked.items():
             checked = name in self._pending_session_selection
             bvar.set(checked)
@@ -3095,7 +3095,7 @@ class TransitionsTab(ttk.Frame):
         if not seqs:
             if self._skipped_sessions:
                 raise ValueError(
-                    "No sessions produced state sequences — all selected "
+                    "No sessions produced state sequences - all selected "
                     "sessions needed feature re-extraction and were skipped "
                     "('Use cached features only' is on). Uncheck it to extract, "
                     "or select sessions with cached features.")
@@ -3342,7 +3342,7 @@ class TransitionsTab(ttk.Frame):
                 for name, s in processed.items():
                     sliced[name] = s[start_f:end_f]
                 self._log_msg(f"Time range: {self._range_start_var.get():.0f}s "
-                              f"– {self._range_end_var.get():.0f}s")
+                              f"- {self._range_end_var.get():.0f}s")
             else:
                 sliced = processed
 
@@ -3685,7 +3685,7 @@ class TransitionsTab(ttk.Frame):
             self._update_clf_listbox()
 
     # ------------------------------------------------------------------
-    # Saved sessions (computed results — reload without re-running)
+    # Saved sessions (computed results - reload without re-running)
     # ------------------------------------------------------------------
 
     def _session_bundle(self):
@@ -3714,7 +3714,7 @@ class TransitionsTab(ttk.Frame):
         """Manual save of the current run (settings + results) to one file."""
         if not getattr(self, '_state_seqs', None):
             messagebox.showinfo("Save Session",
-                                "Nothing to save yet — run Compute first.",
+                                "Nothing to save yet - run Compute first.",
                                 parent=self)
             return
         proj = self.app.current_project_folder.get()
@@ -3736,7 +3736,7 @@ class TransitionsTab(ttk.Frame):
                                  f"Could not save session:\n{e}", parent=self)
 
     def _autosave_session(self):
-        """Auto-save the last completed run as a new saved-session entry — unless
+        """Auto-save the last completed run as a new saved-session entry - unless
         we're mid-load (loading must never spawn a new entry)."""
         if getattr(self, '_loading_session', False):
             return
@@ -3745,7 +3745,7 @@ class TransitionsTab(ttk.Frame):
         self._save_session_file('auto')
 
     def _load_session(self, path=None):
-        """Load a saved session and redraw every view — no recompute."""
+        """Load a saved session and redraw every view - no recompute."""
         if not path:
             proj = self.app.current_project_folder.get()
             init_dir = os.path.join(proj, 'transitions') if proj else '/'
@@ -3792,7 +3792,7 @@ class TransitionsTab(ttk.Frame):
             if name in results:
                 setattr(self, '_' + name, results[name])
 
-        # Lightweight PCA stand-in — only .explained_variance_ratio_ is read.
+        # Lightweight PCA stand-in - only .explained_variance_ratio_ is read.
         evr = bundle.get('pca_evr')
         self._pca_model = (SimpleNamespace(explained_variance_ratio_=evr)
                            if evr is not None else None)
@@ -3813,7 +3813,7 @@ class TransitionsTab(ttk.Frame):
         finally:
             self._loading_session = False
         self._log_msg(
-            f"Loaded session (saved {bundle.get('saved_at', '?')}) — "
+            f"Loaded session (saved {bundle.get('saved_at', '?')}) - "
             f"{len(self._state_seqs)} session(s), {len(self._states)} state(s).")
 
     # ------------------------------------------------------------------
@@ -3968,8 +3968,8 @@ class TransitionsTab(ttk.Frame):
 
     def _on_view_changed(self, event=None):
         view = self._view_var.get()
-        # Ignore non-selectable section headers — revert to the last real view.
-        if view.startswith('—'):
+        # Ignore non-selectable section headers - revert to the last real view.
+        if view.startswith('-'):
             self._view_var.set(getattr(self, '_last_view', 'State Usage'))
             return
         self._last_view = view
@@ -4006,7 +4006,7 @@ class TransitionsTab(ttk.Frame):
         return sorted(keys, key=self._treatment_sort_key)
 
     # ------------------------------------------------------------------
-    # Color model — one STATE palette (states = category) and one GROUP
+    # Color model - one STATE palette (states = category) and one GROUP
     # palette (groups = category on the x-axis). See module _OKABE_ITO.
     # ------------------------------------------------------------------
 
@@ -4029,7 +4029,7 @@ class TransitionsTab(ttk.Frame):
 
     def _heat_cmap(self):
         """Sequential colormap NAME for probability heatmaps (never silently
-        dropped — replaces the old 'YlOrRd' fallback)."""
+        dropped - replaces the old 'YlOrRd' fallback)."""
         name = self._heat_palette_var.get()
         return name if name in _SEQ_CMAPS else 'inferno'
 
@@ -4106,7 +4106,7 @@ class TransitionsTab(ttk.Frame):
 
     def _sync_active_fig_size(self):
         """Match the active figure's size to its canvas widget so the Agg render
-        fills the whole canvas — prevents a prior (larger) view's pixels from
+        fills the whole canvas - prevents a prior (larger) view's pixels from
         showing through when the new view's figure is smaller."""
         try:
             widget = self._canvas.get_tk_widget()
@@ -4135,7 +4135,7 @@ class TransitionsTab(ttk.Frame):
             return
         win = tk.Toplevel(self)
         self._graph_win = win
-        win.title("Transitions — Graphs")
+        win.title("Transitions - Graphs")
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
         w, h = int(sw * 0.6), int(sh * 0.8)
         win.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
@@ -4215,7 +4215,7 @@ class TransitionsTab(ttk.Frame):
                            values=['SEM', '95% CI (bootstrap)'])
         _ec.pack(side='left'); _ec.bind('<<ComboboxSelected>>', lambda e: self._refresh_plot())
 
-        # Behavior picker (contextual — Behavior × Group only).
+        # Behavior picker (contextual - Behavior × Group only).
         self._trend_frame = ttk.Frame(bar)
         ttk.Label(self._trend_frame, text="Behavior:").pack(side='left', padx=(0, 2))
         self._behav_combo = ttk.Combobox(self._trend_frame, textvariable=self._behav_var,
@@ -4231,7 +4231,7 @@ class TransitionsTab(ttk.Frame):
         ttk.Label(self._window_frame, text="Window (min):").pack(side='left', padx=(0, 2))
         _wf = ttk.Entry(self._window_frame, textvariable=self._trend_tmin_var, width=5)
         _wf.pack(side='left'); _wf.bind('<Return>', lambda e: self._refresh_plot())
-        ttk.Label(self._window_frame, text="–").pack(side='left', padx=1)
+        ttk.Label(self._window_frame, text="-").pack(side='left', padx=1)
         _wt = ttk.Entry(self._window_frame, textvariable=self._trend_tmax_var, width=5)
         _wt.pack(side='left'); _wt.bind('<Return>', lambda e: self._refresh_plot())
         self._bin_label = ttk.Label(self._window_frame, text="Bin (s):")
@@ -4269,13 +4269,13 @@ class TransitionsTab(ttk.Frame):
 
         # Size the window so the widest per-view control bar is fully visible.
         # Measure each view's actual control set (not all frames at once, which
-        # over-counts) and take the max, then widen the window to fit — capped to
+        # over-counts) and take the max, then widen the window to fit - capped to
         # the screen. minsize stops it being dragged narrower than the controls.
         self._refresh_ref_groups()
         _saved_view = self._view_var.get()
         _max_bar = bar2.winfo_reqwidth()
         for _lbl in _VIEW_MENU:
-            if _lbl.startswith('—'):
+            if _lbl.startswith('-'):
                 continue
             self._view_var.set(_lbl)
             self._toggle_view_controls()
@@ -4485,17 +4485,17 @@ class TransitionsTab(ttk.Frame):
         n_groups = max(len(groups), 2)
         _test = self._effective_test(n_groups)
         test_desc = {
-            'kruskal': "the Kruskal–Wallis one-way analysis of variance by ranks "
+            'kruskal': "the Kruskal-Wallis one-way analysis of variance by ranks "
                        "(a nonparametric omnibus test across all groups)",
             'anova':   "a one-way analysis of variance (ANOVA)",
-            'mw':      f"two-sided Mann–Whitney U tests against the {ref} group "
+            'mw':      f"two-sided Mann-Whitney U tests against the {ref} group "
                        "(each other group vs. reference)",
             'welch':   f"Welch's unequal-variance t-tests against the {ref} group",
         }.get(_test, "a nonparametric test")
-        corr = {'BH-FDR': "the Benjamini–Hochberg false-discovery-rate (FDR) procedure",
+        corr = {'BH-FDR': "the Benjamini-Hochberg false-discovery-rate (FDR) procedure",
                 'Bonferroni': "the Bonferroni method",
                 'None': "no correction"}.get(
-                    self._stat_correction_var.get(), "the Benjamini–Hochberg procedure")
+                    self._stat_correction_var.get(), "the Benjamini-Hochberg procedure")
         err = ("the 95% confidence interval of the group mean, estimated by "
                "percentile bootstrap (1,000 resamples of animals)"
                if self._error_mode_var.get().startswith('95')
@@ -4565,7 +4565,7 @@ class TransitionsTab(ttk.Frame):
             "classifier's minimum-bout duration were discarded and inter-bout gaps "
             "shorter than its maximum-gap duration were bridged, suppressing spurious "
             "single-frame events. A single behavioural state was then assigned to every "
-            f"frame — {assign} — and frames lacking any active behaviour were labelled "
+            f"frame - {assign} - and frames lacking any active behaviour were labelled "
             f"'Other'. Residual state flicker was removed by merging any bout shorter "
             f"than {smooth} ms into the preceding state.{ds}{cap} All time-based "
             f"metrics were computed at an effective frame rate of {fps} fps. Animals "
@@ -4579,7 +4579,7 @@ class TransitionsTab(ttk.Frame):
     def _open_methods_dialog(self):
         view = self._view_var.get()
         dlg = tk.Toplevel(self._graph_win or self)
-        dlg.title(f"Methods — {view}")
+        dlg.title(f"Methods - {view}")
         dlg.transient(self._graph_win or self)
         try:
             dlg.geometry("720x580")
@@ -4792,7 +4792,7 @@ class TransitionsTab(ttk.Frame):
                    'cool', 'hot', 'copper']
 
     def _open_group_order_dialog(self):
-        """Reorder groups and set colors — Individual (per-group pick) or a dose
+        """Reorder groups and set colors - Individual (per-group pick) or a dose
         Gradient (colormap + direction + vehicle), with a live preview. Mirrors
         the Analysis tab's order/colors dialog."""
         from tkinter import colorchooser
@@ -4821,7 +4821,7 @@ class TransitionsTab(ttk.Frame):
         veh_var = tk.StringVar(value=_auto_veh)
 
         # ── Order (drag to reorder) ───────────────────────────────────────
-        top = ttk.LabelFrame(dlg, text="Order  (drag to reorder — top = first)", padding=6)
+        top = ttk.LabelFrame(dlg, text="Order  (drag to reorder - top = first)", padding=6)
         top.pack(fill='x', padx=8, pady=(8, 4))
         lb = tk.Listbox(top, height=min(8, len(order)), width=24,
                         selectmode='browse', exportselection=False)
@@ -4984,7 +4984,7 @@ class TransitionsTab(ttk.Frame):
         view = self._view_var.get()
         cur = self._axis_limits.get(view, {})
         dlg = tk.Toplevel(self._graph_win or self)
-        dlg.title(f"Axis limits — {view}")
+        dlg.title(f"Axis limits - {view}")
         dlg.transient(self._graph_win or self)
         dlg.grab_set()
         frm = ttk.Frame(dlg, padding=10)
@@ -5135,7 +5135,7 @@ class TransitionsTab(ttk.Frame):
             pass
 
     def _get_cmap(self):
-        """State colormap — delegates to the single-source _state_palette()."""
+        """State colormap - delegates to the single-source _state_palette()."""
         import matplotlib.colors as mcolors
         return mcolors.ListedColormap(self._state_palette())
 
@@ -5144,7 +5144,7 @@ class TransitionsTab(ttk.Frame):
         if not self._state_seqs:
             return
         # State sequences are sampled at the analysis fps (after any downsample),
-        # not the raw video fps — use it so the time axis is correct.
+        # not the raw video fps - use it so the time axis is correct.
         try:
             fps = float(self._effective_fps) or float(self._fps_var.get())
         except Exception:
@@ -5173,7 +5173,7 @@ class TransitionsTab(ttk.Frame):
         max_frames = max((len(s) for s in _wseqs.values()), default=1)
 
         # The ethogram is a raster. At the default bin (0 = Full) it renders at
-        # native fidelity — one column per frame, capped at 3000 columns for
+        # native fidelity - one column per frame, capped at 3000 columns for
         # display/speed. A non-zero ethogram bin coarsens it to that many seconds
         # per column. Either way each column is the majority (mode) state over its
         # span, so it is robust to single-frame flicker without discarding structure.
@@ -5229,7 +5229,7 @@ class TransitionsTab(ttk.Frame):
         ax.set_xlabel("Time (s)")
         ax.set_title("Ethogram")
 
-        # Legend — placed outside the image so it never covers data.
+        # Legend - placed outside the image so it never covers data.
         patches = [mpatches.Patch(color=cmap(i), label=self._state_name(s))
                    for i, s in enumerate(self._states)]
         ax.legend(handles=patches, loc='upper left', bbox_to_anchor=(1.01, 1),
@@ -5320,7 +5320,7 @@ class TransitionsTab(ttk.Frame):
         ax.axis('off')
 
     # ------------------------------------------------------------------
-    # Sequencing views — the manuscript's bout-level syntax analysis
+    # Sequencing views - the manuscript's bout-level syntax analysis
     # (pipeline/syntax_analysis.py; quasi-independence residuals, rarefied
     # pooled networks, PCoA + PERMANOVA), run on the same priority-resolved
     # state sequences every other view uses.
@@ -5342,7 +5342,7 @@ class TransitionsTab(ttk.Frame):
             pass
         group_of = {name: self._session_group(name) for name in seqs}
         if not any(group_of.values()):
-            return None, ("Load a key file so sessions carry groups —\n"
+            return None, ("Load a key file so sessions carry groups -\n"
                           "sequencing views compare groups.")
         named = [s for s in self._states if s != 0]      # unscored is closed over
         keep_idx = {sid: i for i, sid in enumerate(named)}
@@ -5560,7 +5560,7 @@ class TransitionsTab(ttk.Frame):
             ax.axis('off')
 
     # ------------------------------------------------------------------
-    # Statistics — nonparametric per-state/per-cell tests with FDR
+    # Statistics - nonparametric per-state/per-cell tests with FDR
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -5670,7 +5670,7 @@ class TransitionsTab(ttk.Frame):
             return 'mw'
         if t.startswith('Parametric') or t.startswith('Welch') or t.startswith('t-'):
             return 'anova' if n_groups >= 3 else 'welch'
-        # Auto: nonparametric — omnibus KW for ≥3 groups, else MW vs reference.
+        # Auto: nonparametric - omnibus KW for ≥3 groups, else MW vs reference.
         return 'kruskal' if n_groups >= 3 else 'mw'
 
     def _perstate_stats(self, values_by_group, reference=None):
@@ -5696,7 +5696,7 @@ class TransitionsTab(ttk.Frame):
                     raw[si] = kruskal(*valid).pvalue
                 elif et == 'anova':
                     raw[si] = f_oneway(*valid).pvalue
-                else:  # pairwise (mw/welch) vs reference — smallest p
+                else:  # pairwise (mw/welch) vs reference - smallest p
                     rmat = np.asarray(values_by_group.get(ref, np.empty((n_states, 0))), float)
                     rvec = rmat[si] if rmat.ndim == 2 and rmat.shape[1] else np.array([])
                     ps = [self._two_sample_p(values_by_group[g][si], rvec, et)
@@ -6009,7 +6009,7 @@ class TransitionsTab(ttk.Frame):
             ax.set_ylim(bottom=0)
             ax.grid(True, alpha=0.25)
 
-        # Shared legend — outside the last panel so it never covers the traces.
+        # Shared legend - outside the last panel so it never covers the traces.
         handles, labels = axes[0].get_legend_handles_labels()
         if handles:
             axes[-1].legend(handles, labels, fontsize=8, loc='upper left',
@@ -6018,7 +6018,7 @@ class TransitionsTab(ttk.Frame):
 
     def _temporal_probs_current(self):
         """Per-session (time_centers_s, prob[n_bins × n_states]) at the CURRENT bin
-        width — re-binned live from _state_seqs so the graph-window Bin control
+        width - re-binned live from _state_seqs so the graph-window Bin control
         updates instantly (no recompute). Falls back to the stored _temporal_probs."""
         seqs = getattr(self, '_state_seqs', None)
         if not seqs:
@@ -6116,7 +6116,7 @@ class TransitionsTab(ttk.Frame):
             ax.grid(True, alpha=0.25)
 
         if sel and sel != 'All behaviors (grid)':
-            # Single behavior — groups overlaid in one panel.
+            # Single behavior - groups overlaid in one panel.
             sid = next((s for s in behaviors if self._state_name(s) == sel),
                        behaviors[0] if behaviors else 0)
             ax = self._fig.add_subplot(111)
@@ -6128,7 +6128,7 @@ class TransitionsTab(ttk.Frame):
                       borderaxespad=0)
             return
 
-        # Grid — one panel per behavior.
+        # Grid - one panel per behavior.
         if not behaviors:
             ax = self._fig.add_subplot(111)
             ax.text(0.5, 0.5, "No named behaviors to show.",
@@ -6349,7 +6349,7 @@ class TransitionsTab(ttk.Frame):
 
             ax.legend(fontsize=8)
         else:
-            # No groups — show per-session bars
+            # No groups - show per-session bars
             sessions = sorted(self._occupancy.keys())
             n_s = len(sessions)
             width = 0.7 / max(n_s, 1)

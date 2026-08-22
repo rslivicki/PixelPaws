@@ -4,8 +4,8 @@ Shared test hygiene.
 
 Several test modules build real Tk widget trees (withdrawn roots) and destroy
 them at module teardown. ttkbootstrap keeps process-level state bound to the
-first root it themes — a ``Style`` singleton and a ``Publisher`` registry of
-every themed widget — so the *next* module's widgets explode with
+first root it themes - a ``Style`` singleton and a ``Publisher`` registry of
+every themed widget - so the *next* module's widgets explode with
 "application has been destroyed" unless that state is cleared between
 modules. This autouse fixture resets it after every test module.
 """

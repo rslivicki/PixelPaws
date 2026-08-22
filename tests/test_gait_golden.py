@@ -4,7 +4,7 @@
 The golden CSVs were captured from the OLD tab by
 scripts/capture_gait_golden.py (manuscript preset, 30-s bins).  These tests
 run the NEW headless gait_core on the same sessions/params and assert frame
-equality — plus, in the slow test, cache re-extraction equality.
+equality - plus, in the slow test, cache re-extraction equality.
 
 Run:  PYTHONIOENCODING=utf-8 python -m pytest tests/test_gait_golden.py -v
 Skip the slow re-extraction test with:  -m "not slow"
@@ -178,7 +178,7 @@ def test_extraction_regenerates_identical_caches(tmp_path):
         glob.glob(os.path.join(cache_dir, f'{name}_brt_*')) +
         glob.glob(os.path.join(cache_dir, f'{name}_contour_*')))
     cache_files = [p for p in cache_files if not p.endswith('.bak')]
-    assert cache_files, f"no warm caches for {name} — run the capture first"
+    assert cache_files, f"no warm caches for {name} - run the capture first"
 
     backups = {}
     try:

@@ -1,5 +1,5 @@
 """
-dialogs.py — Standalone UI windows and dialogs for PixelPaws
+dialogs.py - Standalone UI windows and dialogs for PixelPaws
 =============================================================
 Self-contained window classes extracted from PixelPaws_GUI.py:
   - Theme                        theme state + plot colours
@@ -63,7 +63,7 @@ except ImportError:
 
 from ui_utils import _bind_tight_layout_on_resize, FONT_FAMILY, ToolTip, METRICS_HELP
 class Theme:
-    """Theme management — delegates to ttkbootstrap when available, falls back to manual."""
+    """Theme management - delegates to ttkbootstrap when available, falls back to manual."""
 
     # Light themes map to ttkbootstrap theme names
     _LIGHT_THEME = 'journal'
@@ -577,17 +577,17 @@ class AutoLabelWindow:
     def run_predictions(self):
         """Run classifier and find uncertain frames.
 
-        DISABLED 2026-05-01 — this method's pre-existing implementation
+        DISABLED 2026-05-01 - this method's pre-existing implementation
         was a stub: it generated fake uncertainty scores via
         ``np.random.beta(2, 2)`` instead of running a real classifier.
         Anyone who labelled the surfaced "uncertain frames" was labelling
         random nonsense, with no warning. Use the Active Learning tab
-        instead — its query strategy is real.
+        instead - its query strategy is real.
         """
         messagebox.showwarning(
             "Auto-labeler not implemented",
             "This dialog's classifier-driven 'uncertain frame' picker "
-            "was a stub that generated random uncertainty scores — never "
+            "was a stub that generated random uncertainty scores - never "
             "wired to a real classifier.\n\n"
             "Use the Active Learning tab instead. It runs the actual "
             "classifier and queries genuinely uncertain frames.\n\n"
@@ -595,7 +595,7 @@ class AutoLabelWindow:
             "add classifier loading + predict_with_xgboost call here and "
             "remove the warning guard.)"
         )
-        # Refuse to populate self.probabilities with random data — that
+        # Refuse to populate self.probabilities with random data - that
         # is what corrupted the dataset previously.
         self.probabilities = None
         self.predictions = None
@@ -613,11 +613,11 @@ class AutoLabelWindow:
             # Add info overlay
             # Guard against the disabled run_predictions path (2026-05-01).
             # When run_predictions is the new no-op stub, probabilities and
-            # predictions are None — show the frame with a hint banner
+            # predictions are None - show the frame with a hint banner
             # instead of indexing into None and crashing into Tk's void.
             if self.probabilities is None or self.predictions is None:
                 cv2.putText(frame,
-                            "Auto-labeler disabled — use Active Learning tab",
+                            "Auto-labeler disabled - use Active Learning tab",
                             (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                             (0, 200, 255), 2)
                 # Reuse the same resize+display path as the normal branch.
@@ -732,7 +732,7 @@ class AutoLabelWindow:
     def export_labels(self):
         """Export corrected labels"""
         if self.probabilities is None or self.predictions is None:
-            # run_predictions was disabled in 2026-05-01 — refuse to
+            # run_predictions was disabled in 2026-05-01 - refuse to
             # export. Without classifier-driven uncertainty there's
             # nothing to fall back to here.
             messagebox.showwarning(
@@ -858,7 +858,7 @@ class SideBySidePreview:
             human_labels_subset = np.asarray(self.human_labels[:min_length], dtype=float)
             predictions_subset = np.asarray(self.predictions[:min_length])
 
-            # Unobserved frames are stored as NaN — score only the observed
+            # Unobserved frames are stored as NaN - score only the observed
             # (labeled) frames. Otherwise sklearn raises "y_true contains NaN".
             obs = ~np.isnan(human_labels_subset)
             n_obs = int(obs.sum())
@@ -1020,7 +1020,7 @@ class SideBySidePreview:
             self.play_btn.config(text="▶ Play")
             return
         
-        # Only seek if non-sequential (seeking is expensive — decodes from keyframe)
+        # Only seek if non-sequential (seeking is expensive - decodes from keyframe)
         if self.current_frame != self._last_read_frame + 1:
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
         ret, frame = self.cap.read()
@@ -1051,7 +1051,7 @@ class SideBySidePreview:
                 # Show human label comparison if available
                 if self.human_labels is not None and self.current_frame < len(self.human_labels):
                     _raw_label = self.human_labels[self.current_frame]
-                    # Unobserved frames are NaN — show as "Unobserved", don't score.
+                    # Unobserved frames are NaN - show as "Unobserved", don't score.
                     if _raw_label is None or (isinstance(_raw_label, float) and np.isnan(_raw_label)):
                         cv2.putText(frame_display, "Human: Unobserved", (20, 180),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2)
@@ -1104,7 +1104,7 @@ class SideBySidePreview:
             self.update_marker()
         
         if self.playing:
-            # Calculate frame step — skip frames when speed outpaces render rate
+            # Calculate frame step - skip frames when speed outpaces render rate
             target_delay = 1000 / (self.fps * self.playback_speed)
             MIN_DELAY = 15  # ms floor to keep UI responsive
             if target_delay >= MIN_DELAY:
@@ -1434,7 +1434,7 @@ class SideBySidePreview:
 
     # ---- Bout dropdowns (machine + human) -------------------------------
     def _bouts_from_array(self, arr):
-        """Return a list of inclusive (start, end) bouts — contiguous runs where value == 1.
+        """Return a list of inclusive (start, end) bouts - contiguous runs where value == 1.
         Robust to float arrays; anything not exactly 1 ends/never-starts a bout."""
         bouts = []
         start = None
@@ -1456,7 +1456,7 @@ class SideBySidePreview:
     def _format_bout(self, k, bout):
         start, end = bout
         secs = (end - start + 1) / max(float(self.fps or 0) or 1.0, 1e-6)
-        return f"Bout {k}: {start}–{end}  ({secs:.1f}s)"
+        return f"Bout {k}: {start}-{end}  ({secs:.1f}s)"
 
     def _populate_bout_dropdowns(self):
         """Fill the machine (and, if present, human) bout comboboxes."""
@@ -1475,7 +1475,7 @@ class SideBySidePreview:
             self._human_bout_label.config(text=f"Human bouts ({len(self._human_bouts)}):")
 
     def _seek_to(self, frame):
-        """Move the video (and graph, if open) to a given frame — the standard nav path."""
+        """Move the video (and graph, if open) to a given frame - the standard nav path."""
         self.current_frame = int(frame)
         self.update_frame()
         self.update_graph_window()
@@ -1839,7 +1839,7 @@ class DataQualityChecker:
                                 self.add_issue(
                                     "WARNING", session_name,
                                     f"'{col}': {single_frame} bout(s) ≤2 frames "
-                                    f"({pct:.0f}% of bouts) — possible accidental labels")
+                                    f"({pct:.0f}% of bouts) - possible accidental labels")
                             
                             # Try to get FPS for duration check
                             try:
@@ -1854,7 +1854,7 @@ class DataQualityChecker:
                                 self.add_issue(
                                     "WARNING", session_name,
                                     f"'{col}': {long_bouts} bout(s) >30 s "
-                                    f"— possible missed label-off click")
+                                    f"- possible missed label-off click")
                 
                 except Exception as e:
                     self.add_issue("ERROR", session_name, f"Could not read labels: {e}")
@@ -2163,7 +2163,7 @@ class ConfidenceHistogramDialog:
         self.root = parent_root
 
         self.win = tk.Toplevel(parent_root)
-        self.win.title("Confidence Histogram — Select Threshold")
+        self.win.title("Confidence Histogram - Select Threshold")
         _sw, _sh = self.win.winfo_screenwidth(), self.win.winfo_screenheight()
         self.win.geometry(f"750x600+{(_sw-750)//2}+{(_sh-600)//2}")
         self.win.grab_set()
@@ -2183,7 +2183,7 @@ class ConfidenceHistogramDialog:
             self._canvas.get_tk_widget().pack(fill='both', expand=True, padx=8, pady=(8, 4))
             _bind_tight_layout_on_resize(self._canvas, self._fig)
         else:
-            ttk.Label(self.win, text="(matplotlib not available — install it to see histogram)").pack(pady=20)
+            ttk.Label(self.win, text="(matplotlib not available - install it to see histogram)").pack(pady=20)
 
         # Threshold slider
         ctrl = ttk.Frame(self.win)

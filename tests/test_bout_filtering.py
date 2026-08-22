@@ -1,7 +1,7 @@
 """Regression tests for evaluation_tab._apply_bout_filtering.
 
 Pre-2026-05-01 the function accepted ``min_after_bout`` but never used
-it — silently no-op. These tests pin the corrected semantic so the
+it - silently no-op. These tests pin the corrected semantic so the
 regression can't reappear.
 """
 
@@ -46,7 +46,7 @@ def test_min_after_bout_is_actually_applied():
 
 
 def test_min_after_bout_zero_is_noop():
-    # When min_after_bout=0, the new pass is a no-op — verify other
+    # When min_after_bout=0, the new pass is a no-op - verify other
     # post-2026-05-01 behaviour matches pre-fix outputs for that branch.
     y = _arr('11100111')
     out = _apply_bout_filtering(y, min_bout=1, min_after_bout=0, max_gap=0)

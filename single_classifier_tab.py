@@ -1,4 +1,4 @@
-"""Single-Classifier Analysis — rebuilt tab (streamlined, shared-style).
+"""Single-Classifier Analysis - rebuilt tab (streamlined, shared-style).
 
 Ground-up rebuild of the original analysis_tab on the app's standard
 architecture: left rail (Data / Options / Statistics / collapsed Advanced /
@@ -104,7 +104,7 @@ class SingleClassifierTab(ttk.Frame):
         df_ = ttk.LabelFrame(left, text="Data")
         df_.pack(fill="x", pady=(0, 6))
 
-        # Key file first, then Sessions — same order on every analysis tab.
+        # Key file first, then Sessions - same order on every analysis tab.
         krow = ttk.Frame(df_)
         krow.pack(fill="x", padx=6, pady=(6, 1))
         ttk.Label(krow, text="Key file:").pack(side="left")
@@ -133,7 +133,7 @@ class SingleClassifierTab(ttk.Frame):
         sess_row.pack(fill="x", padx=6, pady=(4, 1))
         self._session_filter = SessionFilter(
             sess_row, on_change=lambda: self._scan_status.set(
-                "Session selection changed — press ▶ Run analysis."))
+                "Session selection changed - press ▶ Run analysis."))
         self._session_filter.pack(side="left", fill="x", expand=True)
         _T(ttk.Button(sess_row, text="Rescan", width=7,
                       command=lambda: self.scan_project_folder()),
@@ -288,7 +288,7 @@ class SingleClassifierTab(ttk.Frame):
             ttk.Label(r, text=lab, width=8).pack(side="left")
             ttk.Spinbox(r, textvariable=v1, from_=0, to=240,
                         width=5).pack(side="left")
-            ttk.Label(r, text="–").pack(side="left")
+            ttk.Label(r, text="-").pack(side="left")
             ttk.Spinbox(r, textvariable=v2, from_=0, to=240,
                         width=5).pack(side="left")
         self.enable_phase_analysis = tk.BooleanVar(value=False)
@@ -316,8 +316,11 @@ class SingleClassifierTab(ttk.Frame):
            "Full results table + a .meta.json sidecar recording the exact "
            "inputs and settings (incl. git version)."
            ).pack(side="left", fill="x", expand=True)
+        _T(ttk.Button(erow, text="View CSV…", command=self._export_view_csv),
+           "Just the data behind the graph currently shown."
+           ).pack(side="left", fill="x", expand=True, padx=(6, 0))
         _T(ttk.Button(erow, text="Export figure…", command=self._export_fig),
-           "Save the current graph as PNG, SVG, or PDF."
+           "Save the current graph as PNG, SVG, or PDF (300 dpi)."
            ).pack(side="left", fill="x", expand=True, padx=(6, 0))
 
         # ---------------- right pane: topbar + canvas ----------------
@@ -440,7 +443,7 @@ class SingleClassifierTab(ttk.Frame):
             f"{os.path.basename(folder)}: {len(pred_folders)} "
             f"prediction folder(s), {n} file(s), "
             f"{len(self._behaviors)} behavior(s)."
-            if n else f"{os.path.basename(folder)}: no prediction files — "
+            if n else f"{os.path.basename(folder)}: no prediction files - "
                       "run classifiers first.")
         self._dash_subjects_overview()
         # Predictions + key already on disk -> analyze automatically so the
@@ -587,7 +590,7 @@ class SingleClassifierTab(ttk.Frame):
         tree.column("subject", width=220)
         tree.column("group", width=140)
         for s, g in self._subjects_rows:
-            tree.insert("", "end", values=(s, g or "— unmatched —"))
+            tree.insert("", "end", values=(s, g or "- unmatched -"))
         tree.pack(fill="both", expand=True, padx=8, pady=8)
 
     def _apply_preset(self, _evt=None):
@@ -670,7 +673,7 @@ class SingleClassifierTab(ttk.Frame):
                 if self._files:
                     messagebox.showwarning(
                         "No sessions included",
-                        "Every session is excluded — open the Sessions "
+                        "Every session is excluded - open the Sessions "
                         "picker and tick at least one.", parent=self)
                 else:
                     messagebox.showwarning("No predictions",
@@ -905,7 +908,7 @@ class SingleClassifierTab(ttk.Frame):
         ax.set_ylabel(ylabel + elab, fontsize=9)
         if opts.get("show_titles", True):
             b = self._behavior_var.get()
-            ax.set_title(f"{b} — {title}" if b else title, fontsize=11)
+            ax.set_title(f"{b} - {title}" if b else title, fontsize=11)
         for sp in ("top", "right"):
             ax.spines[sp].set_visible(False)
         # per-bin significance markers
@@ -1027,7 +1030,7 @@ class SingleClassifierTab(ttk.Frame):
         ax = self._fig.add_subplot(111)
         b = self._behavior_var.get()
         self._bar_points(ax, self._per_subject(df, col, agg), lab,
-                         f"{b} — {lab}" if b else lab)
+                         f"{b} - {lab}" if b else lab)
 
     def _draw_latency(self, df):
         ax = self._fig.add_subplot(111)
@@ -1046,7 +1049,7 @@ class SingleClassifierTab(ttk.Frame):
                for g in self._groups(df)}
         b = self._behavior_var.get()
         self._bar_points(ax, per, "Latency to first bout (min)",
-                         f"{b} — Latency" if b else "Latency")
+                         f"{b} - Latency" if b else "Latency")
 
     def _draw_bouts(self, df):
         import plot_style
@@ -1087,7 +1090,7 @@ class SingleClassifierTab(ttk.Frame):
         df = self._df(include_phase=True)
         pdf = df[df["Bin_Index"] < 0]
         if pdf.empty:
-            raise ValueError("no phase rows — enable the Formalin preset "
+            raise ValueError("no phase rows - enable the Formalin preset "
                              "and re-run")
         ax1, ax2 = self._fig.subplots(1, 2)
         for ax, idx, lab in ((ax1, -1, "Acute phase"),
@@ -1138,7 +1141,7 @@ class SingleClassifierTab(ttk.Frame):
                       f"{unit} bin)", fontsize=9)
         ax.legend(frameon=False, fontsize=8)
         if opts.get("show_titles", True):
-            ax.set_title(f"{b} — Mean timecourse (1 Hz per-frame)",
+            ax.set_title(f"{b} - Mean timecourse (1 Hz per-frame)",
                          fontsize=11)
         for sp in ("top", "right"):
             ax.spines[sp].set_visible(False)
@@ -1183,7 +1186,7 @@ class SingleClassifierTab(ttk.Frame):
         cb.ax.tick_params(labelsize=7)
         if opts.get("show_titles", True):
             b = self._behavior_var.get()
-            ax.set_title(f"{b} — {what} per subject", fontsize=11)
+            ax.set_title(f"{b} - {what} per subject", fontsize=11)
 
     def _draw_heatmap_time(self, df):
         self._draw_heatmap(df, "Total_Time_s", "Time in behavior (s)")
@@ -1229,7 +1232,7 @@ class SingleClassifierTab(ttk.Frame):
         b = self._behavior_var.get()
         per = self._per_subject(df, col, agg)
         groups = [g for g in per if len(per[g])]
-        lines = [f"{b} — {lab}", "=" * 40, ""]
+        lines = [f"{b} - {lab}", "=" * 40, ""]
         rows_by_g = {g: per[g].reshape(-1, 1) for g in groups}
         lines.append(plot_style.stats_table(
             f"Per-subject {lab} ({agg} across bins)", [lab], rows_by_g,
@@ -1254,7 +1257,7 @@ class SingleClassifierTab(ttk.Frame):
                         f"p={row['p_corrected']:.4g}"
                         f"{'  *' if row['significant'] else ''}")
             elif len(groups) > 2:
-                lines.append(f"Pairwise comparisons omitted — omnibus not "
+                lines.append(f"Pairwise comparisons omitted - omnibus not "
                              f"significant at α={alpha:g} (protected "
                              f"testing).")
         else:
@@ -1301,7 +1304,7 @@ class SingleClassifierTab(ttk.Frame):
         view = self._view.get()
         cur = self._axis_overrides.get(view, (None, None))
         win = tk.Toplevel(self)
-        win.title(f"Axis — {dict(self._VIEW_LABELS).get(view, view)}")
+        win.title(f"Axis - {dict(self._VIEW_LABELS).get(view, view)}")
         win.transient(self.winfo_toplevel())
         frm = ttk.Frame(win, padding=10)
         frm.pack()
@@ -1328,6 +1331,81 @@ class SingleClassifierTab(ttk.Frame):
         ttk.Button(frm, text="Apply", command=_apply).grid(
             row=2, column=0, columnspan=2, pady=(8, 0), sticky="ew")
         win.grab_set()
+
+    def _view_dataframe(self):
+        """(DataFrame, stem) behind the current graph, for CSV export."""
+        if self.results_df is None or self.results_df.empty:
+            raise ValueError("Run an analysis first.")
+        b = self._behavior_var.get()
+        df = self.results_df[self.results_df["Behavior"] == b].copy()
+        if df.empty:
+            raise ValueError(f"no rows for behavior {b!r}")
+        view = self._view.get()
+        col, agg, _lab = self._metric()
+        binned = df[df["Bin_Index"] >= 0]
+        base_cols = [c for c in ("Subject", "Treatment", "Bin_Index",
+                                 "Bin_Start_Min", "Bin_End_Min")
+                     if c in df.columns]
+        if view in ("timecourse", "traces"):
+            return (binned[base_cols + [col]]
+                    .sort_values(["Treatment", "Subject", "Bin_Index"]),
+                    f"{b}_{view}_{col}")
+        if view in ("cumulative", "cumulative_bouts"):
+            vcol = "Total_Time_s" if view == "cumulative" else "N_Bouts"
+            out = binned[base_cols + [vcol]].sort_values(
+                ["Treatment", "Subject", "Bin_Index"]).copy()
+            out[f"Cumulative_{vcol}"] = out.groupby("Subject")[vcol].cumsum()
+            return out, f"{b}_{view}"
+        if view in ("heatmap_time", "heatmap_bouts"):
+            vcol = "Total_Time_s" if view == "heatmap_time" else "N_Bouts"
+            wide = binned.pivot_table(index=["Treatment", "Subject"],
+                                      columns="Bin_Start_Min", values=vcol,
+                                      aggfunc="sum").reset_index()
+            return wide, f"{b}_{view}"
+        if view == "phase":
+            ph = df[df["Bin_Index"] < 0]
+            if ph.empty:
+                raise ValueError("no phase rows (use the Formalin preset)")
+            return (ph.sort_values(["Treatment", "Subject", "Bin_Index"]),
+                    f"{b}_phase")
+        if view == "latency":
+            lat = (df.groupby(["Subject", "Treatment"])["Latency_s"]
+                   .first().reset_index())
+            return lat, f"{b}_latency"
+        if view == "bouts":
+            per = (binned.groupby(["Subject", "Treatment"])
+                   .agg(N_Bouts=("N_Bouts", "sum"),
+                        Mean_Bout_Duration_s=("Mean_Bout_Duration_s",
+                                              "mean"))
+                   .reset_index())
+            return per, f"{b}_bouts"
+        if view == "mean_timecourse":
+            rows = []
+            for (subj, trt, beh), arr in self.perframe_data.items():
+                if beh != b:
+                    continue
+                for t, v in enumerate(arr):
+                    rows.append({"Subject": subj, "Treatment": trt,
+                                 "Time_s": t, "Value": v})
+            if not rows:
+                raise ValueError("no per-frame data for this behavior")
+            return pd.DataFrame(rows), f"{b}_mean_timecourse_1hz"
+        # total_time (default): per-subject aggregated metric
+        per = (binned.groupby(["Subject", "Treatment"])[col]
+               .agg(agg).reset_index())
+        return per, f"{b}_{view}_{col}"
+
+    def _export_view_csv(self):
+        try:
+            df, stem = self._view_dataframe()
+        except Exception as e:
+            messagebox.showinfo("Nothing to export", str(e), parent=self)
+            return
+        p = filedialog.asksaveasfilename(
+            defaultextension=".csv", initialfile=f"{stem}.csv",
+            filetypes=[("CSV", "*.csv")])
+        if p:
+            df.to_csv(p, index=False)
 
     def _export_master(self):
         if self.results_df is None or self.results_df.empty:

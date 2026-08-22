@@ -1,4 +1,4 @@
-"""plot_style.py — shared, per-project group colors for the analysis tabs.
+"""plot_style.py - shared, per-project group colors for the analysis tabs.
 
 The Multi-Classifier, Sequencing, and Locomotion tabs all color by Treatment
 group. Custom colors are stored in ``PixelPaws_project.json`` under
@@ -19,6 +19,16 @@ import tkinter as tk
 from tkinter import ttk, colorchooser
 
 import numpy as np
+
+# Every figure save defaults to publication resolution - this also covers
+# the embedded matplotlib toolbar's save button, which otherwise writes at
+# the on-screen figure dpi (~100).
+try:
+    import matplotlib
+    matplotlib.rcParams['savefig.dpi'] = 300
+    matplotlib.rcParams['savefig.bbox'] = 'tight'
+except Exception:  # pragma: no cover
+    pass
 
 DEFAULT_CYCLE = ["#8D99AE", "#CC79A7", "#3b528b", "#21918c",
                  "#f59f00", "#2f9e44"]
@@ -57,7 +67,7 @@ def _read_stored(project_folder):
 
 
 def get_colors(project_folder, groups):
-    """{group: hex} for the given ordered group list — stored colors first,
+    """{group: hex} for the given ordered group list - stored colors first,
     default cycle by position for the rest."""
     stored = _read_stored(project_folder)
     out = {}
@@ -123,7 +133,7 @@ def open_color_dialog(parent, project_folder, groups, on_apply=None):
         from tkinter import messagebox
         messagebox.showinfo(
             "No groups",
-            "Load a key file first — colors are assigned per Treatment group.",
+            "Load a key file first - colors are assigned per Treatment group.",
             parent=parent)
         return
 
@@ -192,7 +202,7 @@ def open_color_dialog(parent, project_folder, groups, on_apply=None):
 
     def _open_quick_pick(g):
         pop = tk.Toplevel(win)
-        pop.title(f"Color — {g}")
+        pop.title(f"Color - {g}")
         pop.transient(win)
         pop.resizable(False, False)
         pf = ttk.Frame(pop, padding=10)
@@ -307,7 +317,7 @@ def open_color_dialog(parent, project_folder, groups, on_apply=None):
 
 
 # --------------------------------------------------------------------------- #
-# Plot options (error bars, lines, markers, frame) — shared across the tabs
+# Plot options (error bars, lines, markers, frame) - shared across the tabs
 # --------------------------------------------------------------------------- #
 
 LINE_STYLE_NAMES = ["solid", "dashed", "dotted", "dashdot"]
@@ -492,7 +502,7 @@ def fmt_mean_err(values, opts):
     v = np.asarray(values, float)
     v = v[np.isfinite(v)]
     if not len(v):
-        return "—"
+        return "-"
     m = float(np.mean(v))
     e = calc_error(v, opts.get("error_type", "SEM"))
     return f"{m:.3g} ± {e:.3g} (n={len(v)})"
@@ -533,7 +543,7 @@ def stats_table(title, row_labels, rows_by_group, opts, test_fn=None,
                     mark = ""
                 row += f"{name + ' p=' + format(pv, '.3g') + (' ' + mark if mark else ''):>16}"
             else:
-                row += f"{'—':>16}"
+                row += f"{'-':>16}"
         lines.append(row)
     if unit:
         lines += ["", f"values: {unit}; error: "

@@ -6,14 +6,14 @@ architecture:
 
   • Compute lives in headless ``gait_core`` (golden-tested equal to the old
     tab; ONE metrics implementation shared by the analyze and Adjust-Contact
-    paths, so the old recompute drift — missing licking/4-paw masks — is dead
+    paths, so the old recompute drift - missing licking/4-paw masks - is dead
     by construction).
   • Graphs live in ``gait_views`` (the old graph window's full reachable
     surface as a registry) and render INTO the right pane behind two
     dropdowns: Category → Graph, with the shared 🎨⚙ style dialog and a
     Σ Stats flip.
   • The left rail reads: Data (key file, then the Sessions picker) →
-    Quick Setup (preset with Run/Cancel beside it and the readiness strip —
+    Quick Setup (preset with Run/Cancel beside it and the readiness strip -
     the single source of truth; the old 'video_path'/'video' mismatch is
     fixed) → Setup → Detection → ▸ Advanced (collapsed) → Results & Export.
 
@@ -95,12 +95,12 @@ class GaitLimbTabV2(ttk.Frame):
     }
     ROLE_DEFAULTS = {'HL': 'hlpaw', 'HR': 'hrpaw', 'FL': 'flpaw', 'FR': 'frpaw'}
 
-    # Quick-setup presets — each maps to the interdependent toggle vars so the
+    # Quick-setup presets - each maps to the interdependent toggle vars so the
     # user never has to know that contour needs brightness needs video. Applied
     # only when the user picks one; the on-load defaults (set in __init__) are
     # left untouched. Keys are shown in the "Quick setup" combobox in order.
     GAIT_PRESETS = {
-        # Default profile — the manuscript's deployed paw-contact gate, as used for the
+        # Default profile - the manuscript's deployed paw-contact gate, as used for the
         # formalin/oxycodone dose analyses: contour ROI 50 half-size (100x100 px box),
         # Otsu per ROI per frame, contour-area band 1,500-5,000 px^2 on both hind paws,
         # licking excluded, 5-min bins. The DLC-likelihood frame filter is OFF: its
@@ -294,7 +294,7 @@ class GaitLimbTabV2(ttk.Frame):
         self._cancel_btn.pack(side='left', padx=2)
         self._tip(self._cancel_btn, "Cancel the running analysis.")
 
-        # Readiness strip — always shows the next actionable step.
+        # Readiness strip - always shows the next actionable step.
         self._readiness_lbl = ttk.Label(
             lf, text='', foreground='grey', wraplength=380,
             justify='left', font=(FONT_FAMILY, 8))
@@ -318,7 +318,7 @@ class GaitLimbTabV2(ttk.Frame):
         lf = ttk.LabelFrame(parent, text="Data", padding=6)
         lf.pack(fill='x', padx=4, pady=4)
 
-        # Key file first — same order as the other analysis tabs.
+        # Key file first - same order as the other analysis tabs.
         kf_row = ttk.Frame(lf)
         kf_row.pack(fill='x', pady=2)
         ttk.Label(kf_row, text="Key file:", width=8).pack(side='left')
@@ -347,7 +347,7 @@ class GaitLimbTabV2(ttk.Frame):
                                          justify='left')
         self._key_status_lbl.pack(anchor='w', pady=(0, 4))
 
-        # Sessions — same dropdown-table picker as the other tabs
+        # Sessions - same dropdown-table picker as the other tabs
         # (opens the session table with Subject / Video / Cache columns).
         sess_row = ttk.Frame(lf)
         sess_row.pack(fill='x', pady=2)
@@ -565,7 +565,7 @@ class GaitLimbTabV2(ttk.Frame):
             row=0, column=2, sticky='w', padx=(4, 0))
         self._tip(cd_lf,
                   "Contour area (recommended): hind-paw contour area above the px^2\n"
-                  "band (both hind paws gated together) — the manuscript contact gate.\n"
+                  "band (both hind paws gated together) - the manuscript contact gate.\n"
                   "Height: paw height below threshold (original).\n"
                   "Speed: paw speed below threshold (Kumar Lab 2022).\n"
                   "Combined: both must agree (logical AND).")
@@ -604,7 +604,7 @@ class GaitLimbTabV2(ttk.Frame):
         _cat_sb = ttk.Spinbox(_cat_row, from_=0, to=100000,
                               textvariable=self._contour_area_thresh_var, width=7)
         _cat_sb.pack(side='left')
-        ttk.Label(_cat_row, text="–").pack(side='left', padx=2)
+        ttk.Label(_cat_row, text="-").pack(side='left', padx=2)
         _cat_max_sb = ttk.Spinbox(_cat_row, from_=0, to=100000,
                                   textvariable=self._contour_area_max_var, width=7)
         _cat_max_sb.pack(side='left')
@@ -632,7 +632,7 @@ class GaitLimbTabV2(ttk.Frame):
              "Paw height (px) below which a frame is counted as ground contact.\n\n"
              "Height = rolling_max(paw_y, window=height_window) − current_paw_y.\n"
              "It measures how far the paw has risen above the estimated floor level.\n\n"
-             "Typical: 5–30 px.  Too low → very few contact frames.  "
+             "Typical: 5-30 px.  Too low → very few contact frames.  "
              "Too high → stance inflated by swing phase."),
             ("Height window (frames):", self._height_window_var, 1, 10000,
              "Rolling-max window for floor estimation. Larger = more stable."),
@@ -749,14 +749,14 @@ class GaitLimbTabV2(ttk.Frame):
 
         bw_row = ttk.Frame(brt_lf)
         bw_row.grid(row=len(brt_rows) + 3, column=0, columnspan=2, sticky='w', pady=2)
-        bw_lbl = ttk.Label(bw_row, text="Brightness weight (0–1):")
+        bw_lbl = ttk.Label(bw_row, text="Brightness weight (0-1):")
         bw_lbl.pack(side='left')
         bw_sb  = ttk.Spinbox(bw_row, from_=0.0, to=1.0, increment=0.05,
                               textvariable=self._brt_weight_var, width=6, format='%.2f')
         bw_sb.pack(side='left', padx=4)
         _bw_tip = ("Weight given to ROI brightness when determining contact frames.\n\n"
                    "0 = height only (default).  1 = brightness only.\n"
-                   "0.3–0.5 recommended for glass-floor / transilluminated setups.\n"
+                   "0.3-0.5 recommended for glass-floor / transilluminated setups.\n"
                    "Requires 'Brightness-weighted (needs video)' to be enabled.")
         self._tip(bw_lbl, _bw_tip)
         self._tip(bw_sb,  _bw_tip)
@@ -799,10 +799,10 @@ class GaitLimbTabV2(ttk.Frame):
                   "during stationary, grooming, or rearing episodes.\n\n"
                   "The right value depends on your camera resolution and arena size.\n"
                   "Typical ranges (assuming ~640 px across a 30 cm arena):\n"
-                  "  5 px/s  ≈ 2 mm/s — very permissive, barely filters anything\n"
-                  "  20 px/s ≈ 9 mm/s — excludes grooming/resting, keeps walking\n"
-                  "  50 px/s ≈ 23 mm/s — only fast locomotion\n\n"
-                  "Tip: run once, check the 'Time Moving %' metric — if it's >90%\n"
+                  "  5 px/s  ≈ 2 mm/s - very permissive, barely filters anything\n"
+                  "  20 px/s ≈ 9 mm/s - excludes grooming/resting, keeps walking\n"
+                  "  50 px/s ≈ 23 mm/s - only fast locomotion\n\n"
+                  "Tip: run once, check the 'Time Moving %' metric - if it's >90%\n"
                   "the threshold is probably too low.")
         ttk.Button(loco_lf, text="Preview locomotion\u2026",
                    command=self._open_locomotion_preview).pack(anchor='w', pady=(4, 0))
@@ -890,18 +890,18 @@ class GaitLimbTabV2(ttk.Frame):
                                    wraplength=900, justify='left')
         self._desc_lbl.pack(fill='x', padx=10, pady=(0, 2))
 
-        # Run outcome (N analyzed / M skipped) — set by _on_analysis_complete
+        # Run outcome (N analyzed / M skipped) - set by _on_analysis_complete
         self._outcome_lbl = ttk.Label(parent, text='', font=(FONT_FAMILY, 9))
         self._outcome_lbl.pack(fill='x', padx=10, pady=(0, 2))
 
-        # Bottom: per-session table + run summary (collapsed by default —
+        # Bottom: per-session table + run summary (collapsed by default -
         # packed before the graph container so it keeps the bottom slot).
         bottom = collapsible(parent, "Session table",
                              collapsed=True, side='bottom', fill='x',
                              padx=6, pady=(0, 6))
         self._build_session_table(bottom)
 
-        # Graph container — gait_views renders the selected entry in here.
+        # Graph container - gait_views renders the selected entry in here.
         self._graph_container = ttk.Frame(parent)
         self._graph_container.pack(fill='both', expand=True, padx=6, pady=2)
         self._placeholder_lbl = ttk.Label(
@@ -931,10 +931,10 @@ class GaitLimbTabV2(ttk.Frame):
         self._adjust_contact_btn.pack(side='left', padx=2)
         Tip(self._adjust_contact_btn,
             "Re-compute contact masks with new parameters from the stored\n"
-            "run — no video re-extraction. Uses the same metrics code as\n"
+            "run - no video re-extraction. Uses the same metrics code as\n"
             "the analysis itself.")
 
-        # Saved sessions — pick a previous run and reload it (no re-analysis).
+        # Saved sessions - pick a previous run and reload it (no re-analysis).
         saved_row = ttk.Frame(lf)
         saved_row.pack(fill='x', pady=(0, 2))
         ttk.Label(saved_row, text="Saved:").pack(side='left')
@@ -1026,11 +1026,11 @@ class GaitLimbTabV2(ttk.Frame):
             'hr_c':   'Contact %\nFrames paw in stance (hind right).',
             'fl_c':   'Contact %\nFrames paw in stance (fore left).',
             'fr_c':   'Contact %\nFrames paw in stance (fore right).',
-            'stance_h': 'Mean stance duration (s) — hind left.',
-            'stance_r': 'Mean stance duration (s) — hind right.',
-            'duty_h':   'Duty cycle (%) — stance / stride × 100 — hind left.',
-            'duty_r':   'Duty cycle (%) — stance / stride × 100 — hind right.',
-            'stride_l': 'Mean stride length (px) — hind left.',
+            'stance_h': 'Mean stance duration (s) - hind left.',
+            'stance_r': 'Mean stance duration (s) - hind right.',
+            'duty_h':   'Duty cycle (%) - stance / stride × 100 - hind left.',
+            'duty_r':   'Duty cycle (%) - stance / stride × 100 - hind right.',
+            'stride_l': 'Mean stride length (px) - hind left.',
         }
         _RES_COLS = ('session', 'subject', 'treatment',
                      'wbi_h', 'si_h', 'wbi_f', 'si_f', 'brt',
@@ -1174,8 +1174,10 @@ class GaitLimbTabV2(ttk.Frame):
                              for g in order},
             'marker_shapes': {g: gd.get('marker_shapes', {}).get(g, 'o')
                               for g in order},
-            'marker_fills': {g: gd.get('marker_fills', {}).get(g, True)
-                             for g in order},
+            # builders expect matplotlib fillstyle strings, not booleans
+            'marker_fills': {g: ('full' if gd.get('marker_fills', {})
+                                 .get(g, True) in (True, 'full', 1)
+                                 else 'none') for g in order},
             'marker_edge_colors': {g: gd.get('marker_edge_colors', {}).get(g)
                                    for g in order},
             'opacities': {g: gd.get('opacities', {}).get(g, 1.0)
@@ -1326,7 +1328,9 @@ class GaitLimbTabV2(ttk.Frame):
             sv = tk.StringVar(value=cfg['marker_shapes'].get(t, 'o'))
             ttk.Combobox(mk_lf, textvariable=sv, values=shapes, width=3,
                          state='readonly').grid(row=r, column=1, padx=3)
-            fv = tk.BooleanVar(value=bool(cfg['marker_fills'].get(t, True)))
+            fv = tk.BooleanVar(
+                value=gd.get('marker_fills', {}).get(t, True)
+                in (True, 'full', 1))
             ttk.Checkbutton(mk_lf, text="filled", variable=fv).grid(
                 row=r, column=2, padx=3)
             ov = tk.DoubleVar(value=float(cfg['opacities'].get(t, 1.0)))
@@ -1354,7 +1358,7 @@ class GaitLimbTabV2(ttk.Frame):
             tc_lf, text="Show Full-Stance contour categories",
             variable=fs_var)
         _fs_chk.grid(row=2, column=0, columnspan=2, sticky='w', pady=(4, 0))
-        Tip(_fs_chk, "Adds the Paw Contour — Full Stance categories\n"
+        Tip(_fs_chk, "Adds the Paw Contour - Full Stance categories\n"
                      "(contour metrics restricted to 4-paw stance frames).")
 
         def _apply():
@@ -1430,11 +1434,11 @@ class GaitLimbTabV2(ttk.Frame):
 
     def _session_cache_status(self, session_name, folder=None):
         """Report which extraction caches exist for a session: 'brt+contour',
-        'brt', 'contour', or '—'. Checks both the current and legacy cache dirs."""
+        'brt', 'contour', or '-'. Checks both the current and legacy cache dirs."""
         folder = folder or self._override_folder_var.get() or \
             self.app.current_project_folder.get()
         if not folder:
-            return '—'
+            return '-'
         import glob as _glob
         has_brt = has_ctr = False
         for _d in ('gait_limb_analysis', 'weight_bearing_analysis'):
@@ -1451,7 +1455,7 @@ class GaitLimbTabV2(ttk.Frame):
             return 'contour'
         if has_brt:
             return 'brt'
-        return '—'
+        return '-'
 
     def _auto_populate_bodyparts(self, h5_path: str):
         """Detect body parts from a DLC h5 file and fill paw comboboxes."""
@@ -1476,7 +1480,7 @@ class GaitLimbTabV2(ttk.Frame):
                 self._auto_populate_bodyparts(sess['dlc'])
                 self._log_ui(f"Detected {len(self._bodyparts)} body parts")
                 return
-        messagebox.showinfo("No sessions", "No sessions found — press Rescan in the Data section.", parent=self)
+        messagebox.showinfo("No sessions", "No sessions found - press Rescan in the Data section.", parent=self)
 
     # ═══════════════════════════════════════════════════════════════════════
     # Licking-frame exclusion (behavior predictions on disk)
@@ -1501,7 +1505,7 @@ class GaitLimbTabV2(ttk.Frame):
                        for sn in sessions)
 
         # Preferred: immediate behavior subfolders (results/{behavior}/…) that
-        # actually hold prediction files — this is the canonical batch layout.
+        # actually hold prediction files - this is the canonical batch layout.
         for entry in os.listdir(results):
             p = os.path.join(results, entry)
             if not os.path.isdir(p) or entry.lower() == 'per_frame':
@@ -1572,7 +1576,7 @@ class GaitLimbTabV2(ttk.Frame):
         self._lick_thr_spin.config(state='normal' if on else 'disabled')
         if not self._lick_behaviors:
             self._lick_hint_lbl.config(
-                text="No behavior predictions found — run classifiers first to "
+                text="No behavior predictions found - run classifiers first to "
                      "enable licking exclusion.")
         elif on:
             self._lick_hint_lbl.config(
@@ -1606,7 +1610,7 @@ class GaitLimbTabV2(ttk.Frame):
             from project_setup import KeyFileGeneratorDialog
         except ImportError:
             messagebox.showerror("Unavailable",
-                                 "project_setup.py not found — cannot open key file generator.",
+                                 "project_setup.py not found - cannot open key file generator.",
                                  parent=self)
             return
 
@@ -1743,7 +1747,7 @@ class GaitLimbTabV2(ttk.Frame):
         self._use_brightness_var.set(bool(preset['brightness']))
         self._paw_contour_var.set(bool(preset['contour']))
         self._use_fore_var.set(bool(preset['fore']))
-        # Optional richer-preset knobs — applied only when the preset carries them,
+        # Optional richer-preset knobs - applied only when the preset carries them,
         # so the simple 3-toggle presets keep their existing behaviour.
         if 'contour_roi' in preset:
             for _r in ('HL', 'HR'):
@@ -1811,15 +1815,15 @@ class GaitLimbTabV2(ttk.Frame):
             issues.append("4-paw gate needs fore paws mapped (Setup)")
 
         if self._key_df is None:
-            notes.append("no key file — treatment will be blank")
+            notes.append("no key file - treatment will be blank")
         # Licking exclusion is part of the deployed contact gate: a licking paw is at the
         # mouth, not on the floor, and licking rates differ between groups, so including
         # those frames biases the intensity ratio. If predictions are absent the toggle
-        # is silently off — say so, and say how to fix it.
+        # is silently off - say so, and say how to fix it.
         if (getattr(self, '_contact_method_var', None) is not None
                 and self._contact_method_var.get() == 'contour_area'
                 and not self._exclude_lick_var.get()):
-            notes.append("licking frames will NOT be excluded — score licking first "
+            notes.append("licking frames will NOT be excluded - score licking first "
                          "(Run Classifiers), then Rescan; the manuscript gate drops them")
 
         if self._use_brightness_var.get() and sel:
@@ -1827,7 +1831,7 @@ class GaitLimbTabV2(ttk.Frame):
             missing = [s['session_name'] for s in self._sessions
                        if s['session_name'] in sel_names and not s.get('video')]
             if missing:
-                notes.append(f"{len(missing)} selected session(s) lack video — "
+                notes.append(f"{len(missing)} selected session(s) lack video - "
                              "brightness skipped")
 
         return (not issues), issues, notes
@@ -1857,7 +1861,7 @@ class GaitLimbTabV2(ttk.Frame):
         bits = [f"✓ {n_sel} session(s)", "✓ paws HL,HR"]
         bits += ["⚠ " + n for n in notes]
         self._readiness_lbl.config(
-            text="  ·  ".join(bits) + "  —  Ready to run",
+            text="  ·  ".join(bits) + "  -  Ready to run",
             foreground=('#7a6a00' if notes else '#127a12'))
 
     def _open_locomotion_preview(self):
@@ -1946,12 +1950,12 @@ class GaitLimbTabV2(ttk.Frame):
 
         # --- build window ---
         win = tk.Toplevel(self)
-        win.title(f"Locomotion Preview — {sess['session_name']}")
+        win.title(f"Locomotion Preview - {sess['session_name']}")
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
         w, h = int(sw * 0.55), int(sh * 0.60)
         win.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
 
-        # Scrollable ctrl panel — pack FIRST so it gets priority for space
+        # Scrollable ctrl panel - pack FIRST so it gets priority for space
         ctrl_outer = ttk.Frame(win)
         ctrl_outer.pack(side='right', fill='both', padx=6, pady=6)
         ctrl_canvas = tk.Canvas(ctrl_outer, borderwidth=0, highlightthickness=0, width=300)
@@ -1968,7 +1972,7 @@ class GaitLimbTabV2(ttk.Frame):
         ctrl_canvas.bind('<Configure>',
                          lambda e: ctrl_canvas.itemconfig(ctrl_win_id, width=e.width))
 
-        # Video canvas — packed after ctrl so it fills remaining space
+        # Video canvas - packed after ctrl so it fills remaining space
         canvas = tk.Canvas(win, bg='black', width=480, height=380)
         canvas.pack(side='left', fill='both', expand=True, padx=4, pady=4)
 
@@ -2015,9 +2019,9 @@ class GaitLimbTabV2(ttk.Frame):
         # Current frame readout
         ttk.Separator(ctrl, orient='horizontal').pack(fill='x', pady=4)
         ttk.Label(ctrl, text="Current frame:", font=(FONT_FAMILY, 9, 'bold')).pack(anchor='w')
-        frame_speed_lbl = ttk.Label(ctrl, text="Speed: — px/s", wraplength=270)
+        frame_speed_lbl = ttk.Label(ctrl, text="Speed: - px/s", wraplength=270)
         frame_speed_lbl.pack(anchor='w')
-        frame_state_lbl = ttk.Label(ctrl, text="State: —", wraplength=270)
+        frame_state_lbl = ttk.Label(ctrl, text="State: -", wraplength=270)
         frame_state_lbl.pack(anchor='w', pady=(0, 6))
 
         # Apply button
@@ -2307,13 +2311,13 @@ class GaitLimbTabV2(ttk.Frame):
 
         # --- build window ---
         win = tk.Toplevel(self)
-        win.title(f"Brightness Preview — {sess['session_name']}")
+        win.title(f"Brightness Preview - {sess['session_name']}")
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
         w, h = int(sw * 0.55), int(sh * 0.60)
         win.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
         win.protocol('WM_DELETE_WINDOW', lambda: (cap.release(), win.destroy()))
 
-        # Scrollable ctrl panel — pack FIRST so it gets priority for space
+        # Scrollable ctrl panel - pack FIRST so it gets priority for space
         ctrl_outer = ttk.Frame(win)
         ctrl_outer.pack(side='right', fill='both', padx=6, pady=6)
         ctrl_canvas = tk.Canvas(ctrl_outer, borderwidth=0, highlightthickness=0, width=300)
@@ -2330,7 +2334,7 @@ class GaitLimbTabV2(ttk.Frame):
         ctrl_canvas.bind('<Configure>',
                          lambda e: ctrl_canvas.itemconfig(ctrl_win_id, width=e.width))
 
-        # Video canvas — packed after ctrl so it fills remaining space
+        # Video canvas - packed after ctrl so it fills remaining space
         canvas = tk.Canvas(win, bg='black', width=480, height=380)
         canvas.pack(side='left', fill='both', expand=True, padx=4, pady=4)
 
@@ -2395,7 +2399,7 @@ class GaitLimbTabV2(ttk.Frame):
         ttk.Label(ctrl, text="Paw readouts:").pack(anchor='w')
         paw_labels = {}
         for role, bp in active_paws.items():
-            lbl = ttk.Label(ctrl, text=f"{role} ({bp}): —", wraplength=270)
+            lbl = ttk.Label(ctrl, text=f"{role} ({bp}): -", wraplength=270)
             lbl.pack(anchor='w')
             paw_labels[role] = lbl
 
@@ -2629,7 +2633,7 @@ class GaitLimbTabV2(ttk.Frame):
         win.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
         win.protocol('WM_DELETE_WINDOW', lambda: (cap.release(), win.destroy()))
 
-        # Scrollable ctrl panel — pack FIRST so it gets priority for space
+        # Scrollable ctrl panel - pack FIRST so it gets priority for space
         ctrl_outer = ttk.Frame(win)
         ctrl_outer.pack(side='right', fill='both', padx=6, pady=6)
         ctrl_canvas = tk.Canvas(ctrl_outer, borderwidth=0, highlightthickness=0, width=300)
@@ -2646,7 +2650,7 @@ class GaitLimbTabV2(ttk.Frame):
         ctrl_canvas.bind('<Configure>',
                          lambda e: ctrl_canvas.itemconfig(ctrl_win_id, width=e.width))
 
-        # Video canvas — packed after ctrl so it fills remaining space
+        # Video canvas - packed after ctrl so it fills remaining space
         canvas = tk.Canvas(win, bg='black', width=480, height=380)
         canvas.pack(side='left', fill='both', expand=True, padx=4, pady=4)
 
@@ -2926,7 +2930,7 @@ class GaitLimbTabV2(ttk.Frame):
             return
 
         # A missing key is only a soft readiness note, but the run is
-        # expensive — confirm before producing an ungrouped cohort.
+        # expensive - confirm before producing an ungrouped cohort.
         if self._key_df is None:
             if not messagebox.askyesno(
                     "No key file",
@@ -3100,7 +3104,7 @@ class GaitLimbTabV2(ttk.Frame):
                     foreground='#127a12')
 
         if not summary_rows:
-            self._log_ui("No results — all sessions were skipped or failed. "
+            self._log_ui("No results - all sessions were skipped or failed. "
                          "Check log for ERROR messages.")
             names = ", ".join(not_done[:8]) + ("…" if n_bad > 8 else "")
             messagebox.showwarning(
@@ -3228,7 +3232,7 @@ class GaitLimbTabV2(ttk.Frame):
         return d
 
     def _save_last_session(self):
-        """Auto-save after a run — unless we're mid-load (loads never spawn one)."""
+        """Auto-save after a run - unless we're mid-load (loads never spawn one)."""
         if getattr(self, '_loading_session', False):
             return
         self._save_session_file('auto')
@@ -3442,7 +3446,7 @@ class GaitLimbTabV2(ttk.Frame):
 
 
     # ═══════════════════════════════════════════════════════════════════════
-    # Adjust Contact — recompute via the SAME metrics code as the analysis
+    # Adjust Contact - recompute via the SAME metrics code as the analysis
     # ═══════════════════════════════════════════════════════════════════════
 
     def _open_contact_adjustment(self):
@@ -3517,7 +3521,7 @@ class GaitLimbTabV2(ttk.Frame):
         ca_min_var = tk.IntVar(value=self._contour_area_thresh_var.get())
         ttk.Spinbox(_ca_row, from_=0, to=100000, textvariable=ca_min_var,
                     width=7).pack(side='left')
-        ttk.Label(_ca_row, text="–").pack(side='left', padx=2)
+        ttk.Label(_ca_row, text="-").pack(side='left', padx=2)
         ca_max_var = tk.IntVar(value=self._contour_area_max_var.get())
         ttk.Spinbox(_ca_row, from_=0, to=100000, textvariable=ca_max_var,
                     width=7).pack(side='left')
@@ -3547,7 +3551,7 @@ class GaitLimbTabV2(ttk.Frame):
 
     def _recompute_contact(self, new_params):
         """Recompute contact masks and metrics using stored intermediates.
-        Delegates to gait_core.recompute_with_contact — the same
+        Delegates to gait_core.recompute_with_contact - the same
         compute_all_metrics as the analysis itself (licking exclusion and the
         4-paw gate stay in force, unlike the old drifted copy)."""
         if not self._session_intermediates:

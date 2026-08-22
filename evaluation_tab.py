@@ -1,5 +1,5 @@
 """
-evaluation_tab.py — PixelPaws Evaluation Tab
+evaluation_tab.py - PixelPaws Evaluation Tab
 =============================================
 Standalone module for evaluating trained classifiers against labelled test data.
 
@@ -129,7 +129,7 @@ def render_session_diagnostic(y_true, y_pred, behavior_name, base_name, out_path
         ax_raster, ax_cm, ax_bins = gs.subplots()
         ax_tr = None
 
-    # Panel 1 — raster
+    # Panel 1 - raster
     if bt:
         ax_raster.broken_barh(bt, (2.6, 0.8), facecolors='black')
     if bp:
@@ -146,7 +146,7 @@ def render_session_diagnostic(y_true, y_pred, behavior_name, base_name, out_path
         Line2D([0], [0], color='#E87722', linewidth=8, label='Model'),
     ], loc='upper left', fontsize=10)
 
-    # Panel 2 — confusion matrix
+    # Panel 2 - confusion matrix
     ax_cm.imshow(cm_norm, cmap='RdPu', vmin=0, vmax=1)
     for rr in range(2):
         for cc in range(2):
@@ -161,7 +161,7 @@ def render_session_diagnostic(y_true, y_pred, behavior_name, base_name, out_path
     ax_cm.set_ylabel('True')
     ax_cm.set_title(f"F1={f1:.2f}")
 
-    # Panel 3 — time bins (10 s)
+    # Panel 3 - time bins (10 s)
     x_centers = np.arange(n_bins) * 10 + 5
     width = 0.4
     ax_bins.bar(x_centers - width / 2, human_s, width=width, color='steelblue', label='Human')
@@ -174,7 +174,7 @@ def render_session_diagnostic(y_true, y_pred, behavior_name, base_name, out_path
     ax_bins.spines['top'].set_visible(False)
     ax_bins.spines['right'].set_visible(False)
 
-    # Panel 4 — probability trace (only when probabilities are supplied)
+    # Panel 4 - probability trace (only when probabilities are supplied)
     if ax_tr is not None:
         frames = np.arange(n)
         ax_tr.plot(frames, y_proba, color='#1f77b4', linewidth=0.8, label='Probability')
@@ -214,7 +214,7 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# Helper — applies the same bout-filtering rules as the prediction pipeline
+# Helper - applies the same bout-filtering rules as the prediction pipeline
 # ---------------------------------------------------------------------------
 def _find_runs(y):
     """Run-length encoding for a 0/1 sequence.
@@ -242,16 +242,16 @@ def _apply_bout_filtering(y_pred, min_bout, min_after_bout, max_gap, polish_repe
     """Apply bout filtering: min-bout removal, gap bridging, and refractory.
 
     Order matters (one pass):
-      1. min_bout       — drop positive runs shorter than ``min_bout``.
-      2. max_gap        — bridge zero-runs ``≤ max_gap`` between two
+      1. min_bout       - drop positive runs shorter than ``min_bout``.
+      2. max_gap        - bridge zero-runs ``≤ max_gap`` between two
                           consecutive positive runs (treat as one bout).
-      3. min_after_bout — refractory: after step 2, if two positive
+      3. min_after_bout - refractory: after step 2, if two positive
                           bouts are separated by ``< min_after_bout``
                           zeros, drop the SECOND bout. Models a hard
                           minimum inter-bout interval.
 
     ``polish_repeat`` (BAREfoot parity, default 1 = unchanged): run the whole
-    1→2→3 pass this many times. A second pass lets the filter converge — e.g. a
+    1→2→3 pass this many times. A second pass lets the filter converge - e.g. a
     gap-bridge in pass 1 can create a newly-short residual the next min_bout pass
     cleans up. Idempotent once stable, so values >2 rarely change anything.
 
@@ -260,7 +260,7 @@ def _apply_bout_filtering(y_pred, min_bout, min_after_bout, max_gap, polish_repe
     provides a post-bridge refractory. Left out deliberately rather than guessed.)
 
     Until 2026-05-01 the ``min_after_bout`` parameter was silently
-    dropped — the function accepted it but never acted on it. Implementing the
+    dropped - the function accepted it but never acted on it. Implementing the
     documented semantic changes predictions for any classifier whose stored
     ``min_after_bout`` is non-zero.
     """
@@ -305,7 +305,7 @@ def _apply_bout_filtering(y_pred, min_bout, min_after_bout, max_gap, polish_repe
         before = y_filtered.copy()
         y_filtered = _one_pass(y_filtered)
         if np.array_equal(before, y_filtered):
-            break   # converged — further passes are no-ops
+            break   # converged - further passes are no-ops
 
     return y_filtered
 
@@ -313,8 +313,8 @@ def _apply_bout_filtering(y_pred, min_bout, min_after_bout, max_gap, polish_repe
 def bout_level_prf(y_true, y_pred, session_ids=None, tol=6):
     """Event/bout-level precision/recall/F1 with temporal tolerance.
 
-    A predicted bout (contiguous run of 1s) is a true positive if it overlaps — or
-    falls within ``tol`` frames of — a ground-truth bout, matched one-to-one (greedy
+    A predicted bout (contiguous run of 1s) is a true positive if it overlaps - or
+    falls within ``tol`` frames of - a ground-truth bout, matched one-to-one (greedy
     by start frame). This complements frame-wise F1, which over-penalizes boundary
     jitter introduced by rolling-window features. Matching is done WITHIN each session
     (no cross-session bridging) when ``session_ids`` is given.
@@ -374,8 +374,8 @@ def fit_hmm_transitions(y):
 
     Returns
     -------
-    log_trans : np.ndarray shape (2, 2) — log P(next_state | current_state)
-    log_prior : np.ndarray shape (2,)   — log P(state at t=0)
+    log_trans : np.ndarray shape (2, 2) - log P(next_state | current_state)
+    log_prior : np.ndarray shape (2,)   - log P(state at t=0)
     """
     y = np.asarray(y, dtype=int)
     trans = np.ones((2, 2), dtype=float)   # Laplace smoothing
@@ -395,20 +395,20 @@ def viterbi_smooth(probas, log_trans, log_prior):
 
     Emission model: P(obs=p | state=1) = p,  P(obs=p | state=0) = 1-p.
     This is consistent with calibrated classifier output and does not
-    require a hard threshold — the label sequence is determined entirely
+    require a hard threshold - the label sequence is determined entirely
     by the HMM transition prior and the raw probability stream.
 
     Parameters
     ----------
-    probas    : array-like  — raw per-frame P(behavior), shape (n,)
-    log_trans : np.ndarray shape (2, 2) — from fit_hmm_transitions
-    log_prior : np.ndarray shape (2,)   — from fit_hmm_transitions
+    probas    : array-like  - raw per-frame P(behavior), shape (n,)
+    log_trans : np.ndarray shape (2, 2) - from fit_hmm_transitions
+    log_prior : np.ndarray shape (2,)   - from fit_hmm_transitions
 
     Returns
     -------
     np.ndarray of int (0/1), shape (n,)
     """
-    # Plain-Python 2-state forward DP — byte-identical to the prior numpy version
+    # Plain-Python 2-state forward DP - byte-identical to the prior numpy version
     # (same first-max tie-break as np.argmax) but ~10× faster: numpy on size-2 arrays
     # per frame is dominated by call overhead, so scalars win on long streams.
     probas = np.clip(np.asarray(probas, dtype=float), 1e-10, 1 - 1e-10)
@@ -453,7 +453,7 @@ def count_bouts(y_pred: np.ndarray, fps: float) -> dict:
     y_pred : np.ndarray
         Binary array (0/1) of per-frame predictions.
     fps : float
-        Frames per second — used to convert frame counts to seconds.
+        Frames per second - used to convert frame counts to seconds.
 
     Returns
     -------
@@ -500,7 +500,7 @@ def count_bouts(y_pred: np.ndarray, fps: float) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Shared session discovery — used by training, evaluation, active learning
+# Shared session discovery - used by training, evaluation, active learning
 # ---------------------------------------------------------------------------
 def find_session_triplets(
     folder: str,
@@ -691,7 +691,7 @@ def find_session_triplets(
             'labels':       labels_path,
             'video_dir':    video_dir,
             'project_dir':  project_root,
-            # PawCapture (camsync) calibration — None when not present
+            # PawCapture (camsync) calibration - None when not present
             'mm_per_pixel':     mm_per_pixel,
             'session_manifest': session_manifest,
             'rig_label':        rig_label,
@@ -717,8 +717,8 @@ class EvaluationTab(ttk.Frame):
         The ttk.Frame (or any container) that this tab lives inside.
     app : PixelPawsGUI
         Reference to the main application, used for:
-            • app.root  — the Tk root (for after() and Toplevel dialogs)
-            • app.theme — colour theme object (optional, gracefully absent)
+            • app.root  - the Tk root (for after() and Toplevel dialogs)
+            • app.theme - colour theme object (optional, gracefully absent)
     """
 
     def __init__(self, parent, app):
@@ -805,7 +805,7 @@ class EvaluationTab(ttk.Frame):
         ttk.Button(tst, text='📁 Browse',
                    command=self._browse_dlc_config).grid(row=2, column=2, pady=2)
         ttk.Label(tst,
-                  text='(For DLC crop offset correction — same config used during training)',
+                  text='(For DLC crop offset correction - same config used during training)',
                   font=(FONT_FAMILY, 8), foreground='gray').grid(row=3, column=1, sticky='w', padx=5)
 
         ttk.Button(tst, text='🔍 Scan Test Sessions',
@@ -909,7 +909,7 @@ class EvaluationTab(ttk.Frame):
 
         import glob
 
-        # Local project classifiers — recursive so per-run subfolders are found
+        # Local project classifiers - recursive so per-run subfolders are found
         clf_dir = os.path.join(pf.get() if pf else '', 'classifiers')
         if os.path.isdir(clf_dir):
             for full in sorted(glob.glob(
@@ -917,7 +917,7 @@ class EvaluationTab(ttk.Frame):
                 basename = os.path.basename(full)
                 self.eval_classifier_options[f"[Project] {basename}"] = full
 
-        # Global classifiers library — recursive for the same reason
+        # Global classifiers library - recursive for the same reason
         gcf = get_global_classifiers_folder()
         if os.path.isdir(gcf):
             for full in sorted(glob.glob(
@@ -1111,7 +1111,7 @@ class EvaluationTab(ttk.Frame):
         self._log('\nCancelling evaluation…\n')
 
     def run_evaluation(self):
-        """Entry point — validates inputs, then starts the evaluation thread."""
+        """Entry point - validates inputs, then starts the evaluation thread."""
         if not self.eval_classifier_path.get():
             messagebox.showwarning('No Classifier', 'Please select a classifier file.')
             return
@@ -1222,7 +1222,7 @@ class EvaluationTab(ttk.Frame):
                         crop_y = config.get('y1', 0)
                         self._log(f'  DLC crop offset: x+{crop_x}, y+{crop_y}')
                 except ImportError:
-                    self._log('  ⚠️  PyYAML not installed — cannot read DLC config')
+                    self._log('  ⚠️  PyYAML not installed - cannot read DLC config')
                 except Exception as e:
                     self._log(f'  ⚠️  Could not read DLC config: {e}')
 
@@ -1271,7 +1271,7 @@ class EvaluationTab(ttk.Frame):
                 try:
                     labels_df = pd.read_csv(labels_path)
                 except Exception as e:
-                    self._log(f'  ✗ Could not read labels: {e}  — skipping.')
+                    self._log(f'  ✗ Could not read labels: {e}  - skipping.')
                     continue
 
                 # Resolve behavior column
@@ -1294,7 +1294,7 @@ class EvaluationTab(ttk.Frame):
                         else:
                             self._log(
                                 f'  ✗ Behavior column "{behavior_name}" not found. '
-                                f'Columns: {list(labels_df.columns)}  — skipping.')
+                                f'Columns: {list(labels_df.columns)}  - skipping.')
                             continue
 
                 y_true = labels_df[label_col].values.astype(int)
@@ -1389,7 +1389,7 @@ class EvaluationTab(ttk.Frame):
                         clf_data=clf_data,
                     )
                 except Exception as e:
-                    self._log(f'  ✗ Feature extraction failed: {e}  — skipping.')
+                    self._log(f'  ✗ Feature extraction failed: {e}  - skipping.')
                     continue
 
                 # ── Post-cache feature augmentation (match training) ────
@@ -1400,7 +1400,7 @@ class EvaluationTab(ttk.Frame):
                     y_proba = _predict(
                         model, X, calibrator=(clf_data.get('prob_calibrator') or clf_data.get('calibrator')), fold_models=clf_data.get('fold_models'))
                 except Exception as e:
-                    self._log(f'  ✗ Prediction failed: {e}  — skipping.')
+                    self._log(f'  ✗ Prediction failed: {e}  - skipping.')
                     continue
 
                 # Apply smoothing (bout filters / HMM Viterbi / none)
@@ -1804,7 +1804,7 @@ class EvaluationTab(ttk.Frame):
                     pass
 
             N = len(sessions)
-            log_fn(f'\nFound {N} scored sessions — running {N}-fold leave-one-out\n')
+            log_fn(f'\nFound {N} scored sessions - running {N}-fold leave-one-out\n')
 
             # Step 1: extract features + probabilities for all videos
             pf = getattr(self.app, 'current_project_folder', None)
@@ -1835,7 +1835,7 @@ class EvaluationTab(ttk.Frame):
                         if len(non_frame) == 1:
                             label_col = non_frame[0]
                         else:
-                            log_fn(f'  Skipping — behavior column not found')
+                            log_fn(f'  Skipping - behavior column not found')
                             continue
 
                 y_true = labels_df[label_col].values.astype(int)
@@ -1899,7 +1899,7 @@ class EvaluationTab(ttk.Frame):
                         clf_data=clf_data,
                     )
                 except Exception as e:
-                    log_fn(f'  Skipping — feature extraction failed: {e}')
+                    log_fn(f'  Skipping - feature extraction failed: {e}')
                     continue
 
                 X = _gui.augment_features_post_cache(X, clf_data, model, dlc_path)
@@ -1909,7 +1909,7 @@ class EvaluationTab(ttk.Frame):
                     y_proba = _predict(
                         model, X, calibrator=(clf_data.get('prob_calibrator') or clf_data.get('calibrator')), fold_models=clf_data.get('fold_models'))
                 except Exception as e:
-                    log_fn(f'  Skipping — prediction failed: {e}')
+                    log_fn(f'  Skipping - prediction failed: {e}')
                     continue
 
                 n = min(len(y_true), len(y_proba))
@@ -2047,11 +2047,11 @@ class EvaluationTab(ttk.Frame):
                         cm, behavior_name, output_folder):
         """
         Save a two-panel PNG:
-          Left  — aggregate confusion matrix heatmap
-          Right — per-video F1 / Precision / Recall bar chart
+          Left  - aggregate confusion matrix heatmap
+          Right - per-video F1 / Precision / Recall bar chart
         """
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-        fig.suptitle(f'Evaluation — {behavior_name}', fontsize=13, fontweight='bold')
+        fig.suptitle(f'Evaluation - {behavior_name}', fontsize=13, fontweight='bold')
         for a in axes:
             a.spines['top'].set_visible(False)
             a.spines['right'].set_visible(False)
@@ -2175,7 +2175,7 @@ class EvaluationTab(ttk.Frame):
 
         # --- Dialog to choose data source ---
         dialog = tk.Toplevel(self.root)
-        dialog.title('SHAP Analysis — Data Source')
+        dialog.title('SHAP Analysis - Data Source')
         _sw, _sh = dialog.winfo_screenwidth(), dialog.winfo_screenheight()
         dialog.geometry(f'600x360+{(_sw-600)//2}+{(_sh-360)//2}')
         dialog.grab_set()
@@ -2200,7 +2200,7 @@ class EvaluationTab(ttk.Frame):
         n_samples_var = tk.IntVar(value=1000)
         ttk.Spinbox(dialog, from_=100, to=50000, textvariable=n_samples_var,
                     width=10, increment=1000).pack()
-        ttk.Label(dialog, text='Recommended: 1000–5000 (100 samples ≈ 1 second)',
+        ttk.Label(dialog, text='Recommended: 1000-5000 (100 samples ≈ 1 second)',
                   font=(FONT_FAMILY, 8), foreground='gray').pack(pady=4)
 
         result = {'cancelled': True}

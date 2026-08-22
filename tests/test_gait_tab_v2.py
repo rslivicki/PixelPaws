@@ -147,7 +147,7 @@ def test_registry_renders(tab):
     cats = list(tab._registry.keys())
     assert cats, "registry not populated by _on_analysis_complete"
     assert sum(len(v) for v in tab._registry.values()) > 50
-    for cat in ("Paw Contact", "Limb Use — Hind", "Contact % / Brightness",
+    for cat in ("Paw Contact", "Limb Use - Hind", "Contact % / Brightness",
                 "Statistics"):
         if cat not in tab._registry:
             continue
@@ -156,8 +156,27 @@ def test_registry_renders(tab):
         root.update()
         assert tab._graph_container.winfo_children(), cat
 
+    # timecourse entries must render through the tab's synthesized cfg
+    # (regression: marker_fills booleans crashed every "- TC" view)
+    for cat, entries in tab._registry.items():
+        tc = next((e for e in entries
+                   if e.get("graph_type") == "timecourse"), None)
+        if tc is not None:
+            tab._cat_var.set(cat)
+            tab._graph_var.set(tc["display_name"])
+            tab._render_current()
+            root.update()
+            texts = []
+            for w in tab._graph_container.winfo_children():
+                try:
+                    texts.append(str(w.cget("text")))
+                except Exception:
+                    pass
+            assert not any("Could not draw" in t for t in texts), texts
+            break
+
     # Σ stats flip on a stats-capable entry
-    tab._cat_var.set("Limb Use — Hind")
+    tab._cat_var.set("Limb Use - Hind")
     tab._on_category_changed()
     entry = tab._current_entry()
     if entry and entry.get("has_stats"):

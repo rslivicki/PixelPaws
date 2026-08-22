@@ -1,4 +1,4 @@
-"""Locomotion tab — distance traveled and velocity from the pose skeleton.
+"""Locomotion tab - distance traveled and velocity from the pose skeleton.
 
 Works directly from the DLC ``.h5`` files next to each project video, so it
 needs no classifiers: pick a stable body point (centroid by default), gate it
@@ -6,7 +6,7 @@ by tracking likelihood, smooth it, and integrate frame-to-frame displacement
 over time bins.
 
 Not egocentric on purpose: egocentric normalization removes translation and
-rotation — exactly the signal distance traveled is made of. Locomotion is an
+rotation - exactly the signal distance traveled is made of. Locomotion is an
 allocentric quantity, so the tab tracks the animal's centroid through arena
 coordinates and instead controls tracking jitter with a likelihood gate,
 median smoothing, and a per-frame displacement dead-band.
@@ -84,11 +84,11 @@ class LocomotionTab(ttk.Frame):
         # -- data -------------------------------------------------------
         df_ = ttk.LabelFrame(left, text="Data")
         df_.pack(fill="x", pady=(0, 6))
-        # Key file first, then Sessions — same order on every analysis tab.
+        # Key file first, then Sessions - same order on every analysis tab.
         krow = ttk.Frame(df_)
         krow.pack(fill="x", padx=6, pady=(6, 2))
         ttk.Label(krow, text="Key file:").pack(side="left")
-        self._key_status = tk.StringVar(value="none — sessions plotted ungrouped")
+        self._key_status = tk.StringVar(value="none - sessions plotted ungrouped")
         ttk.Label(krow, textvariable=self._key_status, foreground="#666666",
                   justify="left", wraplength=170).pack(side="left", padx=(4, 4))
         _T(ttk.Button(krow, text="Browse", command=self._browse_key, width=7),
@@ -339,16 +339,16 @@ class LocomotionTab(ttk.Frame):
         n = len(self._sessions)
         if n:
             unit_note = ("(reporting cm)" if ncal == n else
-                         "(reporting px — calibrate with PawCapture for "
+                         "(reporting px - calibrate with PawCapture for "
                          "real units)")
             self._scan_status.set(f"{n} session(s); {ncal}/{n} calibrated "
                                   + unit_note)
         else:
-            self._scan_status.set("No video + DLC .h5 pairs found — run pose "
+            self._scan_status.set("No video + DLC .h5 pairs found - run pose "
                                   "tracking first.")
         self._session_filter.set_sessions(
             sorted(self._sessions), key_df=self._key_df,
-            extra={s: {"Cal": ("✓" if i.get("mm") else "—")}
+            extra={s: {"Cal": ("✓" if i.get("mm") else "-")}
                    for s, i in self._sessions.items()})
         if self._key_df is None:
             self._autofind_key()
@@ -401,12 +401,12 @@ class LocomotionTab(ttk.Frame):
             "Treatment": df[cols["treatment"]].astype(str).str.strip(),
         })
         self._key_df = out[out["Subject"] != ""]
-        self._key_status.set(f"{os.path.basename(path)} — "
+        self._key_status.set(f"{os.path.basename(path)} - "
                              f"{self._key_df['Treatment'].nunique()} group(s)")
         if self._sessions:
             self._session_filter.set_sessions(
                 sorted(self._sessions), key_df=self._key_df,
-                extra={s: {"Cal": ("✓" if i.get("mm") else "—")}
+                extra={s: {"Cal": ("✓" if i.get("mm") else "-")}
                        for s, i in self._sessions.items()})
 
     def _group_of(self, session):
@@ -675,7 +675,7 @@ class LocomotionTab(ttk.Frame):
                                f"Velocity ({vel_unit})")}
         ttl, ylab = titles[view]
         if opts.get("show_titles", True):
-            ax.set_title(ttl + (f" — {self._bp_var.get()}"),
+            ax.set_title(ttl + (f" - {self._bp_var.get()}"),
                          fontsize=10)
         ax.set_xlabel("Time (min)", fontsize=9)
         ax.set_ylabel(ylab, fontsize=9)
@@ -686,7 +686,7 @@ class LocomotionTab(ttk.Frame):
         ncal = sum(1 for k in _act if self._sessions[k]["mm"])
         n = len(_act)
         note = "" if ncal == n else (
-            f"  |  {n - ncal} uncalibrated session(s) — px units")
+            f"  |  {n - ncal} uncalibrated session(s) - px units")
         _ex = len(self._sessions) - n
         self._status.set(f"{n} session(s)"
                          + (f" ({_ex} excluded)" if _ex else "")
@@ -743,7 +743,7 @@ class LocomotionTab(ttk.Frame):
                 sp_.set_color("#bbbbbb")
             ttl = f"{s_}" + (f"  ({g})" if g else "")
             ax.set_title(ttl, fontsize=8, color=col if g else "#333333")
-        self._fig.suptitle("Arena trails — normalized coordinates "
+        self._fig.suptitle("Arena trails - normalized coordinates "
                            "(\u25cb start, \u25a0 end)", fontsize=10)
         self._status.set(f"{n} session(s); arena-normalized; "
                          f"{len(groups) or 'no'} group(s).")
@@ -776,7 +776,7 @@ class LocomotionTab(ttk.Frame):
             ax.set_title(f"{g} (n={len(members)})" if g
                          else f"all sessions (n={len(members)})",
                          fontsize=9, color=col)
-        self._fig.suptitle("Arena trails — all animals overlaid per group, "
+        self._fig.suptitle("Arena trails - all animals overlaid per group, "
                            "normalized coordinates", fontsize=10)
         self._status.set(f"{len(sessions)} session(s); overlay per group.")
 
@@ -821,7 +821,7 @@ class LocomotionTab(ttk.Frame):
                 sp_.set_color("#bbbbbb")
             ttl = (f"{g}: {rep}" if g else rep)
             ax.set_title(ttl, fontsize=8, color=col)
-        self._fig.suptitle("Representative trails — animal nearest the "
+        self._fig.suptitle("Representative trails - animal nearest the "
                            "group-median total distance", fontsize=10)
         self._status.set("Representative = closest to group-median "
                          "total distance.")
@@ -867,7 +867,7 @@ class LocomotionTab(ttk.Frame):
                                   pad=0.02)
         cbar.set_label("% time per bin", fontsize=8)
         cbar.ax.tick_params(labelsize=7)
-        self._fig.suptitle("Arena occupancy — normalized position, "
+        self._fig.suptitle("Arena occupancy - normalized position, "
                            "animal-weighted group mean", fontsize=10)
         self._status.set(f"{len(sessions)} session(s); {BINS}\u00d7{BINS} "
                          f"bins; shared color scale.")
@@ -1158,7 +1158,7 @@ class LocomotionTab(ttk.Frame):
         self._session_filter.set_sessions([])
         self._session_filter._close_popup()
         self._scan_status.set("Not scanned.")
-        self._key_status.set("none — sessions plotted ungrouped")
+        self._key_status.set("none - sessions plotted ungrouped")
         self.refresh()
         vd = os.path.join(self._project(), "videos")
         if os.path.isdir(vd) and _glob.glob(os.path.join(vd, "*DLC*.h5")):

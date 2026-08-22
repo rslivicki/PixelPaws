@@ -1,13 +1,13 @@
 """
-project_setup.py — PixelPaws Project Setup Wizard
+project_setup.py - PixelPaws Project Setup Wizard
 ==================================================
 3-step modal wizard that runs on startup to select or create a project folder.
 
 Steps
 -----
-1. Choose Project  — New or Open Existing
-2. Configure       — video extension, behaviors, body parts, ROI size
-3. Extract Features — run feature extraction on videos/ subfolder; skip option
+1. Choose Project  - New or Open Existing
+2. Configure       - video extension, behaviors, body parts, ROI size
+3. Extract Features - run feature extraction on videos/ subfolder; skip option
 
 On completion the wizard calls::
     app.current_project_folder.set(project_folder)
@@ -71,12 +71,12 @@ class ProjectSetupWizard(tk.Toplevel):
 
         self.project_folder = ''
 
-        self.title("PixelPaws — Project Setup")
+        self.title("PixelPaws - Project Setup")
         self.resizable(True, True)
         self.minsize(750, 660)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # Centre on screen — taller when recent projects exist
+        # Centre on screen - taller when recent projects exist
         self.update_idletasks()
         w = 820
         h = 850 if _load_recent() else 750
@@ -84,7 +84,7 @@ class ProjectSetupWizard(tk.Toplevel):
         sh = self.winfo_screenheight()
         self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
 
-        # Make modal — deiconify needed because root is withdrawn on startup
+        # Make modal - deiconify needed because root is withdrawn on startup
         self.transient(root)
         self.deiconify()
         self.grab_set()
@@ -96,14 +96,14 @@ class ProjectSetupWizard(tk.Toplevel):
 
     def _build_shell(self):
         """Build the persistent header + content area + nav bar."""
-        # Header — use theme primary color if ttkbootstrap available
+        # Header - use theme primary color if ttkbootstrap available
         try:
             _hdr_bg = self.app.style.colors.primary
         except Exception:
             _hdr_bg = '#2c5f8a'
         hdr = tk.Frame(self, bg=_hdr_bg, pady=12)
         hdr.pack(fill='x')
-        tk.Label(hdr, text="🐾 PixelPaws — Project Setup",
+        tk.Label(hdr, text="🐾 PixelPaws - Project Setup",
                  bg=_hdr_bg, fg='white',
                  font=(FONT_FAMILY, 14, 'bold')).pack()
         self.step_label = tk.Label(hdr, text="",
@@ -133,7 +133,7 @@ class ProjectSetupWizard(tk.Toplevel):
         self._current_step = 1
         self.project_folder = ''  # reset stale folder when navigating back
         self._clear_content()
-        self.step_label.config(text="Step 1 of 3 — Choose Project")
+        self.step_label.config(text="Step 1 of 3 - Choose Project")
         self.btn_back.config(state='disabled')
         self.btn_next.config(state='disabled')
 
@@ -180,7 +180,7 @@ class ProjectSetupWizard(tk.Toplevel):
                        width=22, command=self._open_project).grid(
                            row=0, column=1, padx=8, pady=4)
         else:
-            # No recent projects — original two-button layout
+            # No recent projects - original two-button layout
             ttk.Label(self.content,
                       text="Welcome to PixelPaws!\n\nCreate a new project or open an existing one.",
                       font=(FONT_FAMILY, 10), justify='center').pack(pady=(10, 20))
@@ -234,7 +234,7 @@ class ProjectSetupWizard(tk.Toplevel):
         _save_recent(folder)
         config_path = os.path.join(folder, 'PixelPaws_project.json')
         if os.path.isfile(config_path):
-            # Complete project — load and finish immediately
+            # Complete project - load and finish immediately
             self.project_folder = folder
             self.app.current_project_folder.set(folder)
             self.app._load_project_config(config_path, silent=True)
@@ -242,7 +242,7 @@ class ProjectSetupWizard(tk.Toplevel):
             self.destroy()
             self.root.deiconify()
         else:
-            # No config yet — treat as new
+            # No config yet - treat as new
             self.project_folder = folder
             for sub in ('videos', 'behavior_labels'):
                 os.makedirs(os.path.join(self.project_folder, sub), exist_ok=True)
@@ -253,7 +253,7 @@ class ProjectSetupWizard(tk.Toplevel):
     def _show_step2(self):
         self._current_step = 2
         self._clear_content()
-        self.step_label.config(text="Step 2 of 3 — Configure")
+        self.step_label.config(text="Step 2 of 3 - Configure")
         self.btn_back.config(state='normal')
         self.btn_next.config(state='normal', text="Next ▶", command=self._next)
 
@@ -290,7 +290,7 @@ class ProjectSetupWizard(tk.Toplevel):
         # only matters when training NEW classifiers, so say so before asking.
         hint = ttk.Label(
             cf, foreground='#666666', wraplength=430, justify='left',
-            text=("Optional — only needed if you plan to train your own classifiers. "
+            text=("Optional - only needed if you plan to train your own classifiers. "
                   "PixelPaws ships pretrained classifiers (licking, scratching, grooming, "
                   "rearing, jumping, moving, stillness); to score videos with those, skip "
                   "this and go to Predict & Review or Run Classifiers after setup."))
@@ -299,7 +299,7 @@ class ProjectSetupWizard(tk.Toplevel):
 
         # Score-first escape hatch: the rest of this step (and step 3) only matters for
         # training new classifiers, so scoring-only users finish here with defaults.
-        ttk.Button(cf, text="Use defaults and finish — I'll score with the bundled classifiers",
+        ttk.Button(cf, text="Use defaults and finish - I'll score with the bundled classifiers",
                    style='Accent.TButton',
                    command=self._finish_with_defaults).grid(
             row=row, column=0, columnspan=3, sticky='w', pady=(0, 10))
@@ -372,7 +372,7 @@ class ProjectSetupWizard(tk.Toplevel):
         # Performance disclaimer
         ttk.Label(bp_outer,
                   text="ℹ  Brightness extraction is the slowest step. "
-                       "3–5 body parts is recommended — each additional part "
+                       "3-5 body parts is recommended - each additional part "
                        "adds significant processing time.",
                   foreground='gray', wraplength=340, justify='left',
                   font=(FONT_FAMILY, 8)).pack(anchor='w', pady=(4, 0))
@@ -463,7 +463,7 @@ class ProjectSetupWizard(tk.Toplevel):
         try:
             import pandas as pd
             df = pd.read_hdf(h5_files[0])
-            # MultiIndex columns: (scorer, bodypart, coord) — level 1 is body part
+            # MultiIndex columns: (scorer, bodypart, coord) - level 1 is body part
             bodyparts = sorted({col[1] for col in df.columns})
             if not bodyparts:
                 raise ValueError("No body parts found in H5 file")
@@ -536,7 +536,7 @@ class ProjectSetupWizard(tk.Toplevel):
     def _show_step3(self):
         self._current_step = 3
         self._clear_content()
-        self.step_label.config(text="Step 3 of 3 — Extract Features")
+        self.step_label.config(text="Step 3 of 3 - Extract Features")
         self.btn_back.config(state='normal')
         self.btn_next.config(state='disabled', text="✅ Finish", command=self._finish)
 
@@ -595,7 +595,7 @@ class ProjectSetupWizard(tk.Toplevel):
         ttk.Button(btn_row, text="📋 Key File",
                    command=self._open_key_file_dialog).pack(side='left', padx=4)
 
-        ttk.Button(btn_row, text="⏭ Skip — I'll do this later",
+        ttk.Button(btn_row, text="⏭ Skip - I'll do this later",
                    command=self._skip_extraction).pack(side='left', padx=4)
 
     def _log_extract(self, msg):
@@ -619,7 +619,7 @@ class ProjectSetupWizard(tk.Toplevel):
                                            PixelPawsGUI)
             except ImportError as imp_err:
                 self.after(0, lambda imp_err=imp_err: self._log_extract(
-                    f"ERROR: Could not import extraction functions — {imp_err}"))
+                    f"ERROR: Could not import extraction functions - {imp_err}"))
                 self.after(0, lambda: self.btn_next.config(state='normal'))
                 return
 
@@ -722,7 +722,7 @@ class ProjectSetupWizard(tk.Toplevel):
                 "You can extract features later from the Tools tab.\n\n"
                 "Skip for now?", parent=self):
             return
-        self._log_extract("(Skipped — you can run feature extraction later.)")
+        self._log_extract("(Skipped - you can run feature extraction later.)")
         self.btn_next.config(state='normal')
 
     # ------------------------------------------------------------------ Nav
@@ -759,7 +759,7 @@ class ProjectSetupWizard(tk.Toplevel):
         self.root.deiconify()
 
     def _on_close(self):
-        """User closed the wizard — exit at startup, return to main window mid-session."""
+        """User closed the wizard - exit at startup, return to main window mid-session."""
         self.grab_release()
         self.destroy()
         if self.root.winfo_viewable():
@@ -781,7 +781,7 @@ class KeyFileGeneratorDialog(tk.Toplevel):
     def __init__(self, parent, project_folder: str, video_basenames: list,
                  existing_groups: dict = None, on_save=None):
         super().__init__(parent)
-        self.title("PixelPaws — Key File")
+        self.title("PixelPaws - Key File")
         self.project_folder = project_folder
         self.video_basenames = list(video_basenames)
         self.on_save = on_save
@@ -796,14 +796,14 @@ class KeyFileGeneratorDialog(tk.Toplevel):
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
 
-        # Header — use theme primary color if ttkbootstrap available
+        # Header - use theme primary color if ttkbootstrap available
         try:
             _hdr_bg = self.master.nametowidget('.').style.colors.primary
         except Exception:
             _hdr_bg = '#2c5f8a'
         hdr = tk.Frame(self, bg=_hdr_bg, pady=10)
         hdr.pack(fill='x')
-        tk.Label(hdr, text="📋 Key File — Group Assignment",
+        tk.Label(hdr, text="📋 Key File - Group Assignment",
                  bg=_hdr_bg, fg='white', font=(FONT_FAMILY, 12, 'bold')).pack()
         tk.Label(hdr,
                  text="Assign each video to a group (e.g. Control, Treatment, Sham).",

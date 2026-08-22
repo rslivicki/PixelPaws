@@ -1,9 +1,9 @@
 """
-dlc_run_dialog.py — the GUI "Analyze Videos (Pose Tracking)" flow.
+dlc_run_dialog.py - the GUI "Analyze Videos (Pose Tracking)" flow.
 
 Two phases:
-    1. DLCRunDialog     — settings (device, batch size, video selection, chaining opts)
-    2. DLCProgressDialog — live progress while inference runs
+    1. DLCRunDialog     - settings (device, batch size, video selection, chaining opts)
+    2. DLCProgressDialog - live progress while inference runs
 
 Runs in the GUI's Python (which may lack deeplabcut/torch), so the actual inference
 is executed by shelling out to pipeline/dlc_analyze.py under
@@ -108,7 +108,7 @@ class DLCRunDialog(tk.Toplevel):
         self.providers: List[dict] = _probe_providers()
         self.result: Optional[dict] = None
 
-        self.title("Analyze Videos — Pose Tracking")
+        self.title("Analyze Videos - Pose Tracking")
         self.resizable(True, True)
         self.minsize(660, 560)
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
@@ -151,7 +151,7 @@ class DLCRunDialog(tk.Toplevel):
         for v in self.video_states:
             self.video_tree.insert("", "end", iid=str(v["index"]),
                                    values=(v["name"], v["duration"],
-                                           v.get("cal", "—"), v["status"]))
+                                           v.get("cal", "-"), v["status"]))
         self.video_tree.selection_set([
             str(v["index"]) for v in self.video_states if v["select_default"]
         ])
@@ -223,7 +223,7 @@ class DLCRunDialog(tk.Toplevel):
                         "~0.5 px and behavioral output is unchanged (validated "
                         "in the manuscript). The transcode keeps the video name; "
                         "the original moves to videos/raw/. Videos already "
-                        "H.265 are skipped. Encoding is slow — roughly "
+                        "H.265 are skipped. Encoding is slow - roughly "
                         "real-time per video.")
         else:
             _tr_hint = ("ffmpeg was not found on PATH; install ffmpeg to enable "
@@ -272,7 +272,7 @@ class DLCRunDialog(tk.Toplevel):
                 cap.release()
             except Exception:
                 pass
-            cal = "—"
+            cal = "-"
             try:
                 from pawcapture_meta import read_calibration
                 c = read_calibration(vp)
@@ -304,7 +304,7 @@ class DLCRunDialog(tk.Toplevel):
                 for v in self.video_states:
                     self.video_tree.insert("", "end", iid=str(v["index"]),
                                            values=(v["name"], v["duration"],
-                                                   v.get("cal", "—"),
+                                                   v.get("cal", "-"),
                                                    v["status"]))
                 self.video_tree.selection_set([
                     str(v["index"]) for v in self.video_states if v["select_default"]
@@ -356,7 +356,7 @@ class DLCRunDialog(tk.Toplevel):
         prov = self._provider_by_display(self.provider_var.get())
         if not prov.get("is_gpu"):
             self.cpu_warn.config(
-                text="⚠ CPU mode is 10–30× slower than GPU.")
+                text="⚠ CPU mode is 10-30× slower than GPU.")
         else:
             self.cpu_warn.config(text="")
 
@@ -429,7 +429,7 @@ class DLCProgressDialog(tk.Toplevel):
         ttk.Separator(outer).pack(fill="x", pady=10)
 
         ttk.Label(outer, text="Current video", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        self.current_label = ttk.Label(outer, text="—")
+        self.current_label = ttk.Label(outer, text="-")
         self.current_label.pack(anchor="w")
         self.current_bar = ttk.Progressbar(outer, mode="determinate", maximum=100)
         self.current_bar.pack(fill="x", pady=(2, 4))
@@ -497,14 +497,14 @@ class DLCProgressDialog(tk.Toplevel):
         try:
             from pp_pipeline import build_transcode_cmd, transcode_output_ok
         except Exception as e:
-            self._msg_queue.put(("log", f"✗ intake pipeline unavailable ({e!r}) — "
+            self._msg_queue.put(("log", f"✗ intake pipeline unavailable ({e!r}) - "
                                         "skipping transcode, tracking originals"))
             return videos
         import time as _time
         out = []
         n = len(videos)
         self._msg_queue.put(("log", f"Transcoding with the intake encode "
-                                    f"(H.265 CRF 23) — {n} video(s)"))
+                                    f"(H.265 CRF 23) - {n} video(s)"))
         for i, vp in enumerate(videos, 1):
             if self._cancelled:
                 return None
@@ -528,7 +528,7 @@ class DLCProgressDialog(tk.Toplevel):
                 src.rename(raw)
             except OSError as e:
                 self._msg_queue.put(("log", f"✗ {src.name}: could not move to "
-                                            f"videos/raw/ ({e}) — tracking original"))
+                                            f"videos/raw/ ({e}) - tracking original"))
                 out.append(str(src))
                 continue
             dst = src                      # same name, same folder
@@ -591,11 +591,11 @@ class DLCProgressDialog(tk.Toplevel):
                     dst.unlink()
                 raw.rename(src)
             except OSError as e:
-                self._msg_queue.put(("log", f"✗ {src.name}: restore failed ({e}) — "
+                self._msg_queue.put(("log", f"✗ {src.name}: restore failed ({e}) - "
                                             f"original is in videos/raw/"))
             if self._cancelled:
                 return None
-            self._msg_queue.put(("log", f"✗ {src.name}: transcode failed — "
+            self._msg_queue.put(("log", f"✗ {src.name}: transcode failed - "
                                         "tracking the original"))
             out.append(str(src))
         return out
@@ -680,7 +680,7 @@ class DLCProgressDialog(tk.Toplevel):
                     i, total, name, nframes = payload
                     self.current_label.config(text=f"({i}/{total}) {name}")
                     self.current_bar.config(value=0, maximum=100)
-                    self.current_stats.config(text=f"{nframes} frames — starting…")
+                    self.current_stats.config(text=f"{nframes} frames - starting…")
                     self._append_log(f"⟳ ({i}/{total}) {name}")
                 elif kind == "frames":
                     done, total, fps = payload

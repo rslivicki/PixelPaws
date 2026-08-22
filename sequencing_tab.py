@@ -1,4 +1,4 @@
-"""Sequencing tab — behavioural syntax with its OWN pipeline, end to end.
+"""Sequencing tab - behavioural syntax with its OWN pipeline, end to end.
 
 This tab does not inherit the Transitions tab's state assembly, deliberately. That path
 re-thresholds every classifier's probability at 0.5 and lets the highest probability win,
@@ -6,8 +6,8 @@ which discards the per-classifier operating points and bout post-processing the 
 were validated at. The correct inputs already exist: the Run Classifiers tab writes
 *_predictions.csv with a binary column that was thresholded at each classifier's own
 operating point and passed through its own bout filter. This tab consumes those calls
-directly and resolves overlaps by a user-ordered priority list — the same construction as
-the manuscript's battery figures — with no smoothing, no downsampling and no re-threshold.
+directly and resolves overlaps by a user-ordered priority list - the same construction as
+the manuscript's battery figures - with no smoothing, no downsampling and no re-threshold.
 
 Pipeline:  results folder -> scan *_predictions.csv -> per-frame priority resolution
            -> key file (Subject / Treatment / optional Animal for paired designs)
@@ -106,7 +106,7 @@ class SequencingTab(ttk.Frame):
         krow = ttk.Frame(pf)
         krow.pack(fill="x", padx=6, pady=(4, 2))
         ttk.Label(krow, text="Key file:").pack(side="left")
-        self._key_status = tk.StringVar(value="none — required for groups")
+        self._key_status = tk.StringVar(value="none - required for groups")
         ttk.Label(krow, textvariable=self._key_status, foreground="#666666",
                   justify="left", wraplength=170).pack(side="left", padx=(4, 4))
         _T(ttk.Button(krow, text="Browse", command=self._browse_key, width=7),
@@ -115,7 +115,7 @@ class SequencingTab(ttk.Frame):
            "on within-animal permutation.").pack(side="right")
         ttk.Label(pf, foreground="#888888", wraplength=240, justify="left",
                   text="Key columns: Subject, Treatment, and optionally Animal "
-                       "(or Pair/Block) naming which rows share a mouse — that "
+                       "(or Pair/Block) naming which rows share a mouse - that "
                        "switches on within-animal permutation.").pack(
             anchor="w", padx=6, pady=(0, 2))
 
@@ -239,8 +239,13 @@ class SequencingTab(ttk.Frame):
         _seq_erow = ttk.Frame(left)
         _seq_erow.pack(fill="x", pady=(8, 0))
         _T(ttk.Button(_seq_erow, text="Export figure…", command=self._export),
-           "Save the current figure as PNG, SVG, or PDF.").pack(
+           "Save the current figure as PNG, SVG, or PDF (300 dpi).").pack(
             side="left", fill="x", expand=True)
+        _T(ttk.Button(_seq_erow, text="Export CSV…", command=self._export_csv),
+           "The data behind the current view: pooled transition edge lists "
+           "(networks), per-edge differences vs the reference, or PCoA "
+           "coordinates per animal.").pack(side="left", fill="x",
+                                           expand=True, padx=(6, 0))
 
         _T(ttk.Button(left, text="Compute", command=self.compute),
            "Assemble per-frame states with the priority order, extract bout "
@@ -447,7 +452,7 @@ class SequencingTab(ttk.Frame):
             return
         if self._key_df is None:
             messagebox.showinfo("No key file",
-                                "Load a key file (Subject, Treatment[, Animal]) —\n"
+                                "Load a key file (Subject, Treatment[, Animal]) -\n"
                                 "sequencing compares groups.")
             return
         self._behaviors = list(self._prio_list.get(0, "end"))
@@ -670,6 +675,65 @@ class SequencingTab(ttk.Frame):
         if path:
             self._fig.savefig(path, dpi=300, bbox_inches="tight")
 
+    def _view_dataframe(self):
+        """(DataFrame, stem) behind the current view, for CSV export."""
+        if self._cohort is None:
+            raise ValueError("Compute a cohort first.")
+        c, groups = self._cohort, self._groups
+        view = self._view.get()
+        if view == "ordination":
+            xy, pcvar, _ = c.ordination()
+            rows = [{"session": s, "group": c.groups_per_session[i],
+                     "PC1": xy[i, 0], "PC2": xy[i, 1],
+                     "PC1_pct_var": pcvar[0], "PC2_pct_var": pcvar[1]}
+                    for i, s in enumerate(c.sessions)]
+            return pd.DataFrame(rows), "pcoa_coordinates"
+        if view == "difference":
+            ref = self._ref.get() or groups[0]
+            rows = []
+            refm = c.pooled[ref]
+            refp = refm / max(refm.sum(), 1)
+            for g in groups:
+                if g == ref:
+                    continue
+                gm = c.pooled[g]
+                gp = gm / max(gm.sum(), 1)
+                for i, a in enumerate(c.labels):
+                    for j, b in enumerate(c.labels):
+                        if gm[i, j] == 0 and refm[i, j] == 0:
+                            continue
+                        rows.append({"group": g, "reference": ref,
+                                     "from": a, "to": b,
+                                     "p_group": gp[i, j],
+                                     "p_reference": refp[i, j],
+                                     "delta_p": gp[i, j] - refp[i, j]})
+            return pd.DataFrame(rows), f"transition_differences_vs_{ref}"
+        # networks (default): pooled per-group edge list
+        rows = []
+        for g in groups:
+            m = c.pooled[g]
+            tot = max(m.sum(), 1)
+            for i, a in enumerate(c.labels):
+                for j, b in enumerate(c.labels):
+                    if m[i, j] == 0:
+                        continue
+                    rows.append({"group": g, "from": a, "to": b,
+                                 "count": int(m[i, j]),
+                                 "proportion": m[i, j] / tot})
+        return pd.DataFrame(rows), "pooled_transition_networks"
+
+    def _export_csv(self):
+        try:
+            df, stem = self._view_dataframe()
+        except Exception as e:
+            messagebox.showinfo("Nothing to export", str(e), parent=self)
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".csv", initialfile=f"{stem}.csv",
+            filetypes=[("CSV", "*.csv")])
+        if path:
+            df.to_csv(path, index=False)
+
     def _apply_stats_mode(self):
         """Swap the canvas and the stats table; refresh fills the visible one."""
         if self._stats_mode.get():
@@ -719,7 +783,7 @@ class SequencingTab(ttk.Frame):
         self._key_df = None
         self._session_filter.set_sessions([])
         self._prio_list.delete(0, "end")
-        self._key_status.set("none — required for groups")
+        self._key_status.set("none - required for groups")
         self._scan_status.set("Not scanned.")
         self._status.set("No cohort yet.")
         self._autofill_results()

@@ -1,12 +1,12 @@
-"""Reusable PixelPaws pipeline engine — transcode -> DLC -> features.
+"""Reusable PixelPaws pipeline engine - transcode -> DLC -> features.
 
 Generalizes the per-cohort run_pipeline.py into ONE parameterized tool. Stages
 stop at feature extraction; classification/analysis stays cohort-specific.
 
 All cohort-agnostic constants (webhooks, DLC config/python, feature hash/cfg,
-codec settings, repo path) come from pp_config — nothing is hardcoded here.
+codec settings, repo path) come from pp_config - nothing is hardcoded here.
 
-Stages (sequential, idempotent — each skips if its output already exists):
+Stages (sequential, idempotent - each skips if its output already exists):
   1. transcode : ffmpeg libx265 CRF23 preset slow, -an, -progress videos/.ffprog.txt
   2. dlc       : deeplabcut.analyze_videos via a per-video subprocess (DLC_PYTHON)
   3. features  : prediction_pipeline.PixelPaws_ExtractFeatures -> features/<stem>_features_<hash>.pkl
@@ -248,7 +248,7 @@ def stage_transcode(ctx: Ctx, pairs):
     n = len(pairs)
     pending = [(s, o) for (s, o) in pairs if not (o.is_file() and o.stat().st_size > 0) and s.is_file()]
     missing = [s for (s, o) in pairs if not s.is_file() and not o.is_file()]
-    ctx.note(f"▶ **[{ctx.cohort}] transcode** — {len(pending)} to encode "
+    ctx.note(f"▶ **[{ctx.cohort}] transcode** - {len(pending)} to encode "
              f"({n - len(pending)} done/missing)."
              + (" _[del-source ON]_" if ctx.delete_source else ""))
     if ctx.dry:
@@ -302,7 +302,7 @@ def stage_dlc(ctx: Ctx, pairs):
     vids = sorted({o for (_, o) in pairs if o.is_file()})
     pending = [v for v in vids if not find_h5(v)]
     ctx.set_stage(stage="dlc", pending=len(pending), total=len(vids))
-    ctx.note(f"▶ **[{ctx.cohort}] DLC pose** — {len(pending)} pending "
+    ctx.note(f"▶ **[{ctx.cohort}] DLC pose** - {len(pending)} pending "
              f"(of {len(vids)} transcoded).")
     if not pending:
         step("DLC: all tracked")
@@ -318,8 +318,8 @@ def stage_dlc(ctx: Ctx, pairs):
     ip.write_text(inner)
     dprog = ctx.videos / ".dlcprog.txt"          # per-video DLC tqdm capture -> tracker reads it/s
     # .dlcprog.txt is reset every video (the tracker needs the frame count to
-    # restart), so the DLC console output of any single video — including a crash
-    # traceback — would otherwise vanish. Mirror each video's full output into an
+    # restart), so the DLC console output of any single video - including a crash
+    # traceback - would otherwise vanish. Mirror each video's full output into an
     # append-only _run/dlc.log that survives both the per-video reset and reruns.
     dlclog = ctx.proj / "_run" / "dlc.log"
     try:
@@ -368,7 +368,7 @@ def stage_dlc(ctx: Ctx, pairs):
     if failed:
         step(f"⚠ DLC failed on {len(failed)}/{len(pending)} video(s): {failed}")
         ctx.note(f"⚠️ [{ctx.cohort}] DLC failed on {len(failed)}/{len(pending)} "
-                 f"(e.g. {failed[:4]}). Re-run to retry — done videos skip.")
+                 f"(e.g. {failed[:4]}). Re-run to retry - done videos skip.")
 
 
 # --- stage 3: features --------------------------------------------------------
@@ -403,7 +403,7 @@ def stage_features(ctx: Ctx, pairs):
     ctx.features.mkdir(parents=True, exist_ok=True)
     pending = [v for v in vids if not feature_pkl(ctx.features, v, ctx.feat_hash).is_file()]
     ftag = " _[pose-FILTERED]_" if ctx.filtered else ""
-    ctx.note(f"▶ **[{ctx.cohort}] features** — {len(pending)} pending (of {n} transcoded).{ftag}")
+    ctx.note(f"▶ **[{ctx.cohort}] features** - {len(pending)} pending (of {n} transcoded).{ftag}")
     if ctx.dry:
         step(f"[dry] would extract features ({ctx.feat_hash}) for {len(pending)} video(s)")
         return
@@ -485,7 +485,7 @@ def run(cohort: str, proj, portal=None, sources=None,
         step(f"  log -> {lp}")
 
     if dry:
-        step(f"=== DRY PLAN [{cohort}] — {len(pairs)} source(s), stages={','.join(stages)} ===")
+        step(f"=== DRY PLAN [{cohort}] - {len(pairs)} source(s), stages={','.join(stages)} ===")
         if delete_source:
             step("  [del-source ON] originals deleted inline after each verified transcode")
         for src, out in pairs:
@@ -519,12 +519,12 @@ def run(cohort: str, proj, portal=None, sources=None,
             step("=== FEATURES ===")
             stage_features(ctx, pairs)
     except BaseException as e:
-        # Record the crash before it propagates — the whole point of the run log.
+        # Record the crash before it propagates - the whole point of the run log.
         step(f"!!! RUN CRASHED ({type(e).__name__}): {e}")
         step(traceback.format_exc())
         ctx.set_stage(stage="crashed", error=f"{type(e).__name__}: {e}")
         try:
-            ctx.note(f"💥 **[{cohort}] pipeline CRASHED** — {type(e).__name__}: {e}. "
+            ctx.note(f"💥 **[{cohort}] pipeline CRASHED** - {type(e).__name__}: {e}. "
                      f"See `_run/pipeline.log`.")
         except Exception:
             pass

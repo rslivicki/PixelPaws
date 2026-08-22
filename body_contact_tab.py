@@ -9,15 +9,15 @@ and ``tailbase`` (a usable perineum / anus proxy).
 
 Both keypoints are produced by the existing 9-keypoint DLC model so
 no DLC retraining is needed. The brightness side requires that the
-project's ``bp_pixbrt_list`` includes ``centroid`` and ``tailbase`` —
+project's ``bp_pixbrt_list`` includes ``centroid`` and ``tailbase`` -
 add them via the project setup wizard before running this tab.
 
 Metrics per session, per keypoint (raw keypoint names throughout):
-  contact_pct_<bp>            — % frames classified as in contact
-  n_bouts_<bp>                — number of contact bouts after debounce
-  mean_bout_dur_<bp>          — mean contact-bout duration (seconds)
-  mean_brightness_<bp>        — mean Pix_<bp> over all frames
-  mean_brightness_contact_<bp>— mean Pix_<bp> during contact frames
+  contact_pct_<bp>            - % frames classified as in contact
+  n_bouts_<bp>                - number of contact bouts after debounce
+  mean_bout_dur_<bp>          - mean contact-bout duration (seconds)
+  mean_brightness_<bp>        - mean Pix_<bp> over all frames
+  mean_brightness_contact_<bp>- mean Pix_<bp> during contact frames
 
 Detection method (radio): ``brightness`` (default), ``height``,
 ``combined`` (AND).
@@ -100,10 +100,10 @@ _METHODS = ('brightness', 'height', 'combined')
 # but all four are computed and visible in the preview readout so the
 # user can build intuition on which signal best separates contact.
 #
-#   raw         Pix_<bp>                                      — animal-dependent, lighting-dependent
-#   dbrt        Pix_baseline_sub_<bp>  (raw − session_median) — animal-invariant via per-session normalization
-#   z           (raw − session_mean) / session_std            — same idea as ΔBrt but in standard-deviation units
-#   frac_bright count(ROI_pixels > floor) / count(ROI_pixels) — closest to a physical unit; needs an absolute floor
+#   raw         Pix_<bp>                                      - animal-dependent, lighting-dependent
+#   dbrt        Pix_baseline_sub_<bp>  (raw − session_median) - animal-invariant via per-session normalization
+#   z           (raw − session_mean) / session_std            - same idea as ΔBrt but in standard-deviation units
+#   frac_bright count(ROI_pixels > floor) / count(ROI_pixels) - closest to a physical unit; needs an absolute floor
 _SIGNALS = ('raw', 'dbrt', 'z', 'frac_bright')
 
 # Pretty labels for the radio + threshold spinbox.
@@ -116,7 +116,7 @@ _SIGNAL_LABELS = {
 
 
 class BodyContactTab(ttk.Frame):
-    """Body-contact analysis (centroid + tailbase) — sibling of GaitLimbTab."""
+    """Body-contact analysis (centroid + tailbase) - sibling of GaitLimbTab."""
 
     def __init__(self, parent, main_gui):
         super().__init__(parent)
@@ -148,7 +148,7 @@ class BodyContactTab(ttk.Frame):
         self._raw_thresh_vars = {bp: tk.DoubleVar(value=80.0) for bp in _TARGETS}
         self._z_thresh_vars   = {bp: tk.DoubleVar(value=2.0)  for bp in _TARGETS}
         self._fb_thresh_vars  = {bp: tk.DoubleVar(value=0.30) for bp in _TARGETS}
-        # ROI half-size per keypoint — mirrors gait tab's per-paw
+        # ROI half-size per keypoint - mirrors gait tab's per-paw
         # ROI half-size spinboxes; 30 px is a sensible midpoint
         # default for centroid / tailbase (paws use 25 in the gait tab).
         self._roi_half_vars = {bp: tk.IntVar(value=30) for bp in _TARGETS}
@@ -193,7 +193,7 @@ class BodyContactTab(ttk.Frame):
                   font=(FONT_FAMILY, 13, 'bold')).pack(side='left')
         ttk.Label(
             hdr,
-            text="  midline keypoints — brightness is the cleaner pressure signal",
+            text="  midline keypoints - brightness is the cleaner pressure signal",
             foreground='grey').pack(side='left', padx=(6, 0))
 
         paned = ttk.PanedWindow(self, orient='horizontal')
@@ -261,7 +261,7 @@ class BodyContactTab(ttk.Frame):
                                           length=120)
         self._progress.pack(side='left', padx=4)
 
-        # Sub-progress label — names the current step within each
+        # Sub-progress label - names the current step within each
         # session. Mirrors the gait tab's `_sub_progress_label` pattern.
         # Empty string when idle.
         self._sub_progress_var = tk.StringVar(value='')
@@ -270,7 +270,7 @@ class BodyContactTab(ttk.Frame):
                    wraplength=290, justify='left').pack(
             anchor='w', padx=8, pady=(0, 4))
 
-        # Brightness-extraction status banner — shown when the project
+        # Brightness-extraction status banner - shown when the project
         # has bp_pixbrt_list including centroid/tailbase but the cached
         # features for the current sessions don't have those columns
         # (i.e., re-extraction is required for brightness-mode to work
@@ -278,7 +278,7 @@ class BodyContactTab(ttk.Frame):
         # --continuous on the project folder. Hidden by default;
         # _refresh_extraction_banner() decides when to show it.
         self._banner_frame = ttk.Frame(parent)
-        # not packed yet — _refresh_extraction_banner controls visibility
+        # not packed yet - _refresh_extraction_banner controls visibility
         self._banner_var = tk.StringVar(value='')
         ttk.Label(self._banner_frame, textvariable=self._banner_var,
                    foreground='#993300', font=('TkDefaultFont', 9, 'bold'),
@@ -324,7 +324,7 @@ class BodyContactTab(ttk.Frame):
                   justify='left').grid(row=1, column=0, columnspan=3,
                                         sticky='w', pady=(2, 0))
 
-        # Brightness signal selector — controls which derived signal
+        # Brightness signal selector - controls which derived signal
         # the brightness-mode threshold compares against. All four are
         # visible in the preview readout regardless. raw / dbrt / z
         # work today; frac_bright is preview-only in v1 because it
@@ -347,7 +347,7 @@ class BodyContactTab(ttk.Frame):
                     textvariable=self._frac_bright_floor_var).pack(
             side='left', padx=4)
 
-        # Per-keypoint thresholds — one column per signal so the user
+        # Per-keypoint thresholds - one column per signal so the user
         # can keep separate thresholds for each, then switch signals
         # via the radio above without retuning every time.
         thr_lf = ttk.LabelFrame(parent, text="Thresholds", padding=5)
@@ -377,7 +377,7 @@ class BodyContactTab(ttk.Frame):
             row=len(_TARGETS) + 1, column=0, columnspan=6, sticky='w',
             pady=(4, 0))
 
-        # ROI half-size (per keypoint) — used by the live preview to
+        # ROI half-size (per keypoint) - used by the live preview to
         # draw the brightness sample square. Larger than the paw default
         # because centroid / tailbase sit higher above the floor and a
         # narrow ROI misses the surrounding pressed-flesh halo.
@@ -391,7 +391,7 @@ class BodyContactTab(ttk.Frame):
                         textvariable=self._roi_half_vars[bp]).grid(
                 row=i, column=1, padx=4, pady=2)
 
-        # Smoothing — DLC dropout gating + rolling-median on the
+        # Smoothing - DLC dropout gating + rolling-median on the
         # brightness signal. Defaults are tuned for 60 fps:
         # 0.6 likelihood threshold (matches gait tab), 10-frame
         # interpolation gap limit (~167 ms), 5-frame rolling-median
@@ -439,7 +439,7 @@ class BodyContactTab(ttk.Frame):
         ttk.Spinbox(fps_row, from_=15, to=240, increment=15, width=6,
                     textvariable=self._fallback_fps_var).pack(side='left')
 
-        # Live preview button — opens a frame-scrubbing window with
+        # Live preview button - opens a frame-scrubbing window with
         # centroid + tailbase ROIs and live contact decisions, mirroring
         # the gait tab's "Preview brightness…" button on its Parameters
         # tab (gait_limb_tab.py:431).
@@ -460,7 +460,7 @@ class BodyContactTab(ttk.Frame):
             parent,
             text=("Centroid + tailbase are MIDLINE points, not literal\n"
                   "floor-contact landmarks. Height alone can't distinguish\n"
-                  "'lying flat' from 'pressing belly down' — brightness is\n"
+                  "'lying flat' from 'pressing belly down' - brightness is\n"
                   "the cleaner pressure proxy."),
             foreground='#993300', font=('TkDefaultFont', 8),
             justify='left', wraplength=290)
@@ -501,7 +501,7 @@ class BodyContactTab(ttk.Frame):
         # Drop fps/n_frames (uninteresting per row), drop n_bouts +
         # whole-session brightness (kept in the CSV export, not the
         # table). Replace the brt / brt_contact pair with a single
-        # `dbrt` = brt_contact - brt — the pressure-driven brightness
+        # `dbrt` = brt_contact - brt - the pressure-driven brightness
         # shift that's the actual point of the metric.
         res_lf = ttk.LabelFrame(parent, text="Results", padding=3)
         res_lf.pack(fill='both', expand=True, padx=4, pady=(0, 2))
@@ -541,7 +541,7 @@ class BodyContactTab(ttk.Frame):
             parent,
             text=("%  = contact_pct over the session  |  "
                   "MBd = mean bout duration (s)\n"
-                  "ΔBrt = brightness during contact – overall brightness "
+                  "ΔBrt = brightness during contact - overall brightness "
                   "(pressure-driven shift)\n"
                   "Whole-session brightness, n_bouts, fps, frame counts "
                   "are kept in the CSV export."),
@@ -573,7 +573,7 @@ class BodyContactTab(ttk.Frame):
         """Thread-safe sub-progress label update.
 
         Called from the analysis thread to surface what step is
-        running for the current session — `Loading cache for X…`,
+        running for the current session - `Loading cache for X…`,
         `Computing centroid signal…`, etc.
         """
         try:
@@ -590,7 +590,7 @@ class BodyContactTab(ttk.Frame):
 
         Banner appears when one of:
           (a) centroid or tailbase is *not* in the project's
-              `bp_pixbrt_list` — only height mode will work.
+              `bp_pixbrt_list` - only height mode will work.
           (b) keypoint *is* in `bp_pixbrt_list` but the cached pkl
               for the first scanned session is missing `Pix_<bp>`.
               Caches predate the current config; re-extraction needed.
@@ -643,7 +643,7 @@ class BodyContactTab(ttk.Frame):
                                f"{' / '.join(missing)} not yet "
                                "extracted on this project. Cached "
                                "pkls predate the current "
-                               "`bp_pixbrt_list` — re-run feature "
+                               "`bp_pixbrt_list` - re-run feature "
                                "extraction to populate the "
                                "Pix_<bp> columns.")
         except Exception as e:
@@ -1025,7 +1025,7 @@ class BodyContactTab(ttk.Frame):
             raise ValueError(f"{cache_path}: expected DataFrame, got "
                               f"{type(X).__name__}")
 
-        # FPS — try video metadata, fall back to user setting
+        # FPS - try video metadata, fall back to user setting
         fps = self._lookup_fps(sess, params['fallback_fps'])
 
         method = params['method']
@@ -1040,7 +1040,7 @@ class BodyContactTab(ttk.Frame):
         # Step-2 smoothing knobs. Likelihood gating reads per-keypoint
         # `<bp>_prob` from the DLC h5 (since cached features don't keep
         # the raw probabilities). Loaded once per session, even if the
-        # gate is off — cheap and avoids the load if the pkl is huge.
+        # gate is off - cheap and avoids the load if the pkl is huge.
         use_gate         = bool(params.get('use_like_gate', False))
         like_thresh      = float(params.get('like_thresh', 0.6))
         like_gap_limit   = int(params.get('like_gap_limit', 10))
@@ -1079,7 +1079,7 @@ class BodyContactTab(ttk.Frame):
                 like_gap_limit=like_gap_limit,
                 smooth_window=smooth_window)
             if mask is None:
-                # Required column missing — emit NaNs but keep going so
+                # Required column missing - emit NaNs but keep going so
                 # the user can see which keypoint is missing.
                 for k in (f'cpct_{bp}', f'nbouts_{bp}', f'mbout_{bp}',
                            f'brt_{bp}', f'brt_contact_{bp}',
@@ -1089,7 +1089,7 @@ class BodyContactTab(ttk.Frame):
             mask = self._debounce(mask, min_bout_frames)
             n_bouts, mean_bout_dur = self._bout_stats(mask, fps)
 
-            # Per-bout list — uses the same smoothed signal that drove
+            # Per-bout list - uses the same smoothed signal that drove
             # the mask, plus the raw <bp>_Height column, so the stats
             # in the bouts CSV match what the threshold actually fired
             # on. Empty list when the brightness signal isn't available
@@ -1144,7 +1144,7 @@ class BodyContactTab(ttk.Frame):
         """Return the per-frame brightness signal as a Series, or None
         when the required cache column is missing.
 
-        Computed BEFORE smoothing — the caller is responsible for
+        Computed BEFORE smoothing - the caller is responsible for
         applying likelihood-gating + rolling-median if requested.
         """
         if signal == 'raw':
@@ -1163,7 +1163,7 @@ class BodyContactTab(ttk.Frame):
                 if std > 1e-12:
                     return ((v - v.mean()) / std).copy()
         elif signal == 'frac_bright':
-            # Preview-only — needs per-frame ROI pixel counts.
+            # Preview-only - needs per-frame ROI pixel counts.
             return None
         return None
 
@@ -1353,7 +1353,7 @@ class BodyContactTab(ttk.Frame):
             return
         df = pd.DataFrame(rows)
         # CSV export keeps every column (whole-session brightness,
-        # n_bouts, fps, frame counts) — only the treeview is trimmed.
+        # n_bouts, fps, frame counts) - only the treeview is trimmed.
         cols = ['session', 'subject', 'treatment', 'fps', 'n_frames']
         for bp in _TARGETS:
             cols += [f'cpct_{bp}', f'nbouts_{bp}', f'mbout_{bp}',
@@ -1391,7 +1391,7 @@ class BodyContactTab(ttk.Frame):
     @staticmethod
     def _fmt(v):
         if v is None or (isinstance(v, float) and np.isnan(v)):
-            return '—'
+            return '-'
         return v if isinstance(v, str) else str(v)
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -1431,7 +1431,7 @@ class BodyContactTab(ttk.Frame):
         if self._bouts_df is None or self._bouts_df.empty:
             messagebox.showinfo(
                 "No bouts",
-                "No bouts to export — either no contact was detected "
+                "No bouts to export - either no contact was detected "
                 "or the analysis hasn't run on a brightness mode that "
                 "produces a signal trace.", parent=self)
             return
@@ -1568,7 +1568,7 @@ class BodyContactTab(ttk.Frame):
             return
         n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        # No local var copies — preview reads/writes the main panel
+        # No local var copies - preview reads/writes the main panel
         # vars directly so changing a threshold in the preview takes
         # effect for analysis runs too. Simpler state, less to keep
         # in sync. Per-signal threshold dicts are mapped here for
@@ -1581,7 +1581,7 @@ class BodyContactTab(ttk.Frame):
         }
 
         win = tk.Toplevel(self)
-        win.title(f"Body-Contact Preview — {sess['session_name']}")
+        win.title(f"Body-Contact Preview - {sess['session_name']}")
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
         w, h = int(sw * 0.65), int(sh * 0.70)
         win.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
@@ -1589,8 +1589,8 @@ class BodyContactTab(ttk.Frame):
                      lambda: (cap.release(), win.destroy()))
 
         # ── Layout ─────────────────────────────────────────────────
-        # Left  — video canvas (fills remaining space)
-        # Right — compact controls panel, narrower than v1.
+        # Left  - video canvas (fills remaining space)
+        # Right - compact controls panel, narrower than v1.
         ctrl = ttk.Frame(win, padding=6)
         ctrl.pack(side='right', fill='y')
 
@@ -1677,7 +1677,7 @@ class BodyContactTab(ttk.Frame):
                              variable=self._signal_var,
                              value=s).pack(anchor='w', padx=4)
 
-        # ── Per-keypoint thresholds — a row per (signal × Height/ROI) ──
+        # ── Per-keypoint thresholds - a row per (signal × Height/ROI) ──
         # Active signal's brightness threshold is highlighted bold; the
         # others are grey so the user knows which one is in effect.
         thr_lf = ttk.LabelFrame(ctrl, text="Thresholds", padding=4)
@@ -1715,7 +1715,7 @@ class BodyContactTab(ttk.Frame):
         readout_lbls = {}
         for bp in _TARGETS:
             readout_lbls[bp] = ttk.Label(
-                readout_lf, text=f"{bp}: —", anchor='w',
+                readout_lf, text=f"{bp}: -", anchor='w',
                 font=('Consolas', 8), justify='left')
             readout_lbls[bp].pack(fill='x', pady=1)
         cache_hint_lbl = ttk.Label(
@@ -1745,12 +1745,12 @@ class BodyContactTab(ttk.Frame):
 
         if cached_X is not None:
             cache_hint_lbl.config(
-                text=("✓ cached features loaded — ΔBrt, z use cache; "
+                text=("✓ cached features loaded - ΔBrt, z use cache; "
                       "raw, frac_bright recomputed live"))
         else:
             cache_hint_lbl.config(
-                text=("⚠ no cached features for this session — "
-                      "ΔBrt and z will read '—'; raw and frac_bright "
+                text=("⚠ no cached features for this session - "
+                      "ΔBrt and z will read '-'; raw and frac_bright "
                       "still work"))
 
         _after_id = [None]
@@ -1774,11 +1774,11 @@ class BodyContactTab(ttk.Frame):
 
         def _fmt_signed(v, w=6, prec=2):
             return f'{v:+{w}.{prec}f}' if (v is not None and v == v) \
-                                          else f'{"—":>{w}}'
+                                          else f'{"-":>{w}}'
 
         def _fmt_pos(v, w=6, prec=2):
             return f'{v:{w}.{prec}f}' if (v is not None and v == v) \
-                                          else f'{"—":>{w}}'
+                                          else f'{"-":>{w}}'
 
         def _do_render():
             fi = max(0, min(_safe_int(frame_var, 0), n_frames - 1))
@@ -1894,7 +1894,7 @@ class BodyContactTab(ttk.Frame):
                           f"fb={_fmt_pos(fb_val, 5, 2)}"
                           f"{contact_str}"))
 
-            # HUD — frame / method / signal + per-keypoint bout context
+            # HUD - frame / method / signal + per-keypoint bout context
             # when the current frame is inside a detected bout.
             hud_lines = [f"frame {fi}/{n_frames - 1}  "
                           f"method={method}  signal={signal}"]
@@ -2046,7 +2046,7 @@ class BodyContactTab(ttk.Frame):
         self._last_graph_cfg = graph_cfg
 
         win = tk.Toplevel(self)
-        win.title("Body Contact — Graphs")
+        win.title("Body Contact - Graphs")
         sw = win.winfo_screenwidth()
         sh = win.winfo_screenheight()
         gw = int(sw * 0.72)
@@ -2075,8 +2075,8 @@ class BodyContactTab(ttk.Frame):
 
         # ── Contact % (cpct_centroid, cpct_tailbase) ────────────────────
         for col, label, bp in [
-            ('cpct_centroid', 'Contact % — Centroid', 'centroid'),
-            ('cpct_tailbase', 'Contact % — Tailbase', 'tailbase'),
+            ('cpct_centroid', 'Contact % - Centroid', 'centroid'),
+            ('cpct_tailbase', 'Contact % - Tailbase', 'tailbase'),
         ]:
             if col not in df.columns or not df[col].notna().any():
                 continue
@@ -2097,9 +2097,9 @@ class BodyContactTab(ttk.Frame):
 
         # ── Mean bout duration (s) ──────────────────────────────────────
         for col, label, bp in [
-            ('mbout_centroid', 'Mean Bout Duration — Centroid',
+            ('mbout_centroid', 'Mean Bout Duration - Centroid',
              'centroid'),
-            ('mbout_tailbase', 'Mean Bout Duration — Tailbase',
+            ('mbout_tailbase', 'Mean Bout Duration - Tailbase',
              'tailbase'),
         ]:
             if col not in df.columns or not df[col].notna().any():
@@ -2118,10 +2118,10 @@ class BodyContactTab(ttk.Frame):
                 description=f'Bar with mean ± SEM of the {bp} mean '
                             f'bout duration, per treatment.')
 
-        # ── ΔBrt = brightness during contact – overall brightness ───────
+        # ── ΔBrt = brightness during contact - overall brightness ───────
         for col, label, bp in [
-            ('dbrt_centroid', 'ΔBrt — Centroid', 'centroid'),
-            ('dbrt_tailbase', 'ΔBrt — Tailbase', 'tailbase'),
+            ('dbrt_centroid', 'ΔBrt - Centroid', 'centroid'),
+            ('dbrt_tailbase', 'ΔBrt - Tailbase', 'tailbase'),
         ]:
             if col not in df.columns or not df[col].notna().any():
                 continue
@@ -2246,7 +2246,7 @@ class BodyContactTab(ttk.Frame):
             pass
 
         win = tk.Toplevel(self)
-        win.title(f"Body contact — {name}")
+        win.title(f"Body contact - {name}")
         sw = win.winfo_screenwidth()
         sh = win.winfo_screenheight()
         gw = int(sw * 0.70)
@@ -2306,7 +2306,7 @@ class BodyContactTab(ttk.Frame):
         elif ncols == 1:
             axes = np.asarray(axes).reshape(-1, 1)
 
-        # Per-bodypart contact masks — one per column.
+        # Per-bodypart contact masks - one per column.
         bp_masks = {}
         for bp in _TARGETS:
             try:
@@ -2372,7 +2372,7 @@ class BodyContactTab(ttk.Frame):
                     ax.set_xlabel(x_label, fontsize=9)
 
         fig.suptitle(
-            f"{name}  —  per-signal time-course "
+            f"{name}  -  per-signal time-course "
             f"(gold shading = contact under method={method}, "
             f"signal={active_signal})",
             fontsize=10)

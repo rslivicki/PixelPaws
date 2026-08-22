@@ -221,18 +221,18 @@ def _has_label(frame):
 
 def test_registry_categories(registry):
     cats = list(registry.keys())
-    for expected in ['Paw Contact', 'Limb Use — Hind', 'Limb Use — Fore',
-                     'Contact % / Brightness', 'Gait — Timing',
-                     'Gait — Spatial', 'Gait — Symmetry', 'Movement',
-                     'Coordination', 'Paw Contour — Hind Left',
-                     'Paw Contour — Ratios',
-                     'Paw Contour — Filter Preview',
-                     'Paw Contour — Filtered — Hind Left',
-                     'Paw Contour — Filtered — Ratios',
+    for expected in ['Paw Contact', 'Limb Use - Hind', 'Limb Use - Fore',
+                     'Contact % / Brightness', 'Gait - Timing',
+                     'Gait - Spatial', 'Gait - Symmetry', 'Movement',
+                     'Coordination', 'Paw Contour - Hind Left',
+                     'Paw Contour - Ratios',
+                     'Paw Contour - Filter Preview',
+                     'Paw Contour - Filtered - Hind Left',
+                     'Paw Contour - Filtered - Ratios',
                      'Statistics']:
         assert expected in cats, f'missing category {expected}: {cats}'
     # Full Stance stays hidden unless graph_sets enables it (old default)
-    assert not any(c.startswith('Paw Contour — Full Stance') for c in cats)
+    assert not any(c.startswith('Paw Contour - Full Stance') for c in cats)
     # entry contract
     for cat, entries in registry.items():
         assert entries, f'empty category {cat}'
@@ -264,20 +264,20 @@ def test_every_entry_builds(root, host, registry):
 def test_graceful_degradation_without_intermediates(root):
     h = _mk_host(intermediates={})
     reg = gv.build_registry(h)
-    shape_entry = next(e for e in reg['Paw Contour — Hind Left']
+    shape_entry = next(e for e in reg['Paw Contour - Hind Left']
                        if e['display_name'] == 'Shape')
     frame = ttk.Frame(root)
     gv.render_entry(h, frame, shape_entry)
     assert _has_label(frame) and not _has_figure(frame)
     # filter preview also degrades
-    fp_entry = reg['Paw Contour — Filter Preview'][0]
+    fp_entry = reg['Paw Contour - Filter Preview'][0]
     gv.render_entry(h, frame, fp_entry)
     assert _has_label(frame) and not _has_figure(frame)
 
 
 def test_stats_mode(root, host, registry):
     # a data-backed entry gets a real table
-    e = next(x for x in registry['Limb Use — Hind']
+    e = next(x for x in registry['Limb Use - Hind']
              if x['display_name'] == 'WBI Hind')
     assert e['has_stats']
     frame = ttk.Frame(root)
@@ -321,15 +321,15 @@ def test_injured_flip_hr_inverts_display_without_mutation():
 
 
 def test_export_entry_csv(tmp_path, host, registry):
-    bar = next(x for x in registry['Limb Use — Hind']
+    bar = next(x for x in registry['Limb Use - Hind']
                if x['display_name'] == 'WBI Hind')
     p1 = tmp_path / 'bar.csv'
     assert gv.export_entry_csv(host, bar, str(p1)) == str(p1)
     out = pd.read_csv(p1)
     assert list(out.columns) == ['treatment', 'WBI_hind']
     assert len(out) == 8
-    tc = next(x for x in registry['Limb Use — Hind']
-              if x['display_name'] == 'WBI Hind — TC')
+    tc = next(x for x in registry['Limb Use - Hind']
+              if x['display_name'] == 'WBI Hind - TC')
     p2 = tmp_path / 'tc.csv'
     assert gv.export_entry_csv(host, tc, str(p2)) == str(p2)
     out2 = pd.read_csv(p2)
@@ -355,8 +355,8 @@ def test_wb_statistics(tmp_path, host):
                   'treatments': ['Vehicle', 'Drug'],
                   'metrics': ['WBI_hind', 'SI_hind']}
     frame_df = gv.wb_statistics_frame(host, stats_data)
-    assert (frame_df['Section'] == 'Summary — WBI_hind').any()
-    assert (frame_df['Section'].str.startswith('Test — ')).any()
+    assert (frame_df['Section'] == 'Summary - WBI_hind').any()
+    assert (frame_df['Section'].str.startswith('Test - ')).any()
     p = tmp_path / 'stats.csv'
     assert gv.export_wb_statistics(host, stats_data, path=str(p)) == str(p)
     assert p.exists()
@@ -386,7 +386,7 @@ def test_pawlike_change_hook_via_apply(root):
     fired = []
     h.on_pawlike_change = lambda: fired.append(True)
     reg = gv.build_registry(h)
-    fp_entry = reg['Paw Contour — Filter Preview'][0]
+    fp_entry = reg['Paw Contour - Filter Preview'][0]
     frame = ttk.Frame(root)
     gv.render_entry(h, frame, fp_entry)
     root.update_idletasks()
@@ -400,7 +400,7 @@ def test_pawlike_change_hook_via_apply(root):
 
 def test_render_entry_closes_previous_figures(root, host, registry):
     frame = ttk.Frame(root)
-    e = next(x for x in registry['Limb Use — Hind']
+    e = next(x for x in registry['Limb Use - Hind']
              if x['display_name'] == 'WBI Hind')
     gv.render_entry(host, frame, e)
     n_open = len(plt.get_fignums())

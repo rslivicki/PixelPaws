@@ -10,7 +10,7 @@ module through:
     reg   = build_registry(host)          # {category: [entry, ...]}
     render_entry(host, frame, entry)      # build one graph into a frame
 
-Widgets are still tkinter/ttk + embedded matplotlib figures — what is banned
+Widgets are still tkinter/ttk + embedded matplotlib figures - what is banned
 here is reading Tk *variables* or the application object; every input comes
 through the ViewHost. All metric math, display names, y-labels, descriptions
 and tooltip texts are kept verbatim from gait_limb_tab.py.
@@ -100,7 +100,7 @@ _PAW_LABELS = {'HL': 'Hind Left', 'HR': 'Hind Right',
 
 
 # ── Pure contour statics ─────────────────────────────────────────────────────
-# TODO: dedupe with gait_core — imported from there when available so both
+# TODO: dedupe with gait_core - imported from there when available so both
 # modules share one implementation; local copies (verbatim from
 # gait_limb_tab) are the fallback while gait_core is being extracted.
 
@@ -263,7 +263,7 @@ def _treatment_groups(df: pd.DataFrame, metric: str) -> dict:
 
 
 def _treatment_labels(df: pd.DataFrame, graph_cfg) -> tuple:
-    """(has_treats, ordered treatment label list) — the repeated block from
+    """(has_treats, ordered treatment label list) - the repeated block from
     the grouped/contour builders (sorted fallback, cfg order wins)."""
     has_treats = ('treatment' in df.columns
                   and df['treatment'].ne('').any()
@@ -492,7 +492,7 @@ def injured_display_frame(host, src: pd.DataFrame, col: str) -> pd.DataFrame:
     Stored ratio columns are literal HL/HR; when the injured paw is HR the
     displayed value is inverted (1/x) so every ratio graph reads
     injured/contralateral. Unlike the old _hl_col/_disp_col helpers this
-    NEVER mutates *src* and never introduces extra ``*_injflip`` columns —
+    NEVER mutates *src* and never introduces extra ``*_injflip`` columns -
     it returns *src* untouched for HL, or a copy with *col* replaced for HR
     (so CSV exports carry the displayed value under the original name).
     """
@@ -1004,7 +1004,7 @@ def build_timecourse_graph(host, frame, bins_df, metric, tab_name,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Export (per-graph CSV / PNG) — headless core + button bar
+# Export (per-graph CSV / PNG) - headless core + button bar
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _export_dataframe(groups, metric, graph_cfg, data_type='summary',
@@ -1277,6 +1277,19 @@ def add_support_pattern_tab(host, frame, df):
             f.savefig(path, dpi=300, bbox_inches='tight')
 
     ttk.Button(btn_bar, text="Export Graph", command=_exp_graph).pack(side='left', padx=4)
+
+    def _exp_data():
+        path = filedialog.asksaveasfilename(
+            defaultextension='.csv', filetypes=[('CSV', '*.csv')],
+            initialfile='Support_patterns.csv',
+            parent=frame.winfo_toplevel())
+        if not path:
+            return
+        keep = ['session', 'subject', 'treatment'] + \
+               [c for c in support_cols if c in df.columns]
+        df[[c for c in keep if c in df.columns]].to_csv(path, index=False)
+
+    ttk.Button(btn_bar, text="Export Data", command=_exp_data).pack(side='left', padx=2)
     _embed_figure(frame, fig, ax=ax)
 
 
@@ -1394,7 +1407,7 @@ def add_contour_shape_tab(host, frame, sessions_df, intermediates, role,
 
     ax.axhline(0, color='gray', linewidth=0.5, alpha=0.3)
     ax.axvline(0, color='gray', linewidth=0.5, alpha=0.3)
-    _style_ax(ax, title=f'Mean Contour — {paw_label}',
+    _style_ax(ax, title=f'Mean Contour - {paw_label}',
               xlabel='Normalized X', ylabel='Normalized Y')
     if len(treatment_labels) > 1:
         ax.legend(fontsize=9)
@@ -1414,6 +1427,32 @@ def add_contour_shape_tab(host, frame, sessions_df, intermediates, role,
             f.savefig(path, dpi=300, bbox_inches='tight')
 
     ttk.Button(btn_bar, text="Export Graph", command=_exp_graph).pack(side='left', padx=4)
+
+    def _exp_data(n=f'contour_shape_{role}'):
+        path = filedialog.asksaveasfilename(
+            defaultextension='.csv', filetypes=[('CSV', '*.csv')],
+            initialfile=f'{n}.csv', parent=frame.winfo_toplevel())
+        if not path:
+            return
+        rows = []
+        for treat in treatment_labels:
+            shapes = treat_shapes.get(treat) or []
+            if not shapes:
+                continue
+            stacked = np.array(shapes)
+            mean_shape = stacked.mean(axis=0)
+            sd_shape = (stacked.std(axis=0, ddof=1) if len(stacked) > 1
+                        else np.zeros_like(mean_shape))
+            for vi in range(mean_shape.shape[0]):
+                rows.append({'treatment': treat, 'n_shapes': len(stacked),
+                             'vertex': vi,
+                             'mean_x': mean_shape[vi, 0],
+                             'mean_y': mean_shape[vi, 1],
+                             'sd_x': sd_shape[vi, 0],
+                             'sd_y': sd_shape[vi, 1]})
+        pd.DataFrame(rows).to_csv(path, index=False)
+
+    ttk.Button(btn_bar, text="Export Data", command=_exp_data).pack(side='left', padx=2)
     _embed_figure(frame, fig, ax=ax)
 
 
@@ -1425,8 +1464,8 @@ def add_contour_print_tab(host, frame, sessions_df, intermediates, role,
     Parameters
     ----------
     group_by : str
-        'treatment' — one subplot per treatment group (default).
-        'subject'  — one subplot per subject, colored by treatment.
+        'treatment' - one subplot per treatment group (default).
+        'subject'  - one subplot per subject, colored by treatment.
     n_prints : int
         Number of representative contours to draw. 1 gives a single
         clean print with no background cloud.
@@ -1598,9 +1637,9 @@ def add_contour_print_tab(host, frame, sessions_df, intermediates, role,
             axes_flat[j].set_visible(False)
 
         if group_by == 'subject':
-            fig.suptitle(f'Paw Print — {paw_label} (by Subject)', fontsize=12)
+            fig.suptitle(f'Paw Print - {paw_label} (by Subject)', fontsize=12)
         elif n_groups > 1:
-            fig.suptitle(f'Paw Print — {paw_label}', fontsize=12)
+            fig.suptitle(f'Paw Print - {paw_label}', fontsize=12)
 
         state['fig'] = fig
         canvas = FigureCanvasTkAgg(fig, master=frame)
@@ -1633,6 +1672,30 @@ def add_contour_print_tab(host, frame, sessions_df, intermediates, role,
             state['fig'].savefig(path, dpi=300, bbox_inches='tight')
 
     ttk.Button(btn_bar, text="Export Graph", command=_exp_graph).pack(side='left', padx=4)
+
+    def _exp_data():
+        path = filedialog.asksaveasfilename(
+            defaultextension='.csv', filetypes=[('CSV', '*.csv')],
+            initialfile=f'contour_print_{role}{suffix}.csv',
+            parent=frame.winfo_toplevel())
+        if not path:
+            return
+        rows = []
+        off = state.get('offset', 0)
+        for gd in group_data:
+            stacked = gd['stacked']
+            idx = gd['sorted_idx']
+            picks = idx[off * n_prints:(off + 1) * n_prints]
+            for rank, si in enumerate(picks):
+                shp = stacked[si]
+                for vi in range(shp.shape[0]):
+                    rows.append({'group': gd.get('label', ''),
+                                 'print_rank': rank, 'shape_index': int(si),
+                                 'vertex': vi,
+                                 'x': shp[vi, 0], 'y': shp[vi, 1]})
+        pd.DataFrame(rows).to_csv(path, index=False)
+
+    ttk.Button(btn_bar, text="Export Data", command=_exp_data).pack(side='left', padx=2)
 
     # Navigation buttons (prev / next contour selection)
     def _prev():
@@ -1835,7 +1898,7 @@ def add_contour_filter_preview_tab(host, frame, sessions_df, intermediates,
             axes_flat[j].set_visible(False)
 
         fig.suptitle(
-            f'{viewing}: {total_pool} shapes — {paw_label}  '
+            f'{viewing}: {total_pool} shapes - {paw_label}  '
             f'(page {page + 1}/{n_pages})',
             fontsize=10, y=1.02)
 
@@ -1887,6 +1950,23 @@ def add_contour_filter_preview_tab(host, frame, sessions_df, intermediates,
 
     ttk.Button(btn_bar, text="Export Graph", command=_exp_graph).pack(side='left', padx=4)
 
+    def _exp_data():
+        path = filedialog.asksaveasfilename(
+            defaultextension='.csv', filetypes=[('CSV', '*.csv')],
+            initialfile=f'contour_filter_metrics_{role}.csv',
+            parent=frame.winfo_toplevel())
+        if not path:
+            return
+        sol_t, ar_t = sol_var.get(), ar_var.get()
+        circ_t = circ_var.get()
+        inc = (sol_vals <= sol_t) & (ar_vals <= ar_t) & (circ_vals >= circ_t)
+        pd.DataFrame({'shape_index': np.arange(len(sol_vals)),
+                      'solidity': sol_vals, 'aspect_ratio': ar_vals,
+                      'circularity': circ_vals,
+                      'included': inc}).to_csv(path, index=False)
+
+    ttk.Button(btn_bar, text="Export Data", command=_exp_data).pack(side='left', padx=2)
+
     def _apply():
         """Store current thresholds, recompute pawlike metrics, and notify
         the host so dependent (Filtered Contour) entries re-render."""
@@ -1904,14 +1984,14 @@ def add_contour_filter_preview_tab(host, frame, sessions_df, intermediates,
 
     ttk.Button(btn_bar, text="Apply", command=_apply).pack(side='right', padx=4)
 
-    # Initial draw (entries are built on demand, so draw immediately —
+    # Initial draw (entries are built on demand, so draw immediately -
     # the old <Map> deferral existed because all paw tabs were built at once)
     _compute_mask()
     _draw_page(0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Pawlike (Filtered Contour) recompute — mutates host.summary_df / bins_df
+# Pawlike (Filtered Contour) recompute - mutates host.summary_df / bins_df
 # by design: these columns are DERIVED from intermediates + thresholds.
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -2181,8 +2261,8 @@ def add_wb_stats_section(host, parent_frame, title, df, metric,
                          treatments, agg_method):
     """Create a descriptive-stats + test-result block for one WB metric.
 
-    agg_method: 'value' — one row per subject (no aggregation needed)
-                'mean'  — aggregate per subject across time bins
+    agg_method: 'value' - one row per subject (no aggregation needed)
+                'mean'  - aggregate per subject across time bins
     Column names: treatment (lower), subject (lower).
     """
     section_frame = ttk.LabelFrame(parent_frame, text=title, padding=10)
@@ -2265,7 +2345,7 @@ def add_wb_stats_section(host, parent_frame, title, df, metric,
     # ── Pairwise comparisons (ANOVA + significant) ───────────────────
     if not stats_res.get('pairwise') and len(treatments) > 2:
         ttk.Label(section_frame,
-                  text="Pairwise comparisons omitted — omnibus not "
+                  text="Pairwise comparisons omitted - omnibus not "
                        "significant (protected testing).",
                   font=(FONT_FAMILY, 9, 'italic'),
                   foreground='gray').pack(anchor='w', pady=(4, 0))
@@ -2317,7 +2397,7 @@ def add_wb_timecourse_stats_section(host, parent_frame, bins_df,
 
     section_frame = ttk.LabelFrame(
         parent_frame,
-        text=f"Time Course Statistics — {metric.replace('_', ' ')}",
+        text=f"Time Course Statistics - {metric.replace('_', ' ')}",
         padding=10)
     section_frame.pack(fill='x', padx=10, pady=10)
 
@@ -2542,10 +2622,10 @@ def create_wb_statistics_tab(host, frame, summary_df, bins_df,
                              treatments, max_time_min):
     """Build the Statistics tables (category notebook) into *frame*.
 
-    summary_df    — per-session summary DataFrame (lowercase columns)
-    bins_df       — per-bin DataFrame (bin_start_s in seconds)
-    treatments    — ordered list of treatment labels
-    max_time_min  — maximum time in minutes (from bins_df)
+    summary_df    - per-session summary DataFrame (lowercase columns)
+    bins_df       - per-bin DataFrame (bin_start_s in seconds)
+    treatments    - ordered list of treatment labels
+    max_time_min  - maximum time in minutes (from bins_df)
     """
     max_time_int = max(1, int(max_time_min))
 
@@ -2560,7 +2640,7 @@ def create_wb_statistics_tab(host, frame, summary_df, bins_df,
     ttk.Label(ctrl_frame, text="min").pack(side='left')
 
     status_lbl = ttk.Label(ctrl_frame,
-                           text=f"(showing 0–{max_time_int} min)",
+                           text=f"(showing 0-{max_time_int} min)",
                            font=(FONT_FAMILY, 9), foreground='gray')
     status_lbl.pack(side='left', padx=10)
 
@@ -2639,7 +2719,7 @@ def create_wb_statistics_tab(host, frame, summary_df, bins_df,
                 continue
             add_wb_stats_section(
                 host, scrollable_frame,
-                f"{sec}. {metric.replace('_', ' ')} — Summary",
+                f"{sec}. {metric.replace('_', ' ')} - Summary",
                 s_df, metric, treatments, 'value')
             sec += 1
 
@@ -2691,7 +2771,7 @@ def create_wb_statistics_tab(host, frame, summary_df, bins_df,
         filtered_bins = (bins_df[bins_df['bin_start_s'] <= win_sec].copy()
                          if bins_df is not None and not bins_df.empty
                          else bins_df)
-        status_lbl.config(text=f"(showing 0–{win_min} min)")
+        status_lbl.config(text=f"(showing 0-{win_min} min)")
         for cat_name, (holder, cat_metrics) in _cat_holders.items():
             _build_category_content(holder, cat_metrics, summary_df, filtered_bins)
 
@@ -2714,7 +2794,7 @@ def wb_statistics_frame(host, stats_data) -> pd.DataFrame:
     for metric in metrics:
         if s_df is None or metric not in s_df.columns:
             continue
-        rows.append({**blank, 'Section': f'Summary — {metric}'})
+        rows.append({**blank, 'Section': f'Summary - {metric}'})
 
         for treat in treatments:
             vals = s_df[s_df['treatment'] == treat][metric].dropna().values
@@ -2724,7 +2804,7 @@ def wb_statistics_frame(host, stats_data) -> pd.DataFrame:
             sd = np.std(vals, ddof=1) if n > 1 else 0.0
             sem = sd / np.sqrt(n)
             rows.append({
-                'Section':      f'Summary — {metric}',
+                'Section':      f'Summary - {metric}',
                 'Treatment':    treat,
                 'N':            n,
                 'Mean':         f'{np.mean(vals):.4f}',
@@ -2748,7 +2828,7 @@ def wb_statistics_frame(host, stats_data) -> pd.DataFrame:
                    '**'  if p < 0.01  else
                    '*'   if p < a     else 'ns')
             rows.append({**blank,
-                         'Section':      f'Test — {metric}',
+                         'Section':      f'Test - {metric}',
                          'Test':         res['test_type'],
                          'p_value':      f'{p:.4f}',
                          'Significance': sig})
@@ -2797,12 +2877,12 @@ def _render_metric_stats(host, frame, entry):
     df, col = _entry_data(host, entry)
     if df is None or col is None or col not in getattr(df, 'columns', []):
         _put("No tabular data behind this graph (custom rendering) "
-             "— statistics unavailable here.")
+             "- statistics unavailable here.")
         txt.configure(state='disabled')
         return
     d = df.copy()
     if 'treatment' not in d.columns:
-        _put("No treatment column — run with a key file for group "
+        _put("No treatment column - run with a key file for group "
              "statistics.")
         _put("")
         _put(str(d[col].describe()))
@@ -2913,7 +2993,7 @@ def build_registry(host) -> 'OrderedDict[str, list]':
     """Build the full {category: [entry, ...]} registry from host data.
 
     Mirrors every reachable registration in gait_limb_tab._open_graphs
-    (:7100–:7952), flattened from the old group→category→metric notebooks to
+    (:7100-:7952), flattened from the old group→category→metric notebooks to
     one category level driven by two comboboxes. Column-presence gates,
     display names, references, y-labels, and descriptions are verbatim.
     """
@@ -2963,85 +3043,85 @@ def build_registry(host) -> 'OrderedDict[str, list]':
                      flip=True)
             if (bdf is not None and rk in bdf.columns
                     and bdf[rk].notna().any()):
-                _reg(cat, f'{nice} — TC', 'timecourse', bdf, rk,
+                _reg(cat, f'{nice} - TC', 'timecourse', bdf, rk,
                      reference=1.0, y_label=ylbl,
                      description=f'{desc} Across time bins.', flip=True)
 
-    # ── Limb Use — Hind ───────────────────────────────────────────────────
+    # ── Limb Use - Hind ───────────────────────────────────────────────────
     if show_wb:
-        cat = _cat('Limb Use — Hind')
+        cat = _cat('Limb Use - Hind')
         if 'WBI_hind' in df.columns:
             _reg(cat, 'WBI Hind', 'bar', df, 'WBI_hind',
-                 reference=50.0, y_label='Weight Bearing Index — hind (%)',
+                 reference=50.0, y_label='Weight Bearing Index - hind (%)',
                  description='HL / (HL+HR) × 100.  Reference 50 = symmetric.  >50 = more stance on left hind.')
         if 'SI_hind' in df.columns:
             _reg(cat, 'SI Hind (Box)', 'box', df, 'SI_hind',
-                 reference=0.0, y_label='Symmetry Index — hind (%)',
+                 reference=0.0, y_label='Symmetry Index - hind (%)',
                  description='(HL−HR) / (HL+HR) × 100.  Reference 0 = symmetric.  Positive = left bias.')
             _reg(cat, 'SI Hind (Violin)', 'violin', df, 'SI_hind',
-                 reference=0.0, y_label='Symmetry Index — hind (%)',
+                 reference=0.0, y_label='Symmetry Index - hind (%)',
                  description='(HL−HR) / (HL+HR) × 100.  Reference 0 = symmetric.  Positive = left bias.')
         if 'SBI_hind' in df.columns and df['SBI_hind'].notna().any():
             _reg(cat, 'SBI Hind', 'bar', df, 'SBI_hind',
-                 reference=0.0, y_label='Symmetry Balance Index — hind (%)',
+                 reference=0.0, y_label='Symmetry Balance Index - hind (%)',
                  description='2 × |HL−HR| / (HL+HR) × 100.  Always ≥ 0.  0 = perfect symmetry.')
         if bdf is not None:
             for col, lbl, ref, ylbl, desc in [
-                ('SI_hind', 'SI Hind — TC', None,
-                 'Symmetry Index — hind (%)',
+                ('SI_hind', 'SI Hind - TC', None,
+                 'Symmetry Index - hind (%)',
                  'SI hind across time bins (mean ± SEM).  Dashed line = 0 (symmetric).'),
-                ('WBI_hind', 'WBI Hind — TC', 50.0,
-                 'Weight Bearing Index — hind (%)',
+                ('WBI_hind', 'WBI Hind - TC', 50.0,
+                 'Weight Bearing Index - hind (%)',
                  'WBI hind across time bins. Reference 50 = symmetric.'),
-                ('SBI_hind', 'SBI Hind — TC', 0.0,
-                 'Symmetry Balance Index — hind (%)',
+                ('SBI_hind', 'SBI Hind - TC', 0.0,
+                 'Symmetry Balance Index - hind (%)',
                  'SBI hind across time bins. 0 = perfect symmetry.'),
             ]:
                 if col in bdf.columns and bdf[col].notna().any():
                     _reg(cat, lbl, 'timecourse', bdf, col,
                          reference=ref, y_label=ylbl, description=desc)
         if not cat:
-            del registry['Limb Use — Hind']
+            del registry['Limb Use - Hind']
 
-    # ── Limb Use — Fore (only when any fore data) ─────────────────────────
+    # ── Limb Use - Fore (only when any fore data) ─────────────────────────
     has_fore = (
         ('WBI_fore' in df.columns and df['WBI_fore'].notna().any()) or
         ('SI_fore' in df.columns and df['SI_fore'].notna().any()) or
         ('SBI_fore' in df.columns and df['SBI_fore'].notna().any())
     )
     if show_wb and has_fore:
-        cat = _cat('Limb Use — Fore')
+        cat = _cat('Limb Use - Fore')
         if 'WBI_fore' in df.columns and df['WBI_fore'].notna().any():
             _reg(cat, 'WBI Fore', 'bar', df, 'WBI_fore',
-                 reference=50.0, y_label='Weight Bearing Index — fore (%)',
+                 reference=50.0, y_label='Weight Bearing Index - fore (%)',
                  description='FL / (FL+FR) × 100.  Reference 50 = symmetric.')
         if 'SI_fore' in df.columns and df['SI_fore'].notna().any():
             _reg(cat, 'SI Fore (Box)', 'box', df, 'SI_fore',
-                 reference=0.0, y_label='Symmetry Index — fore (%)',
+                 reference=0.0, y_label='Symmetry Index - fore (%)',
                  description='(FL−FR) / (FL+FR) × 100.  Reference 0.')
             _reg(cat, 'SI Fore (Violin)', 'violin', df, 'SI_fore',
-                 reference=0.0, y_label='Symmetry Index — fore (%)')
+                 reference=0.0, y_label='Symmetry Index - fore (%)')
         if 'SBI_fore' in df.columns and df['SBI_fore'].notna().any():
             _reg(cat, 'SBI Fore', 'bar', df, 'SBI_fore',
-                 reference=0.0, y_label='Symmetry Balance Index — fore (%)',
+                 reference=0.0, y_label='Symmetry Balance Index - fore (%)',
                  description='2 × |FL−FR| / (FL+FR) × 100.  Always ≥ 0.')
         if bdf is not None:
             for col, lbl, ref, ylbl, desc in [
-                ('WBI_fore', 'WBI Fore — TC', 50.0,
-                 'Weight Bearing Index — fore (%)',
+                ('WBI_fore', 'WBI Fore - TC', 50.0,
+                 'Weight Bearing Index - fore (%)',
                  'WBI fore across time bins. Reference 50 = symmetric.'),
-                ('SI_fore', 'SI Fore — TC', 0.0,
-                 'Symmetry Index — fore (%)',
+                ('SI_fore', 'SI Fore - TC', 0.0,
+                 'Symmetry Index - fore (%)',
                  'SI fore across time bins. Reference 0 = symmetric.'),
-                ('SBI_fore', 'SBI Fore — TC', 0.0,
-                 'Symmetry Balance Index — fore (%)',
+                ('SBI_fore', 'SBI Fore - TC', 0.0,
+                 'Symmetry Balance Index - fore (%)',
                  'SBI fore across time bins. 0 = perfect symmetry.'),
             ]:
                 if col in bdf.columns and bdf[col].notna().any():
                     _reg(cat, lbl, 'timecourse', bdf, col,
                          reference=ref, y_label=ylbl, description=desc)
         if not cat:
-            del registry['Limb Use — Fore']
+            del registry['Limb Use - Fore']
 
     # ── Contact % / Brightness (old Limb Use → Contact % + Brightness) ────
     if show_wb:
@@ -3055,11 +3135,11 @@ def build_registry(host) -> 'OrderedDict[str, list]':
                     and 'bin_start_s' in bdf.columns):
                 _reg(cat, f'Contact % {role}', 'timecourse',
                      bdf, col, reference=None,
-                     y_label=f'Contact % — {role}',
+                     y_label=f'Contact % - {role}',
                      description=f'{role} paw contact % across time bins.')
         if (bdf is not None and 'hind_fore_ratio' in bdf.columns
                 and bdf['hind_fore_ratio'].notna().any()):
-            _reg(cat, 'Hind/Fore Ratio — TC', 'timecourse',
+            _reg(cat, 'Hind/Fore Ratio - TC', 'timecourse',
                  bdf, 'hind_fore_ratio', reference=None,
                  y_label='Mean hind / mean fore contact %',
                  description='Ratio of mean hind to mean fore contact % across time bins.')
@@ -3071,19 +3151,19 @@ def build_registry(host) -> 'OrderedDict[str, list]':
                  description='HL/HR brightness ratio. Reference 1.0 = equal.')
         if bdf is not None:
             for col, lbl, ref, ylbl, desc in [
-                ('brightness_HL', 'Brightness HL — TC', None,
-                 'Mean brightness — HL',
+                ('brightness_HL', 'Brightness HL - TC', None,
+                 'Mean brightness - HL',
                  'Mean brightness in HL ROI during contact frames.'),
-                ('brightness_HR', 'Brightness HR — TC', None,
-                 'Mean brightness — HR',
+                ('brightness_HR', 'Brightness HR - TC', None,
+                 'Mean brightness - HR',
                  'Mean brightness in HR ROI during contact frames.'),
-                ('brightness_FL', 'Brightness FL — TC', None,
-                 'Mean brightness — FL',
+                ('brightness_FL', 'Brightness FL - TC', None,
+                 'Mean brightness - FL',
                  'Mean brightness in FL ROI during contact frames.'),
-                ('brightness_FR', 'Brightness FR — TC', None,
-                 'Mean brightness — FR',
+                ('brightness_FR', 'Brightness FR - TC', None,
+                 'Mean brightness - FR',
                  'Mean brightness in FR ROI during contact frames.'),
-                ('brightness_ratio_HL_HR', 'Brightness Ratio — TC', 1.0,
+                ('brightness_ratio_HL_HR', 'Brightness Ratio - TC', 1.0,
                  'HL / HR brightness',
                  'HL/HR brightness ratio across time bins. Reference 1.0 = equal.'),
             ]:
@@ -3102,17 +3182,17 @@ def build_registry(host) -> 'OrderedDict[str, list]':
                    ('stride_len_SI_hind' in df.columns and df['stride_len_SI_hind'].notna().any())
 
     if show_gait and has_gait_timing:
-        cat = _cat('Gait — Timing')
+        cat = _cat('Gait - Timing')
         for role in ROLES:
             for col, lbl, ref, ylbl, desc in [
                 (f'stance_dur_{role}', f'Stance Dur {role}', None,
-                 f'Stance duration (s) — {role}',
+                 f'Stance duration (s) - {role}',
                  f'Mean stance duration (s) for {role}.'),
                 (f'swing_dur_{role}', f'Swing Dur {role}', None,
-                 f'Swing duration (s) — {role}',
+                 f'Swing duration (s) - {role}',
                  f'Mean swing duration (s) for {role}.'),
                 (f'duty_cycle_{role}', f'Duty Cycle {role}', None,
-                 f'Duty cycle (%) — {role}',
+                 f'Duty cycle (%) - {role}',
                  f'Duty cycle (%) for {role}. >50% = more stance than swing.'),
             ]:
                 if col in df.columns and df[col].notna().any():
@@ -3120,7 +3200,7 @@ def build_registry(host) -> 'OrderedDict[str, list]':
                          reference=ref, y_label=ylbl, description=desc)
             for col, lbl, ylbl, desc in [
                 (f'swing_speed_{role}', f'Swing Speed {role}',
-                 f'Swing speed (px/s) — {role}',
+                 f'Swing speed (px/s) - {role}',
                  f'Mean swing speed for {role}. Injured animals swing slower on affected side.'),
             ]:
                 if col in df.columns and df[col].notna().any():
@@ -3129,40 +3209,40 @@ def build_registry(host) -> 'OrderedDict[str, list]':
         if bdf is not None:
             for role in ROLES:
                 for col, lbl, ylbl, desc in [
-                    (f'stance_dur_{role}', f'Stance {role} — TC',
-                     f'Stance dur (s) — {role}',
+                    (f'stance_dur_{role}', f'Stance {role} - TC',
+                     f'Stance dur (s) - {role}',
                      f'Stance duration for {role} across time bins.'),
-                    (f'duty_cycle_{role}', f'Duty {role} — TC',
-                     f'Duty cycle (%) — {role}',
+                    (f'duty_cycle_{role}', f'Duty {role} - TC',
+                     f'Duty cycle (%) - {role}',
                      f'Duty cycle for {role} across time bins.'),
-                    (f'cadence_{role}', f'Cadence {role} — TC',
-                     f'Cadence (strides/min) — {role}',
+                    (f'cadence_{role}', f'Cadence {role} - TC',
+                     f'Cadence (strides/min) - {role}',
                      f'Stride cadence for {role} across time bins.'),
-                    (f'swing_speed_{role}', f'Swing Spd {role} — TC',
-                     f'Swing speed (px/s) — {role}',
+                    (f'swing_speed_{role}', f'Swing Spd {role} - TC',
+                     f'Swing speed (px/s) - {role}',
                      f'Swing speed for {role} across time bins.'),
                 ]:
                     if col in bdf.columns and bdf[col].notna().any():
                         _reg(cat, lbl, 'timecourse', bdf, col,
                              reference=None, y_label=ylbl, description=desc)
         if not cat:
-            del registry['Gait — Timing']
+            del registry['Gait - Timing']
 
     if show_gait and has_gait_spatial:
-        cat = _cat('Gait — Spatial')
+        cat = _cat('Gait - Spatial')
         for role in ROLES:
             col = f'stride_len_{role}'
             if col in df.columns and df[col].notna().any():
                 _reg(cat, f'Stride Len {role}', 'bar', df, col,
                      reference=None,
-                     y_label=f'Stride length (px) — {role}',
+                     y_label=f'Stride length (px) - {role}',
                      description=f'Mean stride length (px) for {role}.')
         for pair in ['hind', 'fore']:
             for col, lbl, ylbl in [
                 (f'step_len_{pair}', f'Step Len {pair}',
-                 f'Step length (px) — {pair}'),
+                 f'Step length (px) - {pair}'),
                 (f'step_width_{pair}', f'Step Width {pair}',
-                 f'Step width (px) — {pair}'),
+                 f'Step width (px) - {pair}'),
             ]:
                 if col in df.columns and df[col].notna().any():
                     _reg(cat, lbl, 'bar', df, col,
@@ -3171,15 +3251,15 @@ def build_registry(host) -> 'OrderedDict[str, list]':
             for role in ROLES:
                 col = f'stride_len_{role}'
                 if col in bdf.columns and bdf[col].notna().any():
-                    _reg(cat, f'Stride Len {role} — TC', 'timecourse',
+                    _reg(cat, f'Stride Len {role} - TC', 'timecourse',
                          bdf, col, reference=None,
-                         y_label=f'Stride length (px) — {role}',
+                         y_label=f'Stride length (px) - {role}',
                          description=f'Stride length for {role} across time bins.')
         if not cat:
-            del registry['Gait — Spatial']
+            del registry['Gait - Spatial']
 
     if show_gait and has_gait_sym:
-        cat = _cat('Gait — Symmetry')
+        cat = _cat('Gait - Symmetry')
         for col, lbl, ref, ylbl in [
             ('stance_SI_hind', 'Stance SI Hind', 0.0,
              'Stance Symmetry Index (%)'),
@@ -3192,13 +3272,13 @@ def build_registry(host) -> 'OrderedDict[str, list]':
                      description=f'{ylbl}. Reference 0 = symmetric.')
                 _reg(cat, f'{lbl} (Box)', 'box', df, col,
                      reference=ref, y_label=ylbl,
-                     description=f'{ylbl} — box plot distribution.')
+                     description=f'{ylbl} - box plot distribution.')
         for role in ROLES:
             col = f'stride_cv_{role}'
             if col in df.columns and df[col].notna().any():
                 _reg(cat, f'Stride CV {role}', 'bar', df, col,
                      reference=None,
-                     y_label=f'Stride CV (%) — {role}',
+                     y_label=f'Stride CV (%) - {role}',
                      description=f'Stride-to-stride CV for {role}. Higher = less rhythmic.')
         for col, lbl, ylbl in [
             ('phase_HL_HR', 'Phase HL-HR',
@@ -3212,10 +3292,10 @@ def build_registry(host) -> 'OrderedDict[str, list]':
                      description=f'{ylbl}. Reference 0.5 = alternating.')
         if bdf is not None:
             for col, lbl, ylbl, desc in [
-                ('stance_SI_hind', 'Stance SI — TC',
+                ('stance_SI_hind', 'Stance SI - TC',
                  'Stance SI (%)',
                  'Stance Symmetry Index across time bins.'),
-                ('stride_len_SI_hind', 'Stride Len SI — TC',
+                ('stride_len_SI_hind', 'Stride Len SI - TC',
                  'Stride Len SI (%)',
                  'Stride Length SI across time bins.'),
             ]:
@@ -3223,7 +3303,7 @@ def build_registry(host) -> 'OrderedDict[str, list]':
                     _reg(cat, lbl, 'timecourse', bdf, col,
                          reference=0.0, y_label=ylbl, description=desc)
         if not cat:
-            del registry['Gait — Symmetry']
+            del registry['Gait - Symmetry']
 
     # ── Movement ──────────────────────────────────────────────────────────
     has_loco = ('total_distance' in df.columns and df['total_distance'].notna().any())
@@ -3237,7 +3317,7 @@ def build_registry(host) -> 'OrderedDict[str, list]':
             ('total_distance', 'Total Distance', 'Distance (px)',
              'Total body displacement across the session.'),
             ('loco_total_distance', 'Distance (Moving)',
-             'Distance (px) — locomotion only',
+             'Distance (px) - locomotion only',
              'Displacement during locomotion bouts only.'),
             ('time_moving_s', 'Time Moving', 'Time moving (s)',
              'Total time in locomotion (seconds).'),
@@ -3248,7 +3328,7 @@ def build_registry(host) -> 'OrderedDict[str, list]':
              'Body speed (px/s)',
              'Mean body centroid speed across all frames.'),
             ('body_speed_loco', 'Body Speed (Loco)',
-             'Body speed (px/s) — locomotion',
+             'Body speed (px/s) - locomotion',
              'Mean body speed during locomotion bouts only.'),
         ]:
             if col in df.columns and df[col].notna().any():
@@ -3256,23 +3336,23 @@ def build_registry(host) -> 'OrderedDict[str, list]':
                      y_label=ylbl, description=desc)
         if bdf is not None:
             for col, lbl, ylbl, desc in [
-                ('total_distance', 'Distance — TC',
+                ('total_distance', 'Distance - TC',
                  'Distance (px)',
                  'Total body displacement per time bin.'),
-                ('loco_total_distance', 'Distance (Moving) — TC',
-                 'Distance (px) — locomotion',
+                ('loco_total_distance', 'Distance (Moving) - TC',
+                 'Distance (px) - locomotion',
                  'Displacement during locomotion per time bin.'),
-                ('time_moving_s', 'Time Moving — TC',
+                ('time_moving_s', 'Time Moving - TC',
                  'Time moving (s)',
                  'Time in locomotion per time bin.'),
-                ('time_moving_pct', 'Time Moving % — TC',
+                ('time_moving_pct', 'Time Moving % - TC',
                  'Time in locomotion (%)',
                  'Percentage of each time bin in locomotion.'),
-                ('body_speed_mean', 'Body Speed — TC',
+                ('body_speed_mean', 'Body Speed - TC',
                  'Body speed (px/s)',
                  'Mean body speed per time bin.'),
-                ('body_speed_loco', 'Body Speed Loco — TC',
-                 'Body speed (px/s) — loco',
+                ('body_speed_loco', 'Body Speed Loco - TC',
+                 'Body speed (px/s) - loco',
                  'Body speed during locomotion per time bin.'),
             ]:
                 if col in bdf.columns and bdf[col].notna().any():
@@ -3294,7 +3374,7 @@ def build_registry(host) -> 'OrderedDict[str, list]':
             if col in df.columns and df[col].notna().any():
                 _reg(cat, f'Print Position {side}', 'bar',
                      df, col, reference=None,
-                     y_label=f'Print position (px) — {side}',
+                     y_label=f'Print position (px) - {side}',
                      description=f'Hind-fore paw overlap distance ({side}). Smaller = better.')
         support_cols = [f'support_{n}paw_pct' for n in range(5)]
         if all(c in df.columns for c in support_cols[:3]):
@@ -3319,39 +3399,39 @@ def build_registry(host) -> 'OrderedDict[str, list]':
 
     # ── Paw Contour ───────────────────────────────────────────────────────
     _contour_metrics = [
-        ('paw_area',          'Area',         'Paw area (px²) — {}'),
-        ('paw_spread',        'Spread',       'Paw spread (px) — {}'),
-        ('contact_intensity', 'Intensity',    'Contact intensity — {}'),
-        ('paw_width',         'Width',        'Paw width (px) — {}'),
-        ('paw_solidity',      'Solidity',     'Paw solidity — {}'),
-        ('paw_aspect_ratio',  'Aspect Ratio', 'Aspect ratio — {}'),
-        ('paw_circularity',   'Circularity',  'Circularity — {}'),
+        ('paw_area',          'Area',         'Paw area (px²) - {}'),
+        ('paw_spread',        'Spread',       'Paw spread (px) - {}'),
+        ('contact_intensity', 'Intensity',    'Contact intensity - {}'),
+        ('paw_width',         'Width',        'Paw width (px) - {}'),
+        ('paw_solidity',      'Solidity',     'Paw solidity - {}'),
+        ('paw_aspect_ratio',  'Aspect Ratio', 'Aspect ratio - {}'),
+        ('paw_circularity',   'Circularity',  'Circularity - {}'),
     ]
     has_contour = any(
         f'{mk}_{role}' in df.columns and df[f'{mk}_{role}'].notna().any()
         for mk, _, _ in _contour_metrics for role in ROLES
     ) or ('paw_area_ratio_hind' in df.columns and df['paw_area_ratio_hind'].notna().any()) or ('contact_intensity_ratio_hind' in df.columns and df['contact_intensity_ratio_hind'].notna().any())
     _contour_stance_metrics = [
-        ('paw_area_stance',          'Area',         'Paw area (px²) — {}'),
-        ('paw_spread_stance',        'Spread',       'Paw spread (px) — {}'),
-        ('contact_intensity_stance', 'Intensity',    'Contact intensity — {}'),
-        ('paw_width_stance',         'Width',        'Paw width (px) — {}'),
-        ('paw_solidity_stance',      'Solidity',     'Paw solidity — {}'),
-        ('paw_aspect_ratio_stance',  'Aspect Ratio', 'Aspect ratio — {}'),
-        ('paw_circularity_stance',   'Circularity',  'Circularity — {}'),
+        ('paw_area_stance',          'Area',         'Paw area (px²) - {}'),
+        ('paw_spread_stance',        'Spread',       'Paw spread (px) - {}'),
+        ('contact_intensity_stance', 'Intensity',    'Contact intensity - {}'),
+        ('paw_width_stance',         'Width',        'Paw width (px) - {}'),
+        ('paw_solidity_stance',      'Solidity',     'Paw solidity - {}'),
+        ('paw_aspect_ratio_stance',  'Aspect Ratio', 'Aspect ratio - {}'),
+        ('paw_circularity_stance',   'Circularity',  'Circularity - {}'),
     ]
     has_stance_contour = any(
         f'{mk}_{role}' in df.columns and df[f'{mk}_{role}'].notna().any()
         for mk, _, _ in _contour_stance_metrics for role in ROLES
     )
     _contour_pawlike_metrics = [
-        ('pawlike_area',          'Area',         'Paw area (px²) — {}'),
-        ('pawlike_spread',        'Spread',       'Paw spread (px) — {}'),
-        ('pawlike_intensity',     'Intensity',    'Contact intensity — {}'),
-        ('pawlike_width',         'Width',        'Paw width (px) — {}'),
-        ('pawlike_solidity',      'Solidity',     'Paw solidity — {}'),
-        ('pawlike_aspect_ratio',  'Aspect Ratio', 'Aspect ratio — {}'),
-        ('pawlike_circularity',   'Circularity',  'Circularity — {}'),
+        ('pawlike_area',          'Area',         'Paw area (px²) - {}'),
+        ('pawlike_spread',        'Spread',       'Paw spread (px) - {}'),
+        ('pawlike_intensity',     'Intensity',    'Contact intensity - {}'),
+        ('pawlike_width',         'Width',        'Paw width (px) - {}'),
+        ('pawlike_solidity',      'Solidity',     'Paw solidity - {}'),
+        ('pawlike_aspect_ratio',  'Aspect Ratio', 'Aspect ratio - {}'),
+        ('pawlike_circularity',   'Circularity',  'Circularity - {}'),
     ]
     has_pawlike_contour = any(
         f'{mk}_{role}' in df.columns and df[f'{mk}_{role}'].notna().any()
@@ -3369,13 +3449,13 @@ def build_registry(host) -> 'OrderedDict[str, list]':
                          'Higher intensity indicates stronger paw-surface contact signal.'),
         'Width':        ('Minimum dimension (px) of paw contour bounding box. '
                          'Represents the narrower axis of the paw print.'),
-        'Solidity':     ('Solidity of paw contour — ratio of contour area to convex hull area. '
+        'Solidity':     ('Solidity of paw contour - ratio of contour area to convex hull area. '
                          'Values near 1.0 indicate a solid, compact paw print; lower values suggest '
                          'irregular or fragmented contact.'),
         'Aspect Ratio': ('Aspect ratio of paw contour bounding box (max/min dimension). '
                          'Higher values indicate an elongated paw print; values near 1.0 indicate '
                          'a round print.'),
-        'Circularity':  ('Circularity of paw contour — 4π×area/perimeter². '
+        'Circularity':  ('Circularity of paw contour - 4π×area/perimeter². '
                          'Values near 1.0 indicate a circular shape; lower values indicate '
                          'irregular or elongated contours.'),
     }
@@ -3399,7 +3479,7 @@ def build_registry(host) -> 'OrderedDict[str, list]':
             if not has_paw:
                 continue
             paw_label = _PAW_LABELS.get(role, role)
-            cat = _cat(f'{cat_prefix} — {paw_label}')
+            cat = _cat(f'{cat_prefix} - {paw_label}')
 
             # Shape (custom)
             _reg(cat, 'Shape', 'custom', None, None,
@@ -3431,11 +3511,11 @@ def build_registry(host) -> 'OrderedDict[str, list]':
                          y_label=ylbl, description=mdesc)
                 if (bdf is not None and col in bdf.columns
                         and bdf[col].notna().any()):
-                    _reg(cat, f'{tab_prefix} — TC', 'timecourse', bdf, col,
+                    _reg(cat, f'{tab_prefix} - TC', 'timecourse', bdf, col,
                          y_label=ylbl,
                          description=mdesc + ' Shown across time bins.')
             if not cat:
-                del registry[f'{cat_prefix} — {paw_label}']
+                del registry[f'{cat_prefix} - {paw_label}']
 
         # Ratios
         has_ratios = False
@@ -3446,7 +3526,7 @@ def build_registry(host) -> 'OrderedDict[str, list]':
                     and bdf[rk].notna().any()):
                 has_ratios = True
         if has_ratios:
-            cat = _cat(f'{cat_prefix} — Ratios')
+            cat = _cat(f'{cat_prefix} - Ratios')
             ylbl_sfx = ' (stance)' if stance_suffix else ''
             # Stored ratio columns are literal HL/HR. Relabel (and invert
             # when the injured paw is HR) at display time so every ratio
@@ -3469,7 +3549,7 @@ def build_registry(host) -> 'OrderedDict[str, list]':
             if bdf is not None:
                 if (ratio_key in bdf.columns
                         and bdf[ratio_key].notna().any()):
-                    _reg(cat, 'Area Ratio — TC', 'timecourse',
+                    _reg(cat, 'Area Ratio - TC', 'timecourse',
                          bdf, ratio_key, reference=1.0,
                          y_label=f'Paw area ratio {inj}/{contra}{ylbl_sfx}',
                          description=f'{inj}/{contra} area ratio '
@@ -3477,14 +3557,14 @@ def build_registry(host) -> 'OrderedDict[str, list]':
                          flip=True)
                 if (intensity_ratio_key in bdf.columns
                         and bdf[intensity_ratio_key].notna().any()):
-                    _reg(cat, 'Intensity Ratio — TC', 'timecourse',
+                    _reg(cat, 'Intensity Ratio - TC', 'timecourse',
                          bdf, intensity_ratio_key, reference=1.0,
                          y_label=f'Intensity ratio {inj}/{contra}{ylbl_sfx}',
                          description=f'{inj}/{contra} intensity ratio '
                                      'across time bins.',
                          flip=True)
             if not cat:
-                del registry[f'{cat_prefix} — Ratios']
+                del registry[f'{cat_prefix} - Ratios']
 
     if show_contour and (has_contour or has_stance_contour or has_pawlike_contour):
         # All Frames (default / first variant)
@@ -3495,7 +3575,7 @@ def build_registry(host) -> 'OrderedDict[str, list]':
 
         # Filter Preview
         if has_pawlike_contour:
-            cat = _cat('Paw Contour — Filter Preview')
+            cat = _cat('Paw Contour - Filter Preview')
             for role in ROLES:
                 has_paw = any(
                     f'{mk}_{role}' in df.columns and df[f'{mk}_{role}'].notna().any()
@@ -3509,19 +3589,19 @@ def build_registry(host) -> 'OrderedDict[str, list]':
                              add_contour_filter_preview_tab(
                                  host, f, df, host.intermediates, _r))
             if not cat:
-                del registry['Paw Contour — Filter Preview']
+                del registry['Paw Contour - Filter Preview']
 
         # Full Stance (optional, off by default as in the old window)
         if has_stance_contour and _sets.get('full_stance', False):
             _add_contour_variant(
-                'Paw Contour — Full Stance', _contour_stance_metrics, True,
+                'Paw Contour - Full Stance', _contour_stance_metrics, True,
                 'paw_area_ratio_stance_hind',
                 'contact_intensity_ratio_stance_hind')
 
         # Filtered Contour (renamed from Paw-like)
         if has_pawlike_contour:
             _add_contour_variant(
-                'Paw Contour — Filtered', _contour_pawlike_metrics, False,
+                'Paw Contour - Filtered', _contour_pawlike_metrics, False,
                 'pawlike_area_ratio_hind', 'pawlike_intensity_ratio_hind',
                 filter_paw=True)
 

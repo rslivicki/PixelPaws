@@ -1,20 +1,20 @@
-"""Multi-Classifier Analysis tab — cross-classifier views of a scored cohort.
+"""Multi-Classifier Analysis tab - cross-classifier views of a scored cohort.
 
 Consumes the consolidated per-frame sheets Run Classifiers writes to
 ``<results>/per_frame/<session>_frames.csv`` (one ``<behavior>_prob`` and one
 ``<behavior>_pred`` column per classifier). Three views:
 
-  1. Probability traces — per session, one panel per behavior: the classifier's
+  1. Probability traces - per session, one panel per behavior: the classifier's
      frame-by-frame probability with predicted bouts shaded (the supplement's
      probability-plot format).
-  2. State occupancy — per-frame states resolved with a priority order
+  2. State occupancy - per-frame states resolved with a priority order
      (top wins a disputed frame; unscored = no classifier fired), expressed as
      % of session time per state, mean ± SEM across animals per group.
-  3. Group timecourse — an N-panel grid, one panel per behavior: % time in
+  3. Group timecourse - an N-panel grid, one panel per behavior: % time in
      behavior per time bin, mean ± SEM lines, one line per group.
 
 All views scale to any number of groups (color cycle over unique Treatment
-values — e.g. the manuscript's 5-group formalin design), and work ungrouped
+values - e.g. the manuscript's 5-group formalin design), and work ungrouped
 (each session its own trace) when no key file is available.
 """
 from __future__ import annotations
@@ -128,7 +128,7 @@ class MultiClassifierTab(ttk.Frame):
         krow = ttk.Frame(df_)
         krow.pack(fill="x", padx=6, pady=(4, 2))
         ttk.Label(krow, text="Key file:").pack(side="left")
-        self._key_status = tk.StringVar(value="none — sessions plotted ungrouped")
+        self._key_status = tk.StringVar(value="none - sessions plotted ungrouped")
         ttk.Label(krow, textvariable=self._key_status, foreground="#666666",
                   justify="left", wraplength=170).pack(side="left", padx=(4, 4))
         _T(ttk.Button(krow, text="Browse", command=self._browse_key, width=7),
@@ -377,7 +377,7 @@ class MultiClassifierTab(ttk.Frame):
         self._scan_status.set(
             f"{len(self._frames)} session(s), {len(self._behaviors)} "
             f"behavior(s), {self._fps:g} fps." if self._frames else
-            "No per-frame sheets found — run classifiers first (the batch "
+            "No per-frame sheets found - run classifiers first (the batch "
             "writes results/per_frame/).")
         if self._key_df is None:
             self._autofind_key(folder)
@@ -434,7 +434,7 @@ class MultiClassifierTab(ttk.Frame):
             "Treatment": df[cols["treatment"]].astype(str).str.strip(),
         })
         self._key_df = out[out["Subject"] != ""]
-        self._key_status.set(f"{os.path.basename(path)} — "
+        self._key_status.set(f"{os.path.basename(path)} - "
                              f"{self._key_df['Treatment'].nunique()} group(s)")
         if self._frames:
             self._session_filter.set_sessions(sorted(self._frames),
@@ -672,7 +672,7 @@ class MultiClassifierTab(ttk.Frame):
                 ax.spines[sp_].set_visible(False)
         import plot_style as _ps_tr
         if _ps_tr.get_options(self._project()).get("show_titles", True):
-            self._fig.suptitle(f"{sess} — classifier probabilities "
+            self._fig.suptitle(f"{sess} - classifier probabilities "
                                f"(shaded = predicted bouts)", fontsize=10)
         self._status.set(f"{sess}: {n} behaviors, {len(d)} frames.")
 
@@ -757,7 +757,7 @@ class MultiClassifierTab(ttk.Frame):
                                   fontsize=max(opts["font_size"] - 2, 6))
         if opts.get("show_titles", True):
             self._fig.suptitle(
-            f"Classifier probabilities — group mean, "
+            f"Classifier probabilities - group mean, "
             f"{win_s:g} s rolling window", fontsize=10)
         self._status.set(f"{len(sessions)} session(s); {len(beh)} "
                          f"behavior(s); {win_s:g} s rolling window; colors "
@@ -767,7 +767,7 @@ class MultiClassifierTab(ttk.Frame):
         sessions = self._agg_sessions()
         if not sessions:
             ax = self._fig.add_subplot(111)
-            ax.text(0.5, 0.5, "No sessions included — open Sessions and "
+            ax.text(0.5, 0.5, "No sessions included - open Sessions and "
                               "tick at least one.", ha="center", va="center")
             ax.set_axis_off()
             return
@@ -884,7 +884,7 @@ class MultiClassifierTab(ttk.Frame):
         sessions = self._agg_sessions()
         if not sessions:
             ax = self._fig.add_subplot(111)
-            ax.text(0.5, 0.5, "No sessions included — open Sessions and "
+            ax.text(0.5, 0.5, "No sessions included - open Sessions and "
                               "tick at least one.", ha="center", va="center")
             ax.set_axis_off()
             return
@@ -982,7 +982,7 @@ class MultiClassifierTab(ttk.Frame):
                  else "Classifier probability over time")
         if opts.get("show_titles", True):
             self._fig.suptitle(
-            f"{_what} — {bin_min:g}-min bins, {_elab}"
+            f"{_what} - {bin_min:g}-min bins, {_elab}"
             + (" (bin clamped for short sessions)" if clamped else ""),
             fontsize=10)
         self._status.set(f"{len(sessions)} session(s); "
@@ -1158,7 +1158,7 @@ class MultiClassifierTab(ttk.Frame):
     @staticmethod
     def _pairwise_note(groups):
         if len(groups) > 2:
-            return ("\n\nNote: omnibus tests only (ANOVA/Kruskal–Wallis "
+            return ("\n\nNote: omnibus tests only (ANOVA/Kruskal-Wallis "
                     "across all groups); pairwise comparisons are not "
                     "computed on this tab.")
         return ""
@@ -1175,7 +1175,7 @@ class MultiClassifierTab(ttk.Frame):
         self._session_filter.set_sessions([])
         self._session_filter._close_popup()
         self._scan_status.set("Not scanned.")
-        self._key_status.set("none — sessions plotted ungrouped")
+        self._key_status.set("none - sessions plotted ungrouped")
         self._autofill_results()
         self.refresh()
         rd = self._results_var.get()

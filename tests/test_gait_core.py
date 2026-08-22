@@ -108,7 +108,7 @@ def test_speed_contact_auto_threshold_is_20th_percentile():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# compute_selection_masks (lick + 4-paw gating — the denominators)
+# compute_selection_masks (lick + 4-paw gating - the denominators)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _hind_only_masks(n):

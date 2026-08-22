@@ -1,4 +1,4 @@
-"""ui_tooltip.py — minimal hover tooltip shared by the analysis tabs.
+"""ui_tooltip.py - minimal hover tooltip shared by the analysis tabs.
 
 Standalone (no PixelPaws_GUI import) so tab modules stay circular-import-free.
 """

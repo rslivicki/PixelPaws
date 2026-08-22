@@ -1,3 +1,26 @@
+# 2026-08-22 — Export coverage, high-res saves, menubar fixes, dash sweep
+
+- **Every graph now exports its data and a 300-dpi figure**, verified
+  programmatically across all tabs (11 Single-Classifier views, 4 Multi,
+  3 Sequencing, 7 Locomotion, 139 Gait graphs). New: Sequencing Export
+  CSV (pooled network edge lists / per-edge differences vs reference /
+  PCoA coordinates), Single-Classifier "View CSV" (data behind the
+  current graph), and Export Data on the gait Support Patterns, Contour
+  Shape (mean±SD outlines), Paw Print (vertex tables), and Filter
+  Preview (per-shape metrics) graphs. The embedded matplotlib toolbar's
+  save button now also writes at 300 dpi (was ~100).
+- Fixed: every gait timecourse ("- TC") graph failed to render from the
+  tab (the Display dialog's marker-fill booleans reached matplotlib,
+  which expects 'full'/'none'); regression-tested.
+- Menubar: **Generate Ethogram** is real now (time budget, bout
+  distributions, raster, summary per session via EthogramGenerator,
+  actual video fps, outputs in analysis/ethograms/) instead of a
+  "Coming Soon" box; **Help > Documentation** opens the bundled README
+  (the old GitHub link 404s); **Keyboard Shortcuts** lists only bindings
+  that exist. All 27 menu items verified headless.
+- Em/en dashes removed from all user-facing GUI text (~870 across 27
+  files); the session table's untick marker is now ✗.
+
 # 2026-08-22 — Code-audit sweep (two review passes over the recent rebuilds)
 
 Correctness
