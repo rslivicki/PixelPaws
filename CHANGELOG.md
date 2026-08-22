@@ -1,3 +1,14 @@
+# 2026-08-22 — Full one-click pass: transcode + features + classifiers + gait
+
+The pose-tracking dialog's chain options now default ON: intake transcode
+(when ffmpeg is present; already-H.265 videos still skip), feature
+extraction, the Core-8 classifier set, and NEW: a Gait & Limb run. Gait
+chains after the classifiers finish (so its licking exclusion sees the
+fresh predictions), rescans, includes every session, re-applies the
+manuscript preset, and runs - the tab is brought forward with live
+progress. A fresh user clicking straight through pose estimation now
+lands with every analysis tab populated, gait included.
+
 # 2026-08-22 — Export coverage, high-res saves, menubar fixes, dash sweep
 
 - **Every graph now exports its data and a 300-dpi figure**, verified

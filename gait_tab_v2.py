@@ -2910,7 +2910,25 @@ class GaitLimbTabV2(ttk.Frame):
     # Analysis: run / cancel / thread (compute delegated to gait_core)
     # ═══════════════════════════════════════════════════════════════════════
 
-    def _start_analysis(self):
+    def auto_run(self):
+        """One-click chain entry (pose flow / batch handoff): rescan, include
+        every session, re-apply the preset (licking predictions may have just
+        arrived), and run with the current settings."""
+        self._scan_sessions()
+        self._select_all()
+        try:
+            self._refresh_lick_behaviors()
+            self._apply_gait_preset()
+        except Exception:
+            pass
+        ready, issues, _notes = self._check_readiness()
+        if not ready:
+            self._log_ui("Automatic gait run skipped: " + "; ".join(issues))
+            return
+        self._log_ui("Starting gait analysis (one-click chain)...")
+        self._start_analysis(confirm_ungrouped=False)
+
+    def _start_analysis(self, confirm_ungrouped=True):
         if self._fit_thread and self._fit_thread.is_alive():
             messagebox.showwarning("Busy", "Analysis is already running.",
                                    parent=self)
@@ -2931,7 +2949,7 @@ class GaitLimbTabV2(ttk.Frame):
 
         # A missing key is only a soft readiness note, but the run is
         # expensive - confirm before producing an ungrouped cohort.
-        if self._key_df is None:
+        if self._key_df is None and confirm_ungrouped:
             if not messagebox.askyesno(
                     "No key file",
                     "No key file is loaded, so every session will be "

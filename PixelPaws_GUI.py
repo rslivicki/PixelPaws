@@ -10328,10 +10328,34 @@ class PixelPawsGUI:
             except Exception as e:
                 messagebox.showerror("Feature Extraction", str(e))
 
+        def _gait(immediate):
+            # With a classifier batch queued, gait waits for _post_batch (its
+            # licking exclusion wants the fresh predictions); otherwise run now.
+            if immediate:
+                self._auto_run_gait()
+            else:
+                self._chain_gait_after_batch = True
+
         run_dlc_flow(self.root, proj, on_predictions_done=_predict,
                      on_select_frames=_frames,
                      on_extract_features=_features,
-                     on_add_videos=self.add_videos_to_project)
+                     on_add_videos=self.add_videos_to_project,
+                     on_gait=_gait)
+
+    def _auto_run_gait(self):
+        """One-click chain: kick off the Gait & Limb analysis on all sessions
+        with the current (manuscript) preset."""
+        tab = getattr(self, 'wb_tab', None)
+        if tab is None or not hasattr(tab, 'auto_run'):
+            return
+        try:
+            self.notebook.select("🐾 Gait & Limb Use")
+        except Exception:
+            pass
+        try:
+            tab.auto_run()
+        except Exception as e:
+            print(f"Gait auto-run failed: {e}")
 
     def extract_problem_frames(self):
         """Surface frames where DLC tracking is unreliable and/or the classifier is
@@ -17368,6 +17392,11 @@ Left/Right       - Previous/Next frame (in video preview)
                             self._open_key_file_dialog()
                         except Exception as e:
                             messagebox.showerror("Key file", str(e))
+                # One-click chain: the pose flow queued a gait run to follow
+                # the classifiers (licking predictions now exist).
+                if getattr(self, '_chain_gait_after_batch', False):
+                    self._chain_gait_after_batch = False
+                    self.root.after(500, self._auto_run_gait)
             self._safe_after(_post_batch)
 
         except Exception as e:

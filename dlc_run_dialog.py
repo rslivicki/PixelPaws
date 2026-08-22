@@ -194,12 +194,19 @@ class DLCRunDialog(tk.Toplevel):
             variable=self.chain_var,
         ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(10, 0))
 
-        self.features_var = tk.BooleanVar(value=False)
+        self.features_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(
             cfg, text="Extract features after pose tracking (pre-caches for "
                       "training; predictions do this automatically)",
             variable=self.features_var,
         ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(2, 0))
+
+        self.gait_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            cfg, text="Run Gait & Limb analysis after the classifiers "
+                      "(manuscript paw-contact gate)",
+            variable=self.gait_var,
+        ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
         self.frames_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -208,7 +215,10 @@ class DLCRunDialog(tk.Toplevel):
         ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(2, 0))
 
         self._ffmpeg_ok = shutil.which("ffmpeg") is not None
-        self.transcode_var = tk.BooleanVar(value=False)
+        # Default ON (when ffmpeg exists): already-H.265 videos are skipped,
+        # so the common case costs nothing and raw camera videos shrink
+        # ~200-fold before tracking.
+        self.transcode_var = tk.BooleanVar(value=self._ffmpeg_ok)
         tr_chk = ttk.Checkbutton(
             cfg, text="Transcode with the intake pipeline first (recommended for "
                       "raw camera videos)",
@@ -371,6 +381,7 @@ class DLCRunDialog(tk.Toplevel):
             "device": prov["name"],
             "batch_size": int(self.batch_var.get()),
             "auto_predict": bool(self.chain_var.get()),
+            "run_gait": bool(self.gait_var.get()),
             "select_frames": bool(self.frames_var.get()),
             "extract_features": bool(self.features_var.get()),
             "transcode": bool(self.transcode_var.get()) and self._ffmpeg_ok,
@@ -740,7 +751,8 @@ def run_dlc_flow(root, project_folder: str,
                  on_predictions_done: Optional[Callable[[], None]] = None,
                  on_select_frames: Optional[Callable[[], None]] = None,
                  on_extract_features: Optional[Callable[[], None]] = None,
-                 on_add_videos=None) -> None:
+                 on_add_videos=None,
+                 on_gait: Optional[Callable[[bool], None]] = None) -> None:
     """Top-level entry: settings dialog -> progress dialog -> optional chaining."""
     settings = DLCRunDialog.show(root, project_folder, on_add_videos=on_add_videos)
     if not settings:
@@ -754,6 +766,10 @@ def run_dlc_flow(root, project_folder: str,
         if (settings.get("extract_features") and h5_paths and on_extract_features
                 and not settings.get("auto_predict")):
             on_extract_features()
+        # Gait chains AFTER the classifier batch when one is queued (its
+        # licking exclusion needs the predictions); otherwise it runs now.
+        if settings.get("run_gait") and h5_paths and on_gait:
+            on_gait(not settings.get("auto_predict"))
         if settings.get("auto_predict") and h5_paths and on_predictions_done:
             on_predictions_done()
         if settings.get("select_frames") and on_select_frames:
