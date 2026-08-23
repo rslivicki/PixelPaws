@@ -205,6 +205,26 @@ class OneClickTab(ttk.Frame):
             "Runs the Gait & Limb analysis with the manuscript paw-contact "
             "preset (contour + brightness + licking exclusion).")
 
+        # Active pose model - resolved fresh at every run, so switching or
+        # upgrading the network in Pose Estimation is picked up automatically.
+        mrow = ttk.Frame(steps)
+        mrow.pack(fill="x", pady=(8, 0))
+        ttk.Label(mrow, text="Model:").pack(side="left")
+        self._model_lbl = ttk.Label(mrow, text="detecting…",
+                                    foreground="#666666")
+        self._model_lbl.pack(side="left", padx=(4, 6))
+        _ch = ttk.Button(mrow, text="Change…", width=9,
+                         command=lambda: self._jump(
+                             "🦴 Pose Estimation"))
+        _ch.pack(side="right")
+        Tip(_ch, "Pose models are managed on the Pose Estimation tab\n"
+                 "(Installed pose models). Whichever model is active there\n"
+                 "is the one this pipeline uses - switching or installing a\n"
+                 "new network takes effect on the next run.")
+        Tip(self._model_lbl,
+            "The DLC network the Pose tracking step will use.")
+        self.after(700, self._refresh_model)
+
         dev = ttk.Frame(steps)
         dev.pack(fill="x", pady=(8, 0))
         ttk.Label(dev, text="Device:").pack(side="left")
@@ -307,6 +327,23 @@ class OneClickTab(ttk.Frame):
         fn = getattr(self.app, "add_videos_to_project", None)
         if fn:
             fn(on_done=self.on_project_changed)
+
+    def _refresh_model(self):
+        def _worker():
+            txt = "no pose model installed"
+            try:
+                from dlc_run_dialog import load_active_bundle
+                b = load_active_bundle() if load_active_bundle else None
+                if b is not None:
+                    txt = (f"{b.display_name}  "
+                           f"(shuffle {b.dlc.shuffle}, {b.dlc.snapshot})")
+            except Exception:
+                txt = "model detection failed"
+            try:
+                self.after(0, lambda: self._model_lbl.config(text=txt))
+            except Exception:
+                pass
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _probe_devices(self):
         def _worker():
@@ -451,6 +488,7 @@ class OneClickTab(ttk.Frame):
         for k, _l, _s in STAGES:
             self._set_stage_silent(k, "pending" if k in self._plan
                                    else "skipped")
+        self._refresh_model()
         self._paws_start()
         self._log_line(f"Pipeline started: {len(vids)} video(s); "
                        f"steps: {', '.join(self._plan)}")
