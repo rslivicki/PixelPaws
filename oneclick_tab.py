@@ -394,19 +394,22 @@ class OneClickTab(ttk.Frame):
                 lbl.config(text="")
 
     def _draw_paws(self, n, done=False):
-        """n 🐾 rotated to point right, marching left to right."""
+        """n 🐾 rotated to point right, marching left to right.
+        Done state: the full trail turns green and stops (the monochrome
+        symbol font is used there so the fill color actually applies)."""
         try:
             self._paw_canvas.delete("all")
             for i in range(n):
                 x = 16 + i * 46
                 y = 18 + (4 if i % 2 else -4)   # alternate: walking steps
-                self._paw_canvas.create_text(x, y, text="🐾",
-                                             angle=270,
-                                             font=(FONT_FAMILY, 14))
-            if done:
-                self._paw_canvas.create_text(
-                    16 + n * 46 + 6, 18, text="✓",
-                    font=(FONT_FAMILY, 13, "bold"), fill="#2ca02c")
+                if done:
+                    self._paw_canvas.create_text(
+                        x, y, text="🐾", angle=270,
+                        font=("Segoe UI Symbol", 14), fill="#2f9e44")
+                else:
+                    self._paw_canvas.create_text(x, y, text="🐾",
+                                                 angle=270,
+                                                 font=(FONT_FAMILY, 14))
         except Exception:
             self._paw_running = False
 

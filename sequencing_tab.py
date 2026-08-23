@@ -587,7 +587,13 @@ class SequencingTab(ttk.Frame):
 
     def _draw_networks(self):
         c, groups = self._cohort, self._groups
-        axes = self._fig.subplots(1, len(groups), squeeze=False)[0]
+        n = len(groups)
+        ncols = n if n <= 2 else (2 if n <= 4 else 3)
+        nrows = -(-n // ncols)
+        grid = self._fig.subplots(nrows, ncols, squeeze=False)
+        axes = [ax for row in grid for ax in row]
+        for ax in axes[n:]:
+            ax.set_axis_off()
         for gi, g in enumerate(groups):
             col = self._gcol(gi)
             SA.draw_network(axes[gi], c.pooled[g], c.labels,
@@ -605,7 +611,13 @@ class SequencingTab(ttk.Frame):
                                             ha="center", va="center")
             return
         cmap = SA.div_cmap()
-        axes = self._fig.subplots(1, len(others), squeeze=False)[0]
+        n = len(others)
+        ncols = n if n <= 2 else (2 if n <= 4 else 3)
+        nrows = -(-n // ncols)
+        grid = self._fig.subplots(nrows, ncols, squeeze=False)
+        axes = [ax for row in grid for ax in row]
+        for ax in axes[n:]:
+            ax.set_axis_off()
         for gi, g in enumerate(others):
             vmax, n_ch, n_el = SA.draw_diff(
                 axes[gi], c.pooled[ref], c.pooled[g], c.labels, cmap,
