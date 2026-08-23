@@ -460,6 +460,8 @@ class OneClickTab(ttk.Frame):
         self._stage_state[key] = state
         dot, color = _DOTS[state]
         self._stage_dots[key].config(text=dot, foreground=color or "#999999")
+        if state in ("done", "skipped", "failed", "pending"):
+            self._eta_clear(key)
 
     def _advance(self, finished_key):
         """Mark `finished_key` done and start the next planned stage."""
