@@ -10213,7 +10213,7 @@ class PixelPawsGUI:
                   foreground='gray', wraplength=520, justify='left').pack(anchor='w', pady=(2, 6))
         prog = ttk.Progressbar(outer, mode='determinate', maximum=len(paths))
         prog.pack(fill='x', pady=(4, 2))
-        stat = ttk.Label(outer, text="ready")
+        stat = ttk.Label(outer, text="Press Import to begin.")
         stat.pack(anchor='w')
         logtxt = scrolledtext.ScrolledText(outer, height=8, wrap='word',
                                            font=('Consolas', 9))
@@ -10221,17 +10221,45 @@ class PixelPawsGUI:
         btns = ttk.Frame(outer)
         btns.pack(fill='x')
         cancel_evt = threading.Event()
+        proc_box = [None]
 
         def _log(m):
-            self.root.after(0, lambda: (logtxt.insert(tk.END, m + "\n"),
-                                        logtxt.see(tk.END)))
+            def _append():
+                if win.winfo_exists():
+                    logtxt.insert(tk.END, m + "\n")
+                    logtxt.see(tk.END)
+            self.root.after(0, _append)
+
+        def _kill_current():
+            proc = proc_box[0]
+            if proc is not None and proc.poll() is None:
+                try:
+                    subprocess.run(["taskkill", "/PID", str(proc.pid),
+                                    "/T", "/F"], capture_output=True,
+                                   timeout=10)
+                except Exception:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
 
         def _close():
             cancel_evt.set()
+            _kill_current()
             win.destroy()
         win.protocol("WM_DELETE_WINDOW", _close)
         close_btn = ttk.Button(btns, text="Cancel", command=_close)
         close_btn.pack(side='right')
+
+        def _start():
+            start_btn.config(state='disabled')
+            tr_chk.config(state='disabled')
+            stat.config(text="starting...")
+            threading.Thread(target=_worker, args=(bool(tr_var.get()),),
+                             daemon=True).start()
+        start_btn = ttk.Button(btns, text="▶ Import", style='Accent.TButton',
+                               command=_start)
+        start_btn.pack(side='right', padx=(0, 6))
 
         def _worker(do_transcode):
             added = skipped = failed = 0
@@ -10260,15 +10288,63 @@ class PixelPawsGUI:
                 try:
                     if do_transcode:
                         dst = Path(videos_dir) / f"{stem}.mp4"
-                        r = subprocess.run(build_cmd(srcp, dst),
-                                           capture_output=True, text=True)
-                        if r.returncode != 0 or not out_ok(dst):
+                        _log(f"⟳ {srcp.name}: transcoding to H.265 "
+                             "(this takes a few minutes per video)...")
+                        total = 0
+                        try:
+                            import cv2 as _cv2
+                            _cap = _cv2.VideoCapture(str(srcp))
+                            if _cap.isOpened():
+                                total = int(_cap.get(
+                                    _cv2.CAP_PROP_FRAME_COUNT)) or 0
+                            _cap.release()
+                        except Exception:
+                            pass
+                        import time as _time
+                        t0 = _time.time()
+                        proc = subprocess.Popen(
+                            build_cmd(srcp, dst, prog="pipe:1"),
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL,
+                            text=True, bufsize=1)
+                        proc_box[0] = proc
+                        for line in proc.stdout:
+                            line = line.strip()
+                            if not line.startswith("frame="):
+                                continue
+                            try:
+                                done = int(line.split("=", 1)[1])
+                            except ValueError:
+                                continue
+                            fps = done / max(_time.time() - t0, 1e-3)
+                            eta = ((total - done) / max(fps, 1e-3)
+                                   if total else None)
+                            frac = min(done / total, 1.0) if total else 0
+                            self.root.after(0, lambda i=i, d=done, t=total,
+                                            f=fps, e=eta, fr=frac,
+                                            n=srcp.name: (
+                                prog.config(value=i - 1 + fr),
+                                stat.config(text=(
+                                    f"[{i}/{len(paths)}] {n} - "
+                                    f"{d}{'/' + str(t) if t else ''} frames"
+                                    f"  {f:.0f} fps"
+                                    + (f"  ~{int(e // 60)}m {int(e % 60)}s"
+                                       " left" if e is not None else "")))))
+                        proc.wait()
+                        proc_box[0] = None
+                        if cancel_evt.is_set():
+                            if dst.exists():
+                                dst.unlink()
+                            _log(f"⏹ {srcp.name}: import cancelled")
+                            break
+                        if proc.returncode != 0 or not out_ok(dst):
                             if dst.exists():
                                 dst.unlink()
                             _log(f"✗ {srcp.name}: transcode failed - copying instead")
                             dst = Path(videos_dir) / srcp.name
                             _sh.copy2(srcp, dst)
                     else:
+                        _log(f"⟳ {srcp.name}: copying...")
                         dst = Path(videos_dir) / srcp.name
                         _sh.copy2(srcp, dst)
                     try:
@@ -10286,6 +10362,13 @@ class PixelPawsGUI:
                     failed += 1
 
             def _finish():
+                if not win.winfo_exists():
+                    if on_done:
+                        try:
+                            on_done()
+                        except Exception:
+                            pass
+                    return
                 prog.config(value=len(paths))
                 stat.config(text=f"done - {added} added, {skipped} skipped"
                                  + (f", {failed} failed" if failed else ""))
@@ -10303,8 +10386,6 @@ class PixelPawsGUI:
                         pass
             self.root.after(0, _finish)
 
-        threading.Thread(target=_worker, args=(bool(tr_var.get()),),
-                         daemon=True).start()
 
     def open_pose_extraction(self):
         """Tools > Analyze Videos (Pose Tracking).
