@@ -637,6 +637,15 @@ class OneClickTab(ttk.Frame):
             pass
         alive = bool(getattr(dlg, "worker", None)
                      and dlg.worker.is_alive())
+        if self._cancel_requested and alive:
+            # A stop is pending but the worker is still going - a subprocess
+            # may have launched after the first kill (pose starting just as
+            # transcode was cancelled). Keep killing until it stays down.
+            try:
+                dlg._cancelled = True
+                dlg._kill_proc_tree()
+            except Exception:
+                pass
         if self._pose_h5s is None and alive:
             self.after(300, self._poll_pose)
             return

@@ -622,6 +622,20 @@ class DLCProgressDialog(tk.Toplevel):
             out.append(str(src))
         return out
 
+    def _kill_proc_tree(self):
+        """Force-kill the current subprocess and all its children."""
+        proc = self.proc
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                           capture_output=True, timeout=10)
+        except Exception:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
     def _worker(self):
         s = self.settings
         videos = [str(p) for p in s["videos"]]
@@ -631,6 +645,9 @@ class DLCProgressDialog(tk.Toplevel):
                 self._msg_queue.put(("all_done", None))
                 return
             self.proc = None
+        if self._cancelled:
+            self._msg_queue.put(("all_done", None))
+            return
         bundle = s["bundle"]
         py = _resolve_pose_python()
         script = str(_REPO / "pipeline" / "dlc_analyze.py")
@@ -650,7 +667,12 @@ class DLCProgressDialog(tk.Toplevel):
             self._msg_queue.put(("all_done", None))
             return
 
+        if self._cancelled:
+            self._kill_proc_tree()
+
         for line in self.proc.stdout:
+            if self._cancelled:
+                self._kill_proc_tree()
             line = line.rstrip("\n")
             if not line:
                 continue
@@ -750,11 +772,7 @@ class DLCProgressDialog(tk.Toplevel):
                                "Cancel pose tracking? The in-progress video will stop.",
                                parent=self):
             self._cancelled = True
-            if self.proc and self.proc.poll() is None:
-                try:
-                    self.proc.terminate()
-                except Exception:
-                    pass
+            self._kill_proc_tree()
             self._append_log("Cancelled by user.")
 
 
