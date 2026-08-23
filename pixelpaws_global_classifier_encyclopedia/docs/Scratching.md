@@ -1,5 +1,17 @@
 # Scratching
 
+> **2026-08-23 update (v1.2)**: retrained with the STANDARD extraction
+> settings (pix_threshold 0.3, square_size [40,40,40], optical flow on)
+> so Scratching shares the `8aed1c22` feature-cache group with the rest
+> of the Core 8 (one cache per video instead of two).
+> **Honest session-level GroupKFold CV F1: 0.739 +/- 0.082.** The v1
+> headline of 0.952 +/- 0.003 was frame-level CV, which leaks adjacent
+> frames of the same bout across train/test; the v1 features score
+> 0.720 +/- 0.128 under the same honest protocol, so the settings change
+> costs nothing. Operating point: 0.5 / min_bout 3 / max_gap 10.
+> v1 artifact: `../superseded/classifier_Scratching_v1_oldsettings_20260823.pkl`.
+
+
 ## Behaviour definition
 Mouse rapidly scratches with a hindpaw, typically targeting head/neck/back.
 
