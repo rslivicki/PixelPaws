@@ -292,7 +292,9 @@ class OneClickTab(ttk.Frame):
         videos_dir = os.path.join(proj, "videos") if proj else ""
         if proj and not os.path.isdir(videos_dir):
             videos_dir = proj
-        self._videos = scan_project_videos(videos_dir) if proj else []
+        from dlc_run_dialog import active_bundle_scorer
+        self._videos = (scan_project_videos(
+            videos_dir, scorer=active_bundle_scorer()) if proj else [])
         for i in self._tree.get_children():
             self._tree.delete(i)
         for v in self._videos:
@@ -478,6 +480,28 @@ class OneClickTab(ttk.Frame):
         # pose only needed for videos without pose files (unless transcoding
         # changes them first - transcode keeps names, h5s stay valid)
         need_pose = [v for v in vids if v["select_default"]]
+        skip_tracked, redo = [], []
+        if "pose" in self._plan:
+            tracked = [v for v in vids if not v["select_default"]]
+            other = [v for v in tracked if v.get("h5_other_model")]
+            skip_tracked = [v for v in tracked
+                            if not v.get("h5_other_model")]
+            if other:
+                names = ", ".join(v["name"] for v in other[:8])
+                if len(other) > 8:
+                    names += f" (+{len(other) - 8} more)"
+                if messagebox.askyesno(
+                        "Re-track with the current model?",
+                        f"{len(other)} video(s) were pose-tracked with a "
+                        f"different model than the active one:\n\n{names}"
+                        "\n\nRe-track them with the current model?\n"
+                        "(No keeps the existing pose files.)",
+                        parent=self):
+                    redo = other
+                else:
+                    skip_tracked = skip_tracked + other
+        self._pose_list = need_pose + redo
+        self._skip_tracked = skip_tracked
         self._vids = vids
         self._need_pose = need_pose
 
@@ -495,6 +519,13 @@ class OneClickTab(ttk.Frame):
         self._paws_start()
         self._log_line(f"Pipeline started: {len(vids)} video(s); "
                        f"steps: {', '.join(self._plan)}")
+        if self._skip_tracked:
+            names = ", ".join(v["name"] for v in self._skip_tracked[:8])
+            if len(self._skip_tracked) > 8:
+                names += f" (+{len(self._skip_tracked) - 8} more)"
+            self._log_line(f"Pose: {len(self._skip_tracked)} video(s) "
+                           f"already analyzed - skipping ({names}). "
+                           "They still go through the later steps.")
         self._advance(None)
 
     def _set_stage_silent(self, key, state):
@@ -536,7 +567,8 @@ class OneClickTab(ttk.Frame):
             self._stage_state.get("transcode") == "pending"
         want_pose = "pose" in self._plan and \
             self._stage_state.get("pose") == "pending"
-        if want_pose and not self._need_pose and not want_transcode:
+        if want_pose and not getattr(self, "_pose_list", None) \
+                and not want_transcode:
             self._log_line("Pose: every selected video is already tracked - "
                            "skipping.")
             self._set_stage_silent("pose", "skipped")
@@ -546,17 +578,21 @@ class OneClickTab(ttk.Frame):
         from dlc_run_dialog import DLCProgressDialog, load_active_bundle
         import shutil as _sh
         bundle = load_active_bundle() if load_active_bundle else None
-        if want_pose and self._need_pose and bundle is None:
+        if want_pose and getattr(self, "_pose_list", None) \
+                and bundle is None:
             self._fail_stage("pose", "No DLC model bundle installed.")
             return
         prov = next((p for p in self._providers
                      if p["display"] == self._device_var.get()),
                     {"name": "cpu"})
-        pose_videos = [v["path"] for v in
-                       (self._need_pose if want_pose else [])]
+        pose_list = getattr(self, "_pose_list", None)
+        if pose_list is None:
+            pose_list = self._need_pose
+        pose_videos = [v["path"] for v in (pose_list if want_pose else [])]
         settings = {
             "videos": ([v["path"] for v in self._vids]
-                       if want_transcode else pose_videos),
+                       if (want_transcode and not want_pose)
+                       else pose_videos),
             "device": prov["name"],
             "batch_size": int(self._batch_var.get()),
             "auto_predict": False, "run_gait": False,

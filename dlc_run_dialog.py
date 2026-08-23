@@ -81,11 +81,22 @@ def _probe_providers() -> List[dict]:
 # Settings dialog
 # --------------------------------------------------------------------------- #
 
-def scan_project_videos(videos_dir) -> List[dict]:
+def active_bundle_scorer():
+    """h5 scorer string of the active DLC bundle, or None."""
+    try:
+        b = load_active_bundle() if load_active_bundle else None
+        return b.dlc.h5_scorer_string if b else None
+    except Exception:
+        return None
+
+
+def scan_project_videos(videos_dir, scorer: str = None) -> List[dict]:
     """Scan a project's videos/ folder for analyzable videos.
 
-    Returns row dicts (index/name/path/duration/cal/status/select_default)
-    shared by the pose-tracking dialog and the One-Click Pipeline tab."""
+    Returns row dicts (index/name/path/duration/cal/status/select_default/
+    h5_other_model) shared by the pose-tracking dialog and the Quick Start
+    tab. When `scorer` (the active bundle's h5 scorer string) is given,
+    videos whose pose files came from a different model are flagged."""
     videos_dir = Path(videos_dir)
     if not videos_dir.is_dir():
         return []
@@ -93,7 +104,10 @@ def scan_project_videos(videos_dir) -> List[dict]:
     for idx, vp in enumerate(sorted(videos_dir.glob("*.mp4"))):
         if "DLC_" in vp.name or "_labeled" in vp.name:
             continue
-        already = any(videos_dir.glob(f"{vp.stem}*DLC*.h5"))
+        h5s = list(videos_dir.glob(f"{vp.stem}DLC*.h5"))
+        already = bool(h5s)
+        other_model = bool(h5s and scorer
+                           and not any(scorer in h.name for h in h5s))
         duration = "?"
         try:
             import cv2
@@ -121,8 +135,11 @@ def scan_project_videos(videos_dir) -> List[dict]:
             "path": vp,
             "duration": duration,
             "cal": cal,
-            "status": "already analyzed" if already else "needs analysis",
+            "status": ("analyzed (other model)" if other_model
+                       else "already analyzed" if already
+                       else "needs analysis"),
             "select_default": not already,
+            "h5_other_model": other_model,
         })
     return out
 
@@ -308,7 +325,8 @@ class DLCRunDialog(tk.Toplevel):
         self.focus_force()
 
     def _scan_videos(self) -> List[dict]:
-        return scan_project_videos(self.videos_dir)
+        return scan_project_videos(self.videos_dir,
+                                   scorer=active_bundle_scorer())
 
 
 
