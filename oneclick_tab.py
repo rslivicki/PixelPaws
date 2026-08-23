@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""One-Click Pipeline tab - the guided videos -> data wizard.
+"""Quick Start tab - the guided videos -> data wizard.
 
 Walks a naive user from raw videos to populated analysis tabs in one pass:
 
@@ -62,7 +62,7 @@ class OneClickTab(ttk.Frame):
     def _build_ui(self):
         hdr = ttk.Frame(self)
         hdr.pack(fill="x", padx=14, pady=(12, 2))
-        ttk.Label(hdr, text="⚡  One-Click Pipeline",
+        ttk.Label(hdr, text="⚡  Quick Start",
                   font=(FONT_FAMILY, 15, "bold")).pack(side="left")
         ttk.Label(hdr, text="   Pick videos, press Run - everything else is "
                             "automatic.",

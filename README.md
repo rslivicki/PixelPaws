@@ -354,9 +354,9 @@ Results include:
 
 All outputs are saved to `evaluations/` as a text report and image files.
 
-### One-Click Pipeline (recommended)
+### Quick Start tab (recommended)
 
-The app opens on the **One-Click Pipeline** tab - the guided path from raw
+The app opens on the **Quick Start** tab - the guided path from raw
 videos to populated analysis tabs. Pick your videos in the session table
 (length, calibration, and pose-tracking status shown; add new videos with
 the ➕ button), leave the five steps ticked, and press **Run pipeline**:

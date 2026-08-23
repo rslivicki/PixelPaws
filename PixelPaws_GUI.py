@@ -601,7 +601,7 @@ class PixelPawsGUI:
             # bundled set -> analyze. Classifier development (Predict & Review /
             # Evaluate / Train) is demoted to the bottom group -- most users
             # ship with the bundled classifiers and never train.
-            "Get Started": ["⚡ One-Click Pipeline"],
+            "Get Started": ["⚡ Quick Start"],
             "Pose & Features": ["🦴 Pose Estimation", "⚙️ Feature Extraction"],
             "Score": ["🚀 Run Classifiers"],
             "Analyze": ["📈 Single-Classifier Analysis",
@@ -723,7 +723,7 @@ class PixelPawsGUI:
         try:
             from oneclick_tab import OneClickTab
             self.oneclick_frame = ttk.Frame(self.notebook)
-            self.notebook.add(self.oneclick_frame, text="⚡ One-Click Pipeline")
+            self.notebook.add(self.oneclick_frame, text="⚡ Quick Start")
             self.oneclick_tab = OneClickTab(self.oneclick_frame, self)
             self.oneclick_tab.pack(fill='both', expand=True)
         except Exception as _oc_err:
@@ -744,7 +744,7 @@ class PixelPawsGUI:
         # Land on the top of the mainline path (first-added tab would
         # otherwise win, which is Train Classifier).
         try:
-            self.notebook.select("⚡ One-Click Pipeline")
+            self.notebook.select("⚡ Quick Start")
         except Exception:
             pass
 
