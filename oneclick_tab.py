@@ -581,6 +581,10 @@ class OneClickTab(ttk.Frame):
                                 on_complete=self._on_pose_done)
         try:
             dlg.withdraw()
+            # The dialog grabs all input on construction (it is modal when
+            # shown from the Pose tab). Hidden under the wizard that grab
+            # would swallow every click in the app - Stop included.
+            dlg.grab_release()
         except Exception:
             pass
         self._pose_dlg = dlg
