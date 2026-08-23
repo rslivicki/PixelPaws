@@ -64,9 +64,6 @@ class OneClickTab(ttk.Frame):
         hdr.pack(fill="x", padx=14, pady=(12, 2))
         ttk.Label(hdr, text="⚡  Quick Start",
                   font=(FONT_FAMILY, 15, "bold")).pack(side="left")
-        ttk.Label(hdr, text="   Pick videos, press Run - everything else is "
-                            "automatic.",
-                  foreground="grey", font=(FONT_FAMILY, 9)).pack(side="left")
 
         body = ttk.Frame(self)
         body.pack(fill="both", expand=True, padx=14, pady=6)
@@ -100,6 +97,11 @@ class OneClickTab(ttk.Frame):
                           command=self._add_videos)
         _add.pack(side="right")
         Tip(_add, "Copy new videos into the project's videos/ folder.")
+        _pv = ttk.Button(btns, text="🎬 Check tracking…",
+                         command=self._open_pose_preview)
+        _pv.pack(side="right", padx=(0, 6))
+        Tip(_pv, "Play a tracked video with the pose keypoints overlaid -\n"
+                 "sanity-check tracking quality before analyzing.")
 
         tf = ttk.Frame(sess)
         tf.pack(fill="both", expand=True)
@@ -233,6 +235,17 @@ class OneClickTab(ttk.Frame):
     def _select_unanalyzed(self):
         self._tree.selection_set([str(v["index"]) for v in self._videos
                                   if v["select_default"]])
+
+    def _open_pose_preview(self):
+        from pose_preview import open_pose_preview
+        sel = self._tree.selection()
+        vp = None
+        if sel:
+            v = next((v for v in self._videos
+                      if str(v["index"]) == sel[0]), None)
+            if v:
+                vp = v["path"]
+        open_pose_preview(self.winfo_toplevel(), self._project(), vp)
 
     def _add_videos(self):
         fn = getattr(self.app, "add_videos_to_project", None)

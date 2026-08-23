@@ -367,6 +367,11 @@ the ➕ button), leave the five steps ticked, and press **Run pipeline**:
 4. Classifiers (the Core-8 default set)
 5. Gait & contour analysis (manuscript paw-contact preset)
 
+After pose tracking, **🎬 Check tracking** (on Quick Start and the Pose
+Estimation tab) plays any session with the keypoints overlaid - scrub,
+adjust the likelihood gate, toggle labels/trails - to confirm tracking
+quality before trusting the downstream numbers.
+
 One progress bar tracks the whole run and changes color per step; steps
 that are not needed (e.g. pose for already-tracked videos) are skipped
 automatically. When it finishes, every Analyze tab is populated - jump

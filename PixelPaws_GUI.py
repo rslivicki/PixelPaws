@@ -9985,6 +9985,9 @@ class PixelPawsGUI:
                    command=self.open_pose_extraction, style='Accent.TButton').pack(side='left')
         ttk.Button(_run_btns, text="➕ Add Videos…",
                    command=self.add_videos_to_project).pack(side='left', padx=(8, 0))
+        ttk.Button(_run_btns, text="🎬 Check Tracking…",
+                   command=self.open_pose_tracking_preview).pack(
+            side='left', padx=(8, 0))
 
         self._build_pose_model_manager(frame)
 
@@ -10355,6 +10358,15 @@ class PixelPawsGUI:
                      on_extract_features=_features,
                      on_add_videos=self.add_videos_to_project,
                      on_gait=_gait)
+
+    def open_pose_tracking_preview(self):
+        """Play a tracked video with the pose keypoints overlaid."""
+        proj = self.current_project_folder.get()
+        if not proj:
+            messagebox.showinfo("No project", "Load a project folder first.")
+            return
+        from pose_preview import open_pose_preview
+        open_pose_preview(self.root, proj)
 
     def _auto_run_gait(self):
         """One-click chain: kick off the Gait & Limb analysis on all sessions
