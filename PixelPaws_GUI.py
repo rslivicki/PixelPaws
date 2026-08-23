@@ -17025,9 +17025,14 @@ Left/Right       - Previous/Next frame (in video preview)
                 _pf_n = 0
 
                 for clf_path, settings in self.batch_classifiers.items():
+                    # honor Stop between classifiers, not just between videos
+                    if self._batch_cancel_flag.is_set():
+                        self._batch_log("\n  Cancelled - skipping remaining "
+                                        "classifiers for this video.\n")
+                        break
                     clf_name = os.path.basename(clf_path)
                     clf_base = os.path.splitext(clf_name)[0]
-                    
+
                     self._batch_log(f"  → Running {clf_name}...\n")
                     self.root.update_idletasks()
                     

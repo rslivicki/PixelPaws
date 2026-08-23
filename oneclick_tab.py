@@ -165,6 +165,15 @@ class OneClickTab(ttk.Frame):
         right = ttk.Frame(body)
         right.grid(row=0, column=1, sticky="nsew")
 
+        # Walking-paws activity indicator (same as the active-learning
+        # retrain window): paws march while the pipeline is running.
+        self._PAW_MAX = 8
+        self._paw_n = 0
+        self._paw_running = False
+        self._paw_canvas = tk.Canvas(right, height=36, width=420,
+                                     highlightthickness=0)
+        self._paw_canvas.pack(fill="x", pady=(0, 2))
+
         steps = ttk.LabelFrame(right, text="2.  Steps", padding=8)
         steps.pack(fill="x")
         self._stage_vars = {}
@@ -347,6 +356,49 @@ class OneClickTab(ttk.Frame):
             if key is None or k == key:
                 lbl.config(text="")
 
+    def _draw_paws(self, n, done=False):
+        """n 🐾 rotated to point right, marching left to right."""
+        try:
+            self._paw_canvas.delete("all")
+            for i in range(n):
+                x = 16 + i * 46
+                y = 18 + (4 if i % 2 else -4)   # alternate: walking steps
+                self._paw_canvas.create_text(x, y, text="🐾",
+                                             angle=270,
+                                             font=(FONT_FAMILY, 14))
+            if done:
+                self._paw_canvas.create_text(
+                    16 + n * 46 + 6, 18, text="✓",
+                    font=(FONT_FAMILY, 13, "bold"), fill="#2ca02c")
+        except Exception:
+            self._paw_running = False
+
+    def _animate_paws(self):
+        if not self._paw_running:
+            return
+        self._paw_n = (self._paw_n % self._PAW_MAX) + 1
+        self._draw_paws(self._paw_n)
+        try:
+            self.after(320, self._animate_paws)
+        except Exception:
+            self._paw_running = False
+
+    def _paws_start(self):
+        if not self._paw_running:
+            self._paw_running = True
+            self._paw_n = 0
+            self._animate_paws()
+
+    def _paws_stop(self, done=False):
+        self._paw_running = False
+        try:
+            if done:
+                self._draw_paws(self._PAW_MAX, done=True)
+            else:
+                self._paw_canvas.delete("all")
+        except Exception:
+            pass
+
     def _set_stage(self, key, state):
         self._stage_state[key] = state
         dot, color = _DOTS[state]
@@ -399,6 +451,7 @@ class OneClickTab(ttk.Frame):
         for k, _l, _s in STAGES:
             self._set_stage_silent(k, "pending" if k in self._plan
                                    else "skipped")
+        self._paws_start()
         self._log_line(f"Pipeline started: {len(vids)} video(s); "
                        f"steps: {', '.join(self._plan)}")
         self._advance(None)
@@ -733,6 +786,7 @@ class OneClickTab(ttk.Frame):
     def _finish(self, failed=False):
         self._running = False
         self._cancel_requested = False
+        self._paws_stop(done=not failed)
         self.app._oneclick_active = False
         self._run_btn.config(state="normal")
         self._cancel_btn.config(state="disabled")
@@ -765,8 +819,16 @@ class OneClickTab(ttk.Frame):
         if stage in ("transcode", "pose") and self._pose_dlg is not None:
             try:
                 self._pose_dlg._cancelled = True
-                if getattr(self._pose_dlg, "proc", None) is not None:
-                    self._pose_dlg.proc.terminate()
+                proc = getattr(self._pose_dlg, "proc", None)
+                if proc is not None and proc.poll() is None:
+                    # kill the whole tree - the DLC child may have workers
+                    import subprocess as _sp
+                    try:
+                        _sp.run(["taskkill", "/PID", str(proc.pid),
+                                 "/T", "/F"], capture_output=True,
+                                timeout=10)
+                    except Exception:
+                        proc.terminate()
             except Exception:
                 pass
         elif stage in ("features", "classifiers"):
