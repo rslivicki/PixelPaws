@@ -475,6 +475,11 @@ class MultiClassifierTab(ttk.Frame):
         for _, r in self._key_df.iterrows():
             if r["Subject"] in toks:
                 return r["Treatment"]
+        # Multi-token subjects (e.g. "2605_FormOxy_S1"): match on
+        # underscore boundaries so S1 can never claim S10's session.
+        for _, r in self._key_df.iterrows():
+            if f"_{r['Subject']}_" in f"_{session}_":
+                return r["Treatment"]
         return None
 
     def _project(self):
