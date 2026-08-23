@@ -95,6 +95,7 @@ class OneClickTab(ttk.Frame):
         self._pose_dlg = None
         self._pose_h5s = None
         self._pose_log_index = "1.0"
+        self._cancel_requested = False
         self._build_ui()
         self.after(400, self.on_project_changed)
 
@@ -332,22 +333,14 @@ class OneClickTab(ttk.Frame):
         self._eta_unit = _Eta()
         self._eta_unit_key = unit_key
 
-    def _eta_show(self, key, batch_frac, unit_frac=None, unit_name=""):
-        """Update the stage row's ETA text (and return the summary text)."""
-        parts = []
+    def _eta_show(self, key, batch_frac):
+        """Row ETA: '~left · ≈clock'. Returns remaining seconds or None."""
         b = self._eta_batch.update(batch_frac)
-        if b is not None:
-            parts.append(f"~{_fmt_eta(b)} left (≈{_fmt_clock(b)})")
-        if unit_frac is not None:
-            u = self._eta_unit.update(unit_frac)
-            if u is not None:
-                parts.append((unit_name or "this video")
-                             + f" ~{_fmt_eta(u)}")
-        txt = "  ·  ".join(parts) if parts else "estimating…"
         lbl = self._stage_etas.get(key)
         if lbl is not None:
-            lbl.config(text=txt)
-        return txt
+            lbl.config(text=(f"~{_fmt_eta(b)} left · ≈{_fmt_clock(b)}"
+                             if b is not None else "estimating…"))
+        return b
 
     def _eta_clear(self, key=None):
         for k, lbl in self._stage_etas.items():
@@ -397,6 +390,7 @@ class OneClickTab(ttk.Frame):
         self._need_pose = need_pose
 
         self._running = True
+        self._cancel_requested = False
         self.app._oneclick_active = True
         self._run_btn.config(state="disabled")
         self._cancel_btn.config(state="normal")
@@ -522,14 +516,20 @@ class OneClickTab(ttk.Frame):
             _ak = ("transcode"
                    if self._stage_state.get("transcode") == "running"
                    else "pose")
-            eta_txt = self._eta_show(
-                _ak, (ov + cv / 100.0) / max(om, 1),
-                unit_frac=cv / 100.0,
-                unit_name=f"video {int(ov) + 1}/{int(om)}")
-            if cur_txt.strip():
-                self._status_lbl.config(
-                    text=(cur_txt[:90]
-                          + ("   |   " + eta_txt if eta_txt else "")))
+            self._eta_show(_ak, (ov + cv / 100.0) / max(om, 1))
+            # readable status: stage - video i/n - fps - this-video ETA
+            import re as _re
+            stats = str(dlg.current_stats.cget("text"))
+            fpsm = _re.search(r"([\d.]+)\s*fps", stats)
+            u = self._eta_unit.update(cv / 100.0)
+            bits = [("Transcoding" if _ak == "transcode"
+                     else "Pose tracking"),
+                    f"video {min(int(ov) + 1, int(om))}/{int(om)}"]
+            if fpsm:
+                bits.append(f"{float(fpsm.group(1)):.0f} fps")
+            if u is not None:
+                bits.append(f"this video ~{_fmt_eta(u)}")
+            self._status_lbl.config(text="  ·  ".join(bits))
             # mirror new log lines
             new = dlg.log_text.get(self._pose_log_index, "end-1c")
             if new.strip():
@@ -551,8 +551,8 @@ class OneClickTab(ttk.Frame):
         except Exception:
             pass
         self._pose_dlg = None
-        if cancelled or not self._running:
-            self._abort("Cancelled during pose/transcode.")
+        if cancelled or self._cancel_requested or not self._running:
+            self._abort("Stopped during pose/transcode.")
             return
         for k in ("transcode", "pose"):
             if self._stage_state.get(k) == "running":
@@ -592,9 +592,13 @@ class OneClickTab(ttk.Frame):
                 self._bar.configure(value=float(bar["value"]))
             lbl = getattr(app, "batch_progress_label", None)
             t = str(lbl.cget("text")) if lbl is not None else ""
-            unit_frac, unit_name = None, ""
+            _ak = ("features"
+                   if self._stage_state.get("features") == "running"
+                   else "classifiers")
+            self._eta_show(_ak, frac)
             import re as _re
             m = _re.search(r"Processing (\d+)/(\d+)", t)
+            bits = ["Scoring behaviors"]
             if m and self._vids:
                 cur, tot = int(m.group(1)), int(m.group(2))
                 opv = max(tot // max(len(self._vids), 1), 1)
@@ -602,16 +606,14 @@ class OneClickTab(ttk.Frame):
                 if vid_idx != getattr(self, "_batch_vid_idx", None):
                     self._batch_vid_idx = vid_idx
                     self._eta_unit = _Eta()
-                unit_frac = ((max(cur, 1) - 1) % opv + 1) / opv
-                unit_name = f"video {vid_idx + 1}/{len(self._vids)}"
-            _ak = ("features"
-                   if self._stage_state.get("features") == "running"
-                   else "classifiers")
-            eta_txt = self._eta_show(_ak, frac, unit_frac=unit_frac,
-                                     unit_name=unit_name)
-            if t:
-                self._status_lbl.config(
-                    text=t + ("   |   " + eta_txt if eta_txt else ""))
+                u = self._eta_unit.update(
+                    ((max(cur, 1) - 1) % opv + 1) / opv)
+                bits.append(f"video {vid_idx + 1}/{len(self._vids)}")
+                bits.append(f"classifier {(max(cur, 1) - 1) % opv + 1}"
+                            f"/{opv}")
+                if u is not None:
+                    bits.append(f"this video ~{_fmt_eta(u)}")
+            self._status_lbl.config(text="  ·  ".join(bits))
             logw = getattr(app, "batch_log", None)
             if logw is not None:
                 new = logw.get(self._batch_log_index, "end-1c")
@@ -638,9 +640,10 @@ class OneClickTab(ttk.Frame):
             return
         if not self._running:
             return
-        if getattr(app, "_batch_cancel_flag", None) is not None and \
-                app._batch_cancel_flag.is_set():
-            self._abort("Cancelled during classifiers.")
+        if self._cancel_requested or (
+                getattr(app, "_batch_cancel_flag", None) is not None
+                and app._batch_cancel_flag.is_set()):
+            self._abort("Stopped during classifier scoring.")
             return
         if self._stage_state.get("features") == "running":
             self._set_stage_silent("features", "done")
@@ -692,23 +695,24 @@ class OneClickTab(ttk.Frame):
             m = float(tab._progress["maximum"]) or 1.0
             self._bar.configure(value=v / m * 100.0)
             sub = str(tab._sub_progress_label.cget("text"))
-            eta_txt = self._eta_show("gait", v / m)
+            self._eta_show("gait", v / m)
             import time as _t
+            bits = ["Gait & contour",
+                    f"session {min(int(v) + 1, int(m))}/{int(m)}"]
             if v >= 1:
                 _per = (_t.time() - self._eta_batch.t0) / v
-                eta_txt = ((eta_txt + "  ·  " if eta_txt else "")
-                           + f"≈{_fmt_eta(_per)}/session")
-                self._stage_etas["gait"].config(text=eta_txt)
-            self._status_lbl.config(
-                text=("Gait & contour analysis… "
-                      f"{int(v)}/{int(m)} sessions"
-                      + (f"  |  {sub}" if sub else "")
-                      + ("   |   " + eta_txt if eta_txt else "")))
+                bits.append(f"≈{_fmt_eta(_per)}/session")
+            if sub:
+                bits.append(sub)
+            self._status_lbl.config(text="  ·  ".join(bits))
         except Exception:
             pass
         th = getattr(tab, "_fit_thread", None)
         if th is not None and th.is_alive():
             self.after(400, self._poll_gait)
+            return
+        if self._cancel_requested:
+            self._abort("Stopped during gait analysis.")
             return
         self._advance("gait")
 
@@ -728,6 +732,7 @@ class OneClickTab(ttk.Frame):
 
     def _finish(self, failed=False):
         self._running = False
+        self._cancel_requested = False
         self.app._oneclick_active = False
         self._run_btn.config(state="normal")
         self._cancel_btn.config(state="disabled")
@@ -746,9 +751,16 @@ class OneClickTab(ttk.Frame):
             self._jump_gait.config(state="normal")
 
     def _cancel(self):
-        if not self._running:
+        """Request a stop; the active stage's poller finishes the abort once
+        its worker has actually ended (so nothing keeps running unseen)."""
+        if not self._running or self._cancel_requested:
             return
-        self._log_line("Cancelling…")
+        self._cancel_requested = True
+        self._cancel_btn.config(state="disabled")
+        self._status_lbl.config(
+            text="Stopping after the current operation…")
+        self._log_line("Stop requested - waiting for the current "
+                       "operation to end…")
         stage = self._active_stage
         if stage in ("transcode", "pose") and self._pose_dlg is not None:
             try:
@@ -766,9 +778,6 @@ class OneClickTab(ttk.Frame):
                 self.app.wb_tab._cancel_analysis()
             except Exception:
                 pass
-        self._running = False
-        # pollers notice _running=False; mark states + release UI
-        self._abort("Cancelled.")
 
     def _jump(self, label):
         try:
