@@ -627,7 +627,9 @@ class OneClickTab(ttk.Frame):
             self._set_stage("features", "running")   # bar color: features
         self._batch_log_index = "1.0"
         try:
-            ok = self.app.run_default_classifier_set(select_tab=False)
+            ok = self.app.run_default_classifier_set(
+                select_tab=False,
+                only_videos=[v["name"] for v in self._vids])
         except Exception as e:
             self._fail_stage("classifiers", str(e))
             return
@@ -652,16 +654,18 @@ class OneClickTab(ttk.Frame):
             import re as _re
             m = _re.search(r"Processing (\d+)/(\d+)", t)
             bits = ["Scoring behaviors"]
-            if m and self._vids:
+            if m:
                 cur, tot = int(m.group(1)), int(m.group(2))
-                opv = max(tot // max(len(self._vids), 1), 1)
+                opv = max(len(getattr(app, "batch_classifiers", {}) or {}),
+                          1)
+                n_vids = max(tot // opv, 1)
                 vid_idx = (max(cur, 1) - 1) // opv
                 if vid_idx != getattr(self, "_batch_vid_idx", None):
                     self._batch_vid_idx = vid_idx
                     self._eta_unit = _Eta()
                 u = self._eta_unit.update(
                     ((max(cur, 1) - 1) % opv + 1) / opv)
-                bits.append(f"video {vid_idx + 1}/{len(self._vids)}")
+                bits.append(f"video {vid_idx + 1}/{n_vids}")
                 bits.append(f"classifier {(max(cur, 1) - 1) % opv + 1}"
                             f"/{opv}")
                 if u is not None:

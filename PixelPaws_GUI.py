@@ -16786,7 +16786,7 @@ Left/Right       - Previous/Next frame (in video preview)
         self._batch_cancel_flag.set()
         self._batch_log("\nCancelling - aborting extraction…\n")
 
-    def run_default_classifier_set(self, select_tab=True):
+    def run_default_classifier_set(self, select_tab=True, only_videos=None):
         """One-click: score the project's videos with the Core 8 bundled set.
 
         Resets the batch classifier list to exactly the default set, points
@@ -16833,6 +16833,10 @@ Left/Right       - Previous/Next frame (in video preview)
                 self.notebook.select("🚀 Run Classifiers")
             except Exception:
                 pass
+        # Optional restriction to specific video basenames (Quick Start
+        # passes its session selection; None = every project video).
+        self._batch_only_videos = (set(only_videos)
+                                   if only_videos else None)
         self._start_batch_run()
 
     def run_batch_analysis(self):
@@ -16910,6 +16914,14 @@ Left/Right       - Previous/Next frame (in video preview)
                 self._safe_after(lambda: messagebox.showerror("No Classifiers", "Please add at least one classifier."))
                 return
             
+            _only = getattr(self, '_batch_only_videos', None)
+            if _only:
+                videos = [v for v in videos
+                          if os.path.basename(v) in _only]
+                if not videos:
+                    self._batch_log("No selected videos to score.\n")
+                    return
+
             self._batch_log(f"Found {len(videos)} videos\n")
             self._batch_log(f"Using {len(self.batch_classifiers)} classifier(s)\n\n")
 
@@ -17144,10 +17156,12 @@ Left/Right       - Previous/Next frame (in video preview)
                                     # column names alone is not value-safe.
                                     _trusted = getattr(self, '_batch_trusted_hashes',
                                                        {}).get(clf_path, {clf_hash})
+                                    _saw_untrusted = False
                                     for test_cache in sorted(matches):
                                         _suffix = os.path.splitext(
                                             os.path.basename(test_cache))[0].rsplit('_', 1)[-1]
                                         if _suffix not in _trusted:
+                                            _saw_untrusted = True
                                             continue
                                         try:
                                             test_X = _robust_unpickle(test_cache)
@@ -17209,7 +17223,16 @@ Left/Right       - Previous/Next frame (in video preview)
                                 break
 
                         elif not cache_is_compatible:
-                            self._batch_log(f"     Extracting features (no compatible cache found)...\n")
+                            if locals().get('_saw_untrusted'):
+                                self._batch_log(
+                                    "     Extracting features - the existing "
+                                    "cache(s) for this video were built with "
+                                    "different extraction settings (another "
+                                    "classifier's) and cannot be reused "
+                                    "safely; rebuilding once for this "
+                                    "settings group." + chr(10))
+                            else:
+                                self._batch_log(f"     Extracting features (no compatible cache found)...\n")
                             self.root.update_idletasks()
                             try:
                                 X = PixelPaws_ExtractFeatures(
@@ -17531,6 +17554,7 @@ Left/Right       - Previous/Next frame (in video preview)
             import traceback
             traceback.print_exc()
         finally:
+            self._batch_only_videos = None
             try:
                 if self.root.winfo_exists():
                     self.root.after(0, lambda: self._batch_run_btn.config(state='normal'))
