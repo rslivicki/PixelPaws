@@ -77,22 +77,12 @@ class OneClickTab(ttk.Frame):
         # ── left: session table ─────────────────────────────────────────
         sess = ttk.LabelFrame(body, text="1.  Sessions", padding=8)
         sess.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        cols = ("name", "duration", "cal", "status")
-        self._tree = ttk.Treeview(sess, columns=cols, show="headings",
-                                  height=12)
-        for c, h, w in (("name", "Video", 240), ("duration", "Length", 60),
-                        ("cal", "Calibration", 100), ("status", "Status", 120)):
-            self._tree.heading(c, text=h)
-            self._tree.column(c, width=w, anchor="w",
-                              stretch=(c == "name"))
-        vsb = ttk.Scrollbar(sess, orient="vertical",
-                            command=self._tree.yview)
-        self._tree.configure(yscrollcommand=vsb.set)
-        self._tree.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
 
+        # bottom rows first so the tree gets exactly the remaining space
+        self._scan_lbl = ttk.Label(sess, text="", foreground="#666666")
+        self._scan_lbl.pack(side="bottom", anchor="w", pady=(4, 0))
         btns = ttk.Frame(sess)
-        btns.pack(side="bottom", fill="x", pady=(6, 0))
+        btns.pack(side="bottom", fill="x", pady=(8, 0))
         ttk.Button(btns, text="Select all",
                    command=lambda: self._tree.selection_set(
                        self._tree.get_children())).pack(side="left")
@@ -110,8 +100,22 @@ class OneClickTab(ttk.Frame):
                           command=self._add_videos)
         _add.pack(side="right")
         Tip(_add, "Copy new videos into the project's videos/ folder.")
-        self._scan_lbl = ttk.Label(sess, text="", foreground="#666666")
-        self._scan_lbl.pack(side="bottom", anchor="w", pady=(4, 0))
+
+        tf = ttk.Frame(sess)
+        tf.pack(fill="both", expand=True)
+        cols = ("name", "duration", "cal", "status")
+        self._tree = ttk.Treeview(tf, columns=cols, show="headings",
+                                  height=14)
+        for c, h, w in (("name", "Video", 240), ("duration", "Length", 60),
+                        ("cal", "Calibration", 100), ("status", "Status", 120)):
+            self._tree.heading(c, text=h)
+            self._tree.column(c, width=w, anchor="w",
+                              stretch=(c == "name"))
+        vsb = ttk.Scrollbar(tf, orient="vertical",
+                            command=self._tree.yview)
+        self._tree.configure(yscrollcommand=vsb.set)
+        self._tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
 
         # ── right: steps + run ──────────────────────────────────────────
         right = ttk.Frame(body)
