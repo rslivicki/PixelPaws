@@ -20,6 +20,7 @@ values - e.g. the manuscript's 5-group formalin design), and work ungrouped
 from __future__ import annotations
 
 import os
+import math
 import glob as _glob
 import numpy as np
 import pandas as pd
@@ -168,6 +169,17 @@ class MultiClassifierTab(ttk.Frame):
             "all are included by default.")
         self._beh_list.bind("<<ListboxSelect>>", lambda e: self.refresh())
 
+        self._show_unscored = tk.BooleanVar(value=True)
+        _un_chk = ttk.Checkbutton(
+            vf, text="Include 'unscored' in occupancy",
+            variable=self._show_unscored, command=self.refresh)
+        _un_chk.pack(anchor="w", padx=6, pady=(2, 0))
+        Tip(_un_chk,
+            "State occupancy resolves every frame to one state; frames no "
+            "classifier claimed are 'unscored'. Untick to drop that bar "
+            "from the occupancy graph, stats, and CSV (percentages stay "
+            "relative to the full session).")
+
         srow = ttk.Frame(vf)
         srow.pack(fill="x", padx=6, pady=(2, 2))
         ttk.Label(srow, text="Session:").pack(side="left")
@@ -315,6 +327,8 @@ class MultiClassifierTab(ttk.Frame):
         self._canvas = FigureCanvasTkAgg(self._fig, master=right)
         self._canvas.get_tk_widget().pack(fill="both", expand=True)
         self._nav = NavigationToolbar2Tk(self._canvas, right)
+        from ui_utils import neutralize_toolbar
+        neutralize_toolbar(self._nav)
         from tkinter import scrolledtext as _stext
         self._stats_widget = _stext.ScrolledText(right, wrap="none",
                                                  font=("Consolas", 9))
@@ -716,9 +730,14 @@ class MultiClassifierTab(ttk.Frame):
             return self._cache[key]
 
         n = len(groups)
+        # Wrap panels into a grid instead of one long row: 1xN up to two
+        # groups, 2x2 for 3-4, three columns beyond (e.g. the 5-group
+        # formalin design -> 2x3).
+        ncols = n if n <= 2 else (2 if n <= 4 else 3)
+        nrows = int(math.ceil(n / ncols))
         first_ax = None
         for gi, g in enumerate(groups):
-            ax = self._fig.add_subplot(1, n, gi + 1, sharey=first_ax)
+            ax = self._fig.add_subplot(nrows, ncols, gi + 1, sharey=first_ax)
             if first_ax is None:
                 first_ax = ax
             members = [s_ for s_ in sessions
@@ -736,8 +755,9 @@ class MultiClassifierTab(ttk.Frame):
                         lw=float(opts.get("line_width", 1.6)) * 0.8,
                         label=(b.replace("_", " ") if gi == 0 else None))
             ax.set_ylim(0, 1.02)
-            ax.set_xlabel("Time (min)", fontsize=8)
-            if gi == 0:
+            if gi // ncols == nrows - 1 or gi + ncols >= n:
+                ax.set_xlabel("Time (min)", fontsize=8)
+            if gi % ncols == 0:
                 ax.set_ylabel(f"Probability ({win_s:g} s rolling)",
                               fontsize=8)
             if opts.get("show_titles", True):
@@ -779,6 +799,9 @@ class MultiClassifierTab(ttk.Frame):
             counts = np.bincount(st, minlength=k + 1)
             occ[s] = counts / max(len(st), 1)
         labels = ["unscored"] + prio
+        if not self._show_unscored.get():
+            labels = labels[1:]
+            occ = {s_: v[1:] for s_, v in occ.items()}
         groups = self._groups_present()
         ax = self._fig.add_subplot(111)
         x = np.arange(len(labels))
@@ -1046,8 +1069,9 @@ class MultiClassifierTab(ttk.Frame):
                 st, prio = self._states_for(s_)
                 counts = np.bincount(st, minlength=len(prio) + 1)
                 frac = counts / max(len(st), 1) * 100
-                row = {"session": s_, "group": self._group_of(s_) or "",
-                       "unscored_pct": frac[0]}
+                row = {"session": s_, "group": self._group_of(s_) or ""}
+                if self._show_unscored.get():
+                    row["unscored_pct"] = frac[0]
                 for i, b in enumerate(prio):
                     row[f"{b}_pct"] = frac[i + 1]
                 rows.append(row)
@@ -1123,6 +1147,9 @@ class MultiClassifierTab(ttk.Frame):
                 counts = np.bincount(st, minlength=len(prio) + 1)
                 occ[s_] = counts / max(len(st), 1) * 100
             labels = ["unscored"] + prio
+            if not self._show_unscored.get():
+                labels = labels[1:]
+                occ = {s_: v[1:] for s_, v in occ.items()}
             rows_by_g = {g: np.array([occ[s_] for s_ in sessions
                                       if self._group_of(s_) == g])
                          for g in groups}

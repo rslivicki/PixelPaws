@@ -428,6 +428,8 @@ def _embed_figure(frame, fig, ax=None):
                    width=6).pack(side='left', padx=2)
 
     toolbar = NavigationToolbar2Tk(canvas, frame)
+    from ui_utils import neutralize_toolbar
+    neutralize_toolbar(toolbar)
     toolbar.update()
     cw = canvas.get_tk_widget()
     # Tag the widget so _close_figures_recursive can actually find the

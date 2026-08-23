@@ -261,6 +261,8 @@ class LocomotionTab(ttk.Frame):
         self._canvas = FigureCanvasTkAgg(self._fig, master=right)
         self._canvas.get_tk_widget().pack(fill="both", expand=True)
         self._nav = NavigationToolbar2Tk(self._canvas, right)
+        from ui_utils import neutralize_toolbar
+        neutralize_toolbar(self._nav)
         from tkinter import scrolledtext as _stext
         self._stats_widget = _stext.ScrolledText(right, wrap="none",
                                                  font=("Consolas", 9))
@@ -756,8 +758,10 @@ class LocomotionTab(ttk.Frame):
         cmap = plot_style.get_colors(self._project(),
                                      [g for g in groups if g is not None])
         n = len(groups)
+        _ncols = n if n <= 2 else (2 if n <= 4 else 3)
+        _nrows = int(np.ceil(n / _ncols))
         for i, g in enumerate(groups):
-            ax = self._fig.add_subplot(1, n, i + 1)
+            ax = self._fig.add_subplot(_nrows, _ncols, i + 1)
             members = [s_ for s_ in sessions
                        if g is None or self._group_of(s_) == g]
             col = cmap.get(g, "#555555") if g else "#555555"
@@ -789,8 +793,10 @@ class LocomotionTab(ttk.Frame):
         cmap = plot_style.get_colors(self._project(),
                                      [g for g in groups if g is not None])
         n = len(groups)
+        _ncols = n if n <= 2 else (2 if n <= 4 else 3)
+        _nrows = int(np.ceil(n / _ncols))
         for i, g in enumerate(groups):
-            ax = self._fig.add_subplot(1, n, i + 1)
+            ax = self._fig.add_subplot(_nrows, _ncols, i + 1)
             members = [s_ for s_ in sessions
                        if g is None or self._group_of(s_) == g]
             col = cmap.get(g, "#555555") if g else "#555555"
@@ -847,9 +853,11 @@ class LocomotionTab(ttk.Frame):
                          len(hists)))
         vmax = max((m.max() for _, m, _ in maps if m is not None),
                    default=1.0)
-        ncols = len(maps)
+        _n = len(maps)
+        ncols = _n if _n <= 2 else (2 if _n <= 4 else 3)
+        _nrows = int(np.ceil(_n / ncols))
         for i, (g, m, nn) in enumerate(maps):
-            ax = self._fig.add_subplot(1, ncols, i + 1)
+            ax = self._fig.add_subplot(_nrows, ncols, i + 1)
             if m is None:
                 ax.set_axis_off()
                 continue

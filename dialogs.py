@@ -66,7 +66,9 @@ class Theme:
     """Theme management - delegates to ttkbootstrap when available, falls back to manual."""
 
     # Light themes map to ttkbootstrap theme names
-    _LIGHT_THEME = 'journal'
+    # 'litera': same flat look as journal but a blue primary - journal's
+    # red accent made progressbars/toolbuttons read as errors.
+    _LIGHT_THEME = 'litera'
     _DARK_THEME = 'darkly'
 
     # Plot colors (matplotlib doesn't use ttk styles)

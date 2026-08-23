@@ -354,6 +354,26 @@ Results include:
 
 All outputs are saved to `evaluations/` as a text report and image files.
 
+### One-Click Pipeline (recommended)
+
+The app opens on the **One-Click Pipeline** tab - the guided path from raw
+videos to populated analysis tabs. Pick your videos in the session table
+(length, calibration, and pose-tracking status shown; add new videos with
+the ➕ button), leave the five steps ticked, and press **Run pipeline**:
+
+1. Transcode (intake H.265; already-encoded videos skip automatically)
+2. Pose tracking (DLC)
+3. Feature extraction
+4. Classifiers (the Core-8 default set)
+5. Gait & contour analysis (manuscript paw-contact preset)
+
+One progress bar tracks the whole run and changes color per step; steps
+that are not needed (e.g. pose for already-tracked videos) are skipped
+automatically. When it finishes, every Analyze tab is populated - jump
+straight to Single-Classifier or Gait & Limb with the buttons under the
+bar. The individual tabs (Pose Estimation, Run Classifiers, ...) remain
+available for step-by-step control.
+
 ### Choosing which sessions to analyze
 
 Every analysis tab (Single-Classifier, Multi-Classifier, Sequencing, Locomotion,

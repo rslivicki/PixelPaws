@@ -81,6 +81,52 @@ def _probe_providers() -> List[dict]:
 # Settings dialog
 # --------------------------------------------------------------------------- #
 
+def scan_project_videos(videos_dir) -> List[dict]:
+    """Scan a project's videos/ folder for analyzable videos.
+
+    Returns row dicts (index/name/path/duration/cal/status/select_default)
+    shared by the pose-tracking dialog and the One-Click Pipeline tab."""
+    videos_dir = Path(videos_dir)
+    if not videos_dir.is_dir():
+        return []
+    out = []
+    for idx, vp in enumerate(sorted(videos_dir.glob("*.mp4"))):
+        if "DLC_" in vp.name or "_labeled" in vp.name:
+            continue
+        already = any(videos_dir.glob(f"{vp.stem}*DLC*.h5"))
+        duration = "?"
+        try:
+            import cv2
+            cap = cv2.VideoCapture(str(vp))
+            if cap.isOpened():
+                fps = cap.get(cv2.CAP_PROP_FPS) or 0
+                n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                if fps > 0:
+                    secs = n / fps
+                    duration = f"{int(secs // 60)}:{int(secs % 60):02d}"
+            cap.release()
+        except Exception:
+            pass
+        cal = "-"
+        try:
+            from pawcapture_meta import read_calibration
+            c = read_calibration(vp)
+            if c and c.get("mm_per_pixel"):
+                cal = f"{float(c['mm_per_pixel']):.4f} mm/px"
+        except Exception:
+            pass
+        out.append({
+            "index": idx,
+            "name": vp.name,
+            "path": vp,
+            "duration": duration,
+            "cal": cal,
+            "status": "already analyzed" if already else "needs analysis",
+            "select_default": not already,
+        })
+    return out
+
+
 class DLCRunDialog(tk.Toplevel):
     """Collect inference settings + video selection."""
 
@@ -262,44 +308,9 @@ class DLCRunDialog(tk.Toplevel):
         self.focus_force()
 
     def _scan_videos(self) -> List[dict]:
-        if not self.videos_dir.is_dir():
-            return []
-        out = []
-        for idx, vp in enumerate(sorted(self.videos_dir.glob("*.mp4"))):
-            if "DLC_" in vp.name or "_labeled" in vp.name:
-                continue
-            already = any(self.videos_dir.glob(f"{vp.stem}*DLC*.h5"))
-            duration = "?"
-            try:
-                import cv2
-                cap = cv2.VideoCapture(str(vp))
-                if cap.isOpened():
-                    fps = cap.get(cv2.CAP_PROP_FPS) or 0
-                    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                    if fps > 0:
-                        secs = n / fps
-                        duration = f"{int(secs // 60)}:{int(secs % 60):02d}"
-                cap.release()
-            except Exception:
-                pass
-            cal = "-"
-            try:
-                from pawcapture_meta import read_calibration
-                c = read_calibration(vp)
-                if c and c.get("mm_per_pixel"):
-                    cal = f"{float(c['mm_per_pixel']):.4f} mm/px"
-            except Exception:
-                pass
-            out.append({
-                "index": idx,
-                "name": vp.name,
-                "path": vp,
-                "duration": duration,
-                "cal": cal,
-                "status": "already analyzed" if already else "needs analysis",
-                "select_default": not already,
-            })
-        return out
+        return scan_project_videos(self.videos_dir)
+
+
 
     def _add_videos(self):
         """Import more videos via the app's add-videos flow, then rescan."""

@@ -397,6 +397,8 @@ class SingleClassifierTab(ttk.Frame):
         self._canvas = FigureCanvasTkAgg(self._fig, master=right)
         self._canvas.get_tk_widget().pack(fill="both", expand=True)
         self._nav = NavigationToolbar2Tk(self._canvas, right)
+        from ui_utils import neutralize_toolbar
+        neutralize_toolbar(self._nav)
         from tkinter import scrolledtext as _stext
         self._stats_widget = _stext.ScrolledText(right, wrap="none",
                                                  font=("Consolas", 9))

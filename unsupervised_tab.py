@@ -666,6 +666,8 @@ class UnsupervisedTab(ttk.Frame):
 
         self._canvas = FigureCanvasTkAgg(self._fig, master=scatter_frame)
         toolbar = NavigationToolbar2Tk(self._canvas, scatter_frame)
+        from ui_utils import neutralize_toolbar
+        neutralize_toolbar(toolbar)
         toolbar.update()
         toolbar.pack(side='top', fill='x')
         self._canvas.get_tk_widget().pack(fill='both', expand=True)

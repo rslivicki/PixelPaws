@@ -601,6 +601,7 @@ class PixelPawsGUI:
             # bundled set -> analyze. Classifier development (Predict & Review /
             # Evaluate / Train) is demoted to the bottom group -- most users
             # ship with the bundled classifiers and never train.
+            "Get Started": ["⚡ One-Click Pipeline"],
             "Pose & Features": ["🦴 Pose Estimation", "⚙️ Feature Extraction"],
             "Score": ["🚀 Run Classifiers"],
             "Analyze": ["📈 Single-Classifier Analysis",
@@ -716,6 +717,17 @@ class PixelPawsGUI:
         # Train Classifier stays the startup page - the sidebar order that puts these
         # at the top comes from the groups dict above, not from .add() order.
         self.create_pose_estimation_tab()
+
+        # One-Click Pipeline wizard (landing page; sidebar order from the
+        # groups dict puts it on top).
+        try:
+            from oneclick_tab import OneClickTab
+            self.oneclick_frame = ttk.Frame(self.notebook)
+            self.notebook.add(self.oneclick_frame, text="⚡ One-Click Pipeline")
+            self.oneclick_tab = OneClickTab(self.oneclick_frame, self)
+            self.oneclick_tab.pack(fill='both', expand=True)
+        except Exception as _oc_err:
+            print(f"One-Click Pipeline tab unavailable: {_oc_err}")
         self.create_feature_extraction_tab()
 
         # Hide sidebar items for unavailable modules. "🚀 Run Classifiers" always works;
@@ -732,7 +744,7 @@ class PixelPawsGUI:
         # Land on the top of the mainline path (first-added tab would
         # otherwise win, which is Train Classifier).
         try:
-            self.notebook.select("🦴 Pose Estimation")
+            self.notebook.select("⚡ One-Click Pipeline")
         except Exception:
             pass
 
@@ -4203,6 +4215,8 @@ class PixelPawsGUI:
             self.wb_tab.on_project_changed()
         if hasattr(self, 'gait_legacy_tab'):
             self.gait_legacy_tab.on_project_changed()
+        if hasattr(self, 'oneclick_tab'):
+            self.oneclick_tab.on_project_changed()
 
         # Write back (merge) so any newly set fields are persisted immediately
         self.save_project_config(folder)
@@ -14589,9 +14603,24 @@ Median: {feature_data.median():.6f}
             theme_name = Theme._DARK_THEME if self.theme.is_dark() else Theme._LIGHT_THEME
             try:
                 style = ttk.Style()
-                # Neutralize primary color before switching theme
-                style.colors.primary = '#888888'
                 style.theme_use(theme_name)
+                # Progressbars stay a calm blue in every theme (an accent
+                # that is not also an error color).
+                try:
+                    style.configure('Horizontal.TProgressbar',
+                                    background='#4582ec')
+                    # One-Click Pipeline: one bar, a color per stage.
+                    for _oc_name, _oc_color in (
+                            ('OCtranscode', '#f59f00'),
+                            ('OCpose', '#4582ec'),
+                            ('OCfeatures', '#20c997'),
+                            ('OCclassifiers', '#6f42c1'),
+                            ('OCgait', '#2f9e44')):
+                        style.configure(
+                            f'{_oc_name}.Horizontal.TProgressbar',
+                            background=_oc_color)
+                except Exception:
+                    pass
                 # Re-apply light button style (theme_use makes them solid)
                 if self.theme.is_dark():
                     style.configure('TButton', background='#3a3a3a',
@@ -16745,7 +16774,7 @@ Left/Right       - Previous/Next frame (in video preview)
         self._batch_cancel_flag.set()
         self._batch_log("\nCancelling - aborting extraction…\n")
 
-    def run_default_classifier_set(self):
+    def run_default_classifier_set(self, select_tab=True):
         """One-click: score the project's videos with the Core 8 bundled set.
 
         Resets the batch classifier list to exactly the default set, points
@@ -16787,10 +16816,11 @@ Left/Right       - Previous/Next frame (in video preview)
         for disp, path in core.items():
             self._batch_add_classifier_path(path, label=disp)
 
-        try:
-            self.notebook.select("🚀 Run Classifiers")
-        except Exception:
-            pass
+        if select_tab:
+            try:
+                self.notebook.select("🚀 Run Classifiers")
+            except Exception:
+                pass
         self._start_batch_run()
 
     def run_batch_analysis(self):
@@ -16870,6 +16900,74 @@ Left/Right       - Previous/Next frame (in video preview)
             
             self._batch_log(f"Found {len(videos)} videos\n")
             self._batch_log(f"Using {len(self.batch_classifiers)} classifier(s)\n\n")
+
+            # ── Cache-safety prepass ────────────────────────────────────────
+            # A cached feature table may only be reused by a classifier whose
+            # SCALAR extraction settings match the settings the cache was
+            # built with (pix_threshold; per-bodypart square size) - matching
+            # column NAMES alone is not enough, the VALUES differ. Build, per
+            # classifier, the set of trusted cache hashes (its own + every
+            # batch sibling whose settings match and whose bodypart/flow
+            # lists are a superset), and order the batch so the richest
+            # extraction of each settings-group runs first. Result: one
+            # extraction per settings-group per video, all values on-spec.
+            def _cache_cfg(cd):
+                bp_inc = cd.get('bp_include_list')
+                pixbrt = list(cd.get('bp_pixbrt_list') or [])
+                sq = [int(x) for x in (cd.get('square_size') or [])]
+                return {
+                    'thr': round(float(cd.get('pix_threshold', 0.3)), 6),
+                    'sq_by_bp': dict(zip(pixbrt, sq)),
+                    'pixbrt': set(pixbrt),
+                    'flow': set(cd.get('bp_optflow_list') or [])
+                            if cd.get('include_optical_flow') else set(),
+                    'inc': None if bp_inc in (None, []) else set(bp_inc),
+                }
+
+            def _serves(a, c):
+                """Can a cache built with cfg `a` serve classifier cfg `c`?"""
+                if a['thr'] != c['thr']:
+                    return False
+                if not c['pixbrt'] <= a['pixbrt']:
+                    return False
+                if any(a['sq_by_bp'].get(bp) != c['sq_by_bp'].get(bp)
+                       for bp in c['pixbrt']):
+                    return False
+                if not c['flow'] <= a['flow']:
+                    return False
+                if c['inc'] is None:
+                    return a['inc'] is None
+                return a['inc'] is None or c['inc'] <= a['inc']
+
+            _batch_cfgs, _batch_hashes = {}, {}
+            for _cp in self.batch_classifiers:
+                try:
+                    _cd = _robust_unpickle(_cp)
+                    _cd['bp_include_list'] = clean_bodyparts_list(
+                        _cd.get('bp_include_list', []))
+                    _cd['bp_pixbrt_list'] = clean_bodyparts_list(
+                        _cd.get('bp_pixbrt_list', []))
+                    _cd = auto_detect_bodyparts_from_model(_cd, verbose=False)
+                    _batch_cfgs[_cp] = _cache_cfg(_cd)
+                    _batch_hashes[_cp] = PixelPawsGUI._feature_hash_key(
+                        {**_cd, 'bp_include_list': None})
+                except Exception:
+                    pass
+            self._batch_trusted_hashes = {}
+            for _cp, _c in _batch_cfgs.items():
+                self._batch_trusted_hashes[_cp] = {
+                    _batch_hashes[_op] for _op, _oc in _batch_cfgs.items()
+                    if _serves(_oc, _c)}
+            # richest-first order within the original listing
+            def _richness(_cp):
+                _c = _batch_cfgs.get(_cp)
+                if _c is None:
+                    return (0, 0, 0)
+                return (len(_c['flow']), len(_c['pixbrt']),
+                        1 if _c['inc'] is None else -len(_c['inc']))
+            _ordered = sorted(self.batch_classifiers.items(),
+                              key=lambda kv: _richness(kv[0]), reverse=True)
+            self.batch_classifiers = dict(_ordered)
             
             # Get output options
             save_labels = self.batch_save_labels.get()
@@ -17023,18 +17121,26 @@ Left/Right       - Previous/Next frame (in video preview)
                                 if os.path.isdir(cache_dir_path):
                                     pattern = os.path.join(cache_dir_path, f"{video_base}_features_*.pkl")
                                     matches = glob.glob(pattern)
-                                    if matches:
-                                        # Found old cache - test if compatible
-                                        test_cache = matches[0]
+                                    # Only caches whose PRODUCING settings are known to
+                                    # match this classifier's scalars (trusted hashes
+                                    # from the batch prepass) may be reused - matching
+                                    # column names alone is not value-safe.
+                                    _trusted = getattr(self, '_batch_trusted_hashes',
+                                                       {}).get(clf_path, {clf_hash})
+                                    for test_cache in sorted(matches):
+                                        _suffix = os.path.splitext(
+                                            os.path.basename(test_cache))[0].rsplit('_', 1)[-1]
+                                        if _suffix not in _trusted:
+                                            continue
                                         try:
                                             test_X = _robust_unpickle(test_cache)
-                                            
+
                                             # Check if model's required features are present
                                             if hasattr(model, 'feature_names_in_') and hasattr(test_X, 'columns'):
                                                 required_features = set(model.feature_names_in_)
                                                 available_features = set(test_X.columns)
                                                 missing_features = required_features - available_features
-                                                
+
                                                 if not missing_features:
                                                     # Compatible!
                                                     cache_file = test_cache
@@ -17044,6 +17150,8 @@ Left/Right       - Previous/Next frame (in video preview)
                                                     break
                                         except Exception:
                                             pass  # Try next cache
+                                    if cache_file:
+                                        break
                         
                         # Check if classifier needs different brightness bodyparts
                         clf_bp_pixbrt = set(clf_data.get('bp_pixbrt_list', []))
@@ -17375,14 +17483,15 @@ Left/Right       - Previous/Next frame (in video preview)
                             mc.scan_results()
                 except Exception:
                     pass
-                if ran:
+                _oc = getattr(self, '_oneclick_active', False)
+                if ran and not _oc:
                     try:
                         self.notebook.select("📈 Single-Classifier Analysis")
                     except Exception:
                         pass
                     messagebox.showinfo("Batch + analysis complete",
                         m + "\n\nGraphs are ready in the 📈 Single-Classifier Analysis tab.")
-                else:
+                elif not _oc:
                     # The one moment we offer key-file creation: results exist
                     # and only the group assignments are missing.
                     if messagebox.askyesno("Batch complete",

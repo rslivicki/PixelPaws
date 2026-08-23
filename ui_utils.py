@@ -150,3 +150,25 @@ def bind_mousewheel(canvas):
 
     canvas.bind('<Enter>', _on_enter)
     canvas.bind('<Leave>', _on_leave)
+
+
+def neutralize_toolbar(toolbar):
+    """Give a matplotlib NavigationToolbar2Tk neutral grey buttons - its
+    classic Tk widgets otherwise inherit the ttkbootstrap palette (under
+    'journal' that meant alarming red boxes)."""
+    import tkinter as _tk
+    try:
+        for w in toolbar.winfo_children():
+            if isinstance(w, (_tk.Button, _tk.Checkbutton)):
+                try:
+                    w.configure(background='#f1f3f5',
+                                activebackground='#dee2e6',
+                                highlightthickness=0, relief='flat',
+                                borderwidth=1)
+                    if isinstance(w, _tk.Checkbutton):
+                        w.configure(selectcolor='#ced4da')
+                except Exception:
+                    pass
+        toolbar.configure(background='#f8f9fa')
+    except Exception:
+        pass

@@ -1,3 +1,36 @@
+# 2026-08-22 - One-Click Pipeline tab (new landing page)
+
+New "Get Started" sidebar group with the One-Click Pipeline wizard - the
+app now opens on it. Session table (length / calibration / pose status,
+add videos inline), five tickable steps (transcode, pose, features,
+classifiers, gait & contour), and one progress bar that changes color per
+step while the user stays on the tab (end-of-batch popups and tab jumps
+are suppressed during a pipeline run). Reuses the existing machinery:
+the pose progress worker, the Core-8 batch (features extracted inside
+it), and the gait tab's auto_run.
+
+# 2026-08-22 — Panel grids, unscored toggle, cache safety, calmer theme
+
+- **Group panels wrap into grids** instead of one long row (2x2 for 3-4
+  groups, three columns beyond): Multi-Classifier probability lines,
+  Locomotion group trails / representative / occupancy heatmap.
+- Multi-Classifier gains **"Include 'unscored' in occupancy"** - untick to
+  drop the unscored state from the occupancy graph, stats, and CSV
+  (percentages stay relative to the full session).
+- **Feature-cache safety fix (correctness).** The batch's cache reuse
+  checked column names only, so a classifier could silently score on
+  features extracted with another classifier's scalar settings (e.g.
+  Left_licking on Scratching's pix_threshold 0.4 / 15 px squares). Reuse
+  now requires the producing settings to match (trusted-hash sets built
+  per batch), the cache scan tests every candidate instead of the first,
+  and classifiers run richest-first per settings-group - so a Core-8 run
+  does exactly two extractions per video (Scratching's settings differ),
+  all values on-spec. Re-run classifier batches made before this fix.
+- **Light theme switched journal -> litera**: journal's red primary made
+  progressbars and matplotlib toolbars look like errors. Progressbars are
+  pinned to a calm blue in both themes and the embedded matplotlib
+  toolbar buttons are neutral grey.
+
 # 2026-08-22 — Full one-click pass: transcode + features + classifiers + gait
 
 The pose-tracking dialog's chain options now default ON: intake transcode

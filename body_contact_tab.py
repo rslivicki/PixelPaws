@@ -2380,6 +2380,8 @@ class BodyContactTab(ttk.Frame):
         canvas = FigureCanvasTkAgg(fig, master=win)
         canvas.draw()
         toolbar = NavigationToolbar2Tk(canvas, win)
+        from ui_utils import neutralize_toolbar
+        neutralize_toolbar(toolbar)
         toolbar.update()
         canvas.get_tk_widget().pack(fill='both', expand=True)
 

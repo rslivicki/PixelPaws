@@ -4297,6 +4297,8 @@ class TransitionsTab(ttk.Frame):
         self._win_canvas = FigureCanvasTkAgg(self._win_fig, master=canvas_frame)
         self._win_canvas.get_tk_widget().pack(fill='both', expand=True)
         tb = NavigationToolbar2Tk(self._win_canvas, win)
+        from ui_utils import neutralize_toolbar
+        neutralize_toolbar(tb)
         tb.update()
         _bind_tight_layout_on_resize(self._win_canvas, self._win_fig)
 
