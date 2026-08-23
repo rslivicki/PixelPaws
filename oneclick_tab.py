@@ -226,7 +226,7 @@ class OneClickTab(ttk.Frame):
         self._run_btn = ttk.Button(rb, text="▶  Run pipeline",
                                    command=self.run_pipeline)
         self._run_btn.pack(side="left", fill="x", expand=True)
-        self._cancel_btn = ttk.Button(rb, text="⏹", width=4,
+        self._cancel_btn = ttk.Button(rb, text="⏹ Stop", width=8,
                                       command=self._cancel,
                                       state="disabled")
         self._cancel_btn.pack(side="left", padx=(6, 0))
@@ -805,41 +805,61 @@ class OneClickTab(ttk.Frame):
             self._jump_gait.config(state="normal")
 
     def _cancel(self):
-        """Request a stop; the active stage's poller finishes the abort once
-        its worker has actually ended (so nothing keeps running unseen)."""
+        """Stop everything: signal every stage unconditionally (immune to
+        stage-tracking drift), log what was signalled, and watchdog-release
+        the UI if a poller fails to notice within 10 s."""
         if not self._running or self._cancel_requested:
             return
         self._cancel_requested = True
         self._cancel_btn.config(state="disabled")
         self._status_lbl.config(
             text="Stopping after the current operation…")
-        self._log_line("Stop requested - waiting for the current "
-                       "operation to end…")
-        stage = self._active_stage
-        if stage in ("transcode", "pose") and self._pose_dlg is not None:
+        self._log_line("Stop requested.")
+        # pose / transcode worker
+        dlg = self._pose_dlg
+        if dlg is not None:
             try:
-                self._pose_dlg._cancelled = True
-                proc = getattr(self._pose_dlg, "proc", None)
+                dlg._cancelled = True
+                proc = getattr(dlg, "proc", None)
                 if proc is not None and proc.poll() is None:
-                    # kill the whole tree - the DLC child may have workers
                     import subprocess as _sp
                     try:
                         _sp.run(["taskkill", "/PID", str(proc.pid),
                                  "/T", "/F"], capture_output=True,
                                 timeout=10)
+                        self._log_line(
+                            f"  killed pose/transcode process tree "
+                            f"(pid {proc.pid})")
                     except Exception:
                         proc.terminate()
-            except Exception:
-                pass
-        elif stage in ("features", "classifiers"):
-            flag = getattr(self.app, "_batch_cancel_flag", None)
-            if flag is not None:
-                flag.set()
-        elif stage == "gait":
-            try:
-                self.app.wb_tab._cancel_analysis()
-            except Exception:
-                pass
+                        self._log_line("  terminated pose/transcode process")
+                else:
+                    self._log_line("  pose/transcode worker flagged to stop")
+            except Exception as e:
+                self._log_line(f"  pose stop signal failed: {e}")
+        # classifier batch
+        flag = getattr(self.app, "_batch_cancel_flag", None)
+        if flag is not None:
+            flag.set()
+            self._log_line("  classifier batch flagged to stop "
+                           "(takes effect after the current classifier)")
+        # gait
+        try:
+            tab = getattr(self.app, "wb_tab", None)
+            if tab is not None and getattr(tab, "_fit_thread", None)                     is not None and tab._fit_thread.is_alive():
+                tab._cancel_analysis()
+                self._log_line("  gait analysis flagged to stop")
+        except Exception:
+            pass
+        # watchdog: never leave the button looking dead
+        self.after(10000, self._cancel_watchdog)
+
+    def _cancel_watchdog(self):
+        if self._running and self._cancel_requested:
+            self._log_line("Stop watchdog: releasing the pipeline "
+                           "(a background worker may still be finishing "
+                           "its current operation).")
+            self._abort("Stopped.")
 
     def _jump(self, label):
         try:
