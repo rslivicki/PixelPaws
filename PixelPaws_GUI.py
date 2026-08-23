@@ -17085,6 +17085,66 @@ Left/Right       - Previous/Next frame (in video preview)
                             max_gap = clf_data.get('max_gap', 0)
                             self._batch_log(f"     Using classifier defaults\n")
                         
+                        # Predictions already on disk and newer than every input
+                        # (video, pose file, classifier model)? Reuse them instead
+                        # of re-scoring. Custom parameter overrides always recompute.
+                        _skip_csv = os.path.join(results_folder, f"{video_base}_{clf_base}_predictions.csv")
+                        if not use_override and os.path.isfile(_skip_csv):
+                            try:
+                                _deps = [os.path.getmtime(video_path), os.path.getmtime(clf_path)]
+                                if dlc_path and os.path.isfile(dlc_path):
+                                    _deps.append(os.path.getmtime(dlc_path))
+                                _fresh = os.path.getmtime(_skip_csv) >= max(_deps)
+                            except OSError:
+                                _fresh = False
+                            if _fresh:
+                                try:
+                                    _prev = pd.read_csv(_skip_csv)
+                                    _prev_pred = (_prev[behavior_name].values
+                                                  if behavior_name in _prev.columns
+                                                  else _prev.iloc[:, -1].values)
+                                    _pf_key = behavior_name
+                                    if f"{_pf_key}_pred" in _pf_cols:
+                                        _pf_key = f"{behavior_name}_{clf_base}"
+                                    _pf_cols[f"{_pf_key}_prob"] = _prev['probability'].values
+                                    _pf_cols[f"{_pf_key}_pred"] = _prev_pred
+                                    _pf_n = max(_pf_n, len(_prev))
+                                    _tb_csv = os.path.join(results_folder, f"{video_base}_{clf_base}_timebins.csv")
+                                    if os.path.isfile(_tb_csv):
+                                        batch_timebins_files.append((behavior_name, clf_base, video_path, _tb_csv))
+                                    _n_bouts, _mean_dur = 0, 0.0
+                                    _bouts_csv = os.path.join(results_folder, f"{video_base}_{clf_base}_bouts.csv")
+                                    if os.path.isfile(_bouts_csv):
+                                        _bdf = pd.read_csv(_bouts_csv)
+                                        _n_bouts = len(_bdf)
+                                        if _n_bouts and 'duration_sec' in _bdf.columns:
+                                            _mean_dur = float(_bdf['duration_sec'].mean())
+                                    _sid = extract_subject_id_from_filename(video_name) or video_base
+                                    summary_results.append({
+                                        'video': video_name,
+                                        'subject_id': _sid,
+                                        'classifier': clf_name,
+                                        'behavior': behavior_name,
+                                        'n_frames': int(len(_prev)),
+                                        'n_bouts': int(_n_bouts),
+                                        'percent_behavior': (float(np.mean(_prev_pred) * 100)
+                                                             if len(_prev) else 0.0),
+                                        'mean_bout_duration': _mean_dur,
+                                        'results_folder': results_folder,
+                                    })
+                                    self._batch_log("     ✓ Predictions up to date - reusing "
+                                                    "existing results (retrain or delete the "
+                                                    "CSV to re-score)\n")
+                                    current_operation += 1
+                                    progress = (current_operation / total_operations) * 100
+                                    self.batch_progress['value'] = progress
+                                    self.batch_progress_label.config(
+                                        text=f"Processing {current_operation}/{total_operations} ({progress:.1f}%)")
+                                    self.root.update_idletasks()
+                                    continue
+                                except Exception as _e:
+                                    self._batch_log(f"     (couldn't reuse existing predictions: {_e}; re-scoring)\n")
+                        
                         # Check cache for features using SMART DEFAULT strategy
                         import hashlib
                         
