@@ -531,9 +531,19 @@ def PixelPaws_ExtractFeatures(pose_data_file, video_file_path, bp_pixbrt_list,
         print(f"  ✓ Applying crop offset to brightness extraction: x+{crop_offset_x}, y+{crop_offset_y}")
         print(f"     (DLC coordinates will be shifted to match full video frame)")
 
+    # Pass square_size through as-is: PixelBrightnessExtractor maps a list
+    # per-bodypart (zip with bp list). Collapsing to square_size[0] silently
+    # ignored per-bp sizes (found 2026-08-23; every shipped classifier uses a
+    # homogeneous list, so behavior is unchanged for them).
+    # NOTE pix_threshold units: compared against 0-255 gray values downstream.
+    # Classifier pkls store fractions (0.3/0.4), which make the dark-pixel
+    # floor a no-op. Do NOT "fix" by scaling x255 here - every shipped model
+    # was trained on features extracted with the no-op behavior, and scaling
+    # would silently shift their inputs (measured: honest CV gain from real
+    # thresholding is ~0.01 F1; not worth a feature-version migration).
     brightness_extractor = PixelBrightnessExtractor(
         bodyparts_to_track=bp_pixbrt_list_cleaned,
-        square_size=square_size if isinstance(square_size, int) else square_size[0],
+        square_size=square_size,
         pixel_threshold=pix_threshold,
         min_prob=min_prob,
         crop_offset_x=crop_offset_x,
