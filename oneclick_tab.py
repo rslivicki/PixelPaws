@@ -42,6 +42,47 @@ _STAGE_COLORS = {"OCtranscode": "#f59f00", "OCpose": "#4582ec",
                  "OCgait": "#2f9e44"}
 
 
+def _fmt_eta(sec):
+    """Compact remaining-time text."""
+    if sec is None or sec != sec or sec < 0:
+        return ""
+    sec = int(round(sec))
+    if sec >= 3600:
+        return f"{sec // 3600}h{(sec % 3600) // 60:02d}m"
+    if sec >= 60:
+        return f"{sec // 60}:{sec % 60:02d}"
+    return f"{sec}s"
+
+
+def _fmt_clock(sec_from_now):
+    import time as _t
+    if sec_from_now is None:
+        return ""
+    lt = _t.localtime(_t.time() + sec_from_now)
+    return f"{lt.tm_hour:02d}:{lt.tm_min:02d}"
+
+
+class _Eta:
+    """Rate-based ETA from monotonic progress fractions (EMA-smoothed)."""
+
+    def __init__(self):
+        import time as _t
+        self.t0 = _t.time()
+        self._ema = None
+
+    def update(self, frac):
+        import time as _t
+        if frac is None or frac <= 0.02:
+            return None
+        frac = min(float(frac), 1.0)
+        elapsed = _t.time() - self.t0
+        if elapsed < 3:
+            return None
+        raw = elapsed * (1.0 - frac) / frac
+        self._ema = raw if self._ema is None else             0.7 * self._ema + 0.3 * raw
+        return self._ema
+
+
 class OneClickTab(ttk.Frame):
 
     def __init__(self, parent, main_gui):
@@ -128,6 +169,7 @@ class OneClickTab(ttk.Frame):
         self._stage_vars = {}
         self._stage_dots = {}
         self._stage_lbls = {}
+        self._stage_etas = {}
         for key, label, style in STAGES:
             row = ttk.Frame(steps)
             row.pack(fill="x", pady=1)
@@ -138,9 +180,13 @@ class OneClickTab(ttk.Frame):
             var = tk.BooleanVar(value=True)
             chk = ttk.Checkbutton(row, text=label, variable=var)
             chk.pack(side="left")
+            eta = ttk.Label(row, text="", foreground="#888888",
+                            font=(FONT_FAMILY, 8))
+            eta.pack(side="right")
             self._stage_vars[key] = var
             self._stage_dots[key] = dot
             self._stage_lbls[key] = chk
+            self._stage_etas[key] = eta
         Tip(self._stage_lbls["features"],
             "When Classifiers is also ticked, features are extracted inside "
             "the classifier run (one pass per settings group) - this row "
@@ -280,6 +326,34 @@ class OneClickTab(ttk.Frame):
         self._log.see("end")
         self._log.configure(state="disabled")
 
+    def _eta_reset(self, unit_key=None):
+        """Fresh trackers for the active stage (batch + optional per-unit)."""
+        self._eta_batch = _Eta()
+        self._eta_unit = _Eta()
+        self._eta_unit_key = unit_key
+
+    def _eta_show(self, key, batch_frac, unit_frac=None, unit_name=""):
+        """Update the stage row's ETA text (and return the summary text)."""
+        parts = []
+        b = self._eta_batch.update(batch_frac)
+        if b is not None:
+            parts.append(f"~{_fmt_eta(b)} left (≈{_fmt_clock(b)})")
+        if unit_frac is not None:
+            u = self._eta_unit.update(unit_frac)
+            if u is not None:
+                parts.append((unit_name or "this video")
+                             + f" ~{_fmt_eta(u)}")
+        txt = "  ·  ".join(parts) if parts else "estimating…"
+        lbl = self._stage_etas.get(key)
+        if lbl is not None:
+            lbl.config(text=txt)
+        return txt
+
+    def _eta_clear(self, key=None):
+        for k, lbl in self._stage_etas.items():
+            if key is None or k == key:
+                lbl.config(text="")
+
     def _set_stage(self, key, state):
         self._stage_state[key] = state
         dot, color = _DOTS[state]
@@ -288,10 +362,13 @@ class OneClickTab(ttk.Frame):
         self._stage_dots[key].config(text=dot, foreground=fg)
         if state == "running":
             self._active_stage = key
+            self._eta_reset()
             self._bar.configure(style=f"{sty}.Horizontal.TProgressbar",
                                 value=0)
             self._status_lbl.config(
                 text=next(l for k, l, _s in STAGES if k == key) + "…")
+        elif state in ("done", "skipped", "failed"):
+            self._eta_clear(key)
 
     # ------------------------------------------------------------------ run
 
@@ -439,8 +516,20 @@ class OneClickTab(ttk.Frame):
             cv = dlg.current_bar["value"]
             self._bar.configure(
                 value=min(100.0, (ov + cv / 100.0) / max(om, 1) * 100.0))
+            if cur_txt != getattr(self, "_pose_prev_label", None):
+                self._pose_prev_label = cur_txt
+                self._eta_unit = _Eta()
+            _ak = ("transcode"
+                   if self._stage_state.get("transcode") == "running"
+                   else "pose")
+            eta_txt = self._eta_show(
+                _ak, (ov + cv / 100.0) / max(om, 1),
+                unit_frac=cv / 100.0,
+                unit_name=f"video {int(ov) + 1}/{int(om)}")
             if cur_txt.strip():
-                self._status_lbl.config(text=cur_txt[:120])
+                self._status_lbl.config(
+                    text=(cur_txt[:90]
+                          + ("   |   " + eta_txt if eta_txt else "")))
             # mirror new log lines
             new = dlg.log_text.get(self._pose_log_index, "end-1c")
             if new.strip():
@@ -497,13 +586,32 @@ class OneClickTab(ttk.Frame):
         app = self.app
         try:
             bar = getattr(app, "batch_progress", None)
+            frac = None
             if bar is not None:
+                frac = float(bar["value"]) / 100.0
                 self._bar.configure(value=float(bar["value"]))
             lbl = getattr(app, "batch_progress_label", None)
-            if lbl is not None:
-                t = str(lbl.cget("text"))
-                if t:
-                    self._status_lbl.config(text=t)
+            t = str(lbl.cget("text")) if lbl is not None else ""
+            unit_frac, unit_name = None, ""
+            import re as _re
+            m = _re.search(r"Processing (\d+)/(\d+)", t)
+            if m and self._vids:
+                cur, tot = int(m.group(1)), int(m.group(2))
+                opv = max(tot // max(len(self._vids), 1), 1)
+                vid_idx = (max(cur, 1) - 1) // opv
+                if vid_idx != getattr(self, "_batch_vid_idx", None):
+                    self._batch_vid_idx = vid_idx
+                    self._eta_unit = _Eta()
+                unit_frac = ((max(cur, 1) - 1) % opv + 1) / opv
+                unit_name = f"video {vid_idx + 1}/{len(self._vids)}"
+            _ak = ("features"
+                   if self._stage_state.get("features") == "running"
+                   else "classifiers")
+            eta_txt = self._eta_show(_ak, frac, unit_frac=unit_frac,
+                                     unit_name=unit_name)
+            if t:
+                self._status_lbl.config(
+                    text=t + ("   |   " + eta_txt if eta_txt else ""))
             logw = getattr(app, "batch_log", None)
             if logw is not None:
                 new = logw.get(self._batch_log_index, "end-1c")
@@ -584,10 +692,18 @@ class OneClickTab(ttk.Frame):
             m = float(tab._progress["maximum"]) or 1.0
             self._bar.configure(value=v / m * 100.0)
             sub = str(tab._sub_progress_label.cget("text"))
+            eta_txt = self._eta_show("gait", v / m)
+            import time as _t
+            if v >= 1:
+                _per = (_t.time() - self._eta_batch.t0) / v
+                eta_txt = ((eta_txt + "  ·  " if eta_txt else "")
+                           + f"≈{_fmt_eta(_per)}/session")
+                self._stage_etas["gait"].config(text=eta_txt)
             self._status_lbl.config(
                 text=("Gait & contour analysis… "
                       f"{int(v)}/{int(m)} sessions"
-                      + (f"  |  {sub}" if sub else "")))
+                      + (f"  |  {sub}" if sub else "")
+                      + ("   |   " + eta_txt if eta_txt else "")))
         except Exception:
             pass
         th = getattr(tab, "_fit_thread", None)
