@@ -7,7 +7,8 @@ Combines:
   - the single-editable-message bar style from discord_progress.py
     (ONE message edited every 60s; created via webhook ?wait=true then PATCH
      /messages/{id}; message id persisted in <proj>/_discord_msg.json so restarts
-     reuse it).
+     reuse it -- but only while that id is < REUSE_MAX_H hours old, else a new
+     message is posted so the live bar is never buried up the channel).
 
 Reads <proj>/_stage.json + <proj>/videos/.ffprog.txt for the live transcode fps.
 Stops when <proj>/PIPELINE_DONE exists or after a safety timeout.
@@ -61,6 +62,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))      # pp_config beside
 from pp_config import PROCESSING_WEBHOOK, FEATURE_HASH, SHUFFLE  # noqa: E402
 
 PERIOD, MAX_H = 60, 24
+# A stored Discord message id is reused only while it is younger than this many hours;
+# past it the tracker posts a NEW message (an old one is buried in the channel and the
+# progress bar goes unseen). Override per run with --reuse-hours.
+REUSE_MAX_H = 24
 # DLC tqdm: e.g. " 20%|## | 44044/219340 [10:24<41:23, 70.59it/s]"
 DLC_RE = re.compile(r"(\d+)/(\d+)[^\r\n]*?([\d.]+)it/s")
 # feature extractor tqdm: e.g. "... 145326/219214 frames [.. , 536.49frames/s]"
@@ -109,7 +114,7 @@ def ts_to_sec(t):
 class Tracker:
     def __init__(self, proj: Path, cohort: str, nvid: int, webhook: str,
                  expected_stems=None, shuffle: int = SHUFFLE,
-                 msg_file=None, follow_pid=None):
+                 msg_file=None, follow_pid=None, reuse_hours: float = REUSE_MAX_H):
         self.proj = proj
         self.cohort = cohort
         self.shuffle = int(shuffle)
@@ -129,6 +134,7 @@ class Tracker:
         # shared PIPELINE_DONE / _stage.json "done" sentinels, which another concurrent
         # pp_pipeline run in the same project may write at any time.
         self.follow_pid = int(follow_pid) if follow_pid else None
+        self.reuse_hours = float(reuse_hours)
         self.start = time.time()
         # Optional set of expected output basenames (sans .mp4). If provided,
         # all on-disk counters are filtered to just these stems — so an
@@ -247,9 +253,11 @@ class Tracker:
                 # ETA over remaining frames of this video + the videos still queued, at current it/s
                 rem_vids = max(0, (st.get("total", n) or n) - (st.get("idx", 0) or 0))
                 rem = (tf - cf) + rem_vids * tf
+                # DLC's tqdm counts FRAMES, so its it/s is frames-per-second — label it fps
+                # (same unit as the transcode and feature lines) rather than the raw "it/s".
                 dline += (f"\n  {fbar(cf / tf if tf else 0)} **{cf:,}**/{tf:,} frames "
                           f"({tf - cf:,} left)"
-                          + (f" · 🚀 **{ips:.0f} it/s**" if ips else "")
+                          + (f" · 🚀 **{ips:.0f} fps**" if ips else "")
                           + (f" · ETA {hms(rem / ips)}" if ips > 0 else ""))
         lines.append(dline)
 
@@ -293,16 +301,29 @@ class Tracker:
             print("patch err:", e, flush=True)
 
     def message_id(self):
+        """Reuse the stored message id only while it is FRESH (< reuse_hours old).
+
+        A stored id outlives the run that made it, so a later run in the same project
+        would silently PATCH a message buried days up the channel — nobody sees the
+        progress bar. Past reuse_hours (default 24 h) post a new message instead.
+        Age comes from the "created" stamp, falling back to the file mtime for
+        msg files written before that field existed."""
         if self.msg_file.exists():
             try:
-                mid = json.loads(self.msg_file.read_text()).get("id")
-                if mid:
+                d = json.loads(self.msg_file.read_text())
+                mid = d.get("id")
+                created = d.get("created", self.msg_file.stat().st_mtime)
+                age_h = (time.time() - float(created)) / 3600.0
+                if mid and age_h <= self.reuse_hours:
                     return mid
+                if mid:
+                    print(f"stored msg {mid} is {age_h:.1f}h old (> {self.reuse_hours}h) — "
+                          f"posting a NEW message", flush=True)
             except Exception:
                 pass
         mid = self._post(f"**🐭 {self.cohort} — tracker starting…**")
         try:
-            self.msg_file.write_text(json.dumps({"id": mid}))
+            self.msg_file.write_text(json.dumps({"id": mid, "created": time.time()}))
         except Exception:
             pass
         return mid
@@ -356,6 +377,9 @@ def main(argv=None):
                     help="JSON file holding this tracker's Discord message id (default "
                          "<proj>/_discord_msg.json). Give concurrent runs in one project "
                          "separate files so each gets its own live message.")
+    ap.add_argument("--reuse-hours", dest="reuse_hours", type=float, default=REUSE_MAX_H,
+                    help=f"reuse the stored Discord message only if it is younger than this many "
+                         f"hours (default {REUSE_MAX_H}); older -> post a new message. 0 = always new.")
     ap.add_argument("--follow-pid", dest="follow_pid", type=int,
                     help="end when this process exits instead of on PIPELINE_DONE (use when "
                          "another pp_pipeline run in the same project may write that sentinel).")
@@ -372,7 +396,8 @@ def main(argv=None):
         except Exception:
             pass
     return Tracker(proj, a.cohort, nvid, a.webhook, expected_stems=expected_stems,
-                   shuffle=a.shuffle, msg_file=a.msg_file, follow_pid=a.follow_pid).loop()
+                   shuffle=a.shuffle, msg_file=a.msg_file, follow_pid=a.follow_pid,
+                   reuse_hours=a.reuse_hours).loop()
 
 
 if __name__ == "__main__":

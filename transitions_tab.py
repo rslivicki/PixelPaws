@@ -5435,6 +5435,7 @@ class TransitionsTab(ttk.Frame):
         xyd = SA.dodge(xy)
         ax = self._fig.add_subplot(111)
         marks = ['o', 's', '^', 'D', 'v', 'P']
+        no_ellipse = []
         for gi, g in enumerate(groups):
             m = cohort.groups_per_session == g
             col = self._SYNTAX_GROUP_COLS[gi % len(self._SYNTAX_GROUP_COLS)]
@@ -5444,6 +5445,14 @@ class TransitionsTab(ttk.Frame):
             if m.sum() > 1:
                 ax.scatter(*xy[m].mean(0), s=150, marker='+', color=col,
                            linewidth=1.8, zorder=4)
+            # 95% group ellipse (same style as the Sequencing tab's ordination);
+            # drawn from the true coordinates, not the dodged display positions
+            if not SA.ellipse(ax, xy[m], col):
+                no_ellipse.append(str(g))
+        if no_ellipse:
+            ax.annotate("no ellipse (n < 3): " + ", ".join(no_ellipse),
+                        xy=(0.01, 0.01), xycoords='axes fraction',
+                        fontsize=7, color='#888888')
         try:
             F2, p, R2 = cohort.test()
             paired = cohort.strata is not None

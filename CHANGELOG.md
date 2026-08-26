@@ -1,3 +1,24 @@
+# 2026-08-25 — Pipeline tracker: fresh messages, fps label; h5 stem-prefix fix
+
+- **Tracker no longer edits a buried message.** The Discord message id
+  persisted in `_discord_msg*.json` outlives the run that created it, so a
+  later run in the same project silently PATCHed a message from days
+  earlier and nobody saw the live bar. The id is now reused only while it
+  is younger than **`REUSE_MAX_H` = 24 h** (new `--reuse-hours` flag; `0` =
+  always post a new message), and the file records a `created` stamp
+  (missing stamp falls back to file mtime).
+- **DLC rate is labelled `fps`** instead of `it/s` — DLC's tqdm counts
+  frames, so it was already frames-per-second and now reads in the same
+  unit as the transcode and feature lines.
+- **h5 lookups require the `DLC` boundary** (`{stem}DLC*shuffle{N}*.h5`).
+  A bare `{stem}*` glob also matched sibling stems that extend the stem, so
+  `..._S1` picked up `..._S10`'s pose file — wrong animal's skeleton, no
+  error. Fixed in `pp_pipeline.find_h5`, `pp_tracker._matches` (which also
+  counted S10's outputs toward S1) and `dlc_analyze`.
+- New tracker options `--msg-file` (own message per concurrent run in one
+  project) and `--follow-pid` (end when that process exits, instead of on
+  the shared `PIPELINE_DONE` another run may write).
+
 # 2026-08-22 - One-Click Pipeline tab (new landing page)
 
 New "Get Started" sidebar group with the One-Click Pipeline wizard - the
