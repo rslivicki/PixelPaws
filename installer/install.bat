@@ -213,9 +213,27 @@ if errorlevel 1 (
     call !PKG_MGR! env create -f "%PIXELPAWS_ROOT%\installer\environment.yml" 1>>"%LOGFILE%" 2>&1
     set "MAMBA_RC=!errorlevel!"
 ) else (
-    call :log "Updating existing 'pixelpaws' env from environment.yml..."
-    call !PKG_MGR! env update -n pixelpaws -f "%PIXELPAWS_ROOT%\installer\environment.yml" 1>>"%LOGFILE%" 2>&1
-    set "MAMBA_RC=!errorlevel!"
+    REM An env from an older PixelPaws (or an interrupted install) already
+    REM exists. A fresh rebuild is the reliable upgrade path; in-place
+    REM update is offered for users who added their own packages.
+    call :log "An existing 'pixelpaws' environment was found (older version or interrupted install)."
+    echo.
+    echo   An existing PixelPaws environment was found - likely from an
+    echo   older version, or from an install that did not finish.
+    echo     1^) Fresh reinstall - remove it and rebuild clean  (recommended^)
+    echo     2^) Update in place - faster, keeps extra packages you added
+    choice /C 12 /N /D 1 /T 30 /M "  Choose 1 or 2 (auto-picks 1 after 30s): "
+    if errorlevel 2 (
+        call :log "Updating existing 'pixelpaws' env from environment.yml..."
+        call !PKG_MGR! env update -n pixelpaws -f "%PIXELPAWS_ROOT%\installer\environment.yml" --prune 1>>"%LOGFILE%" 2>&1
+        set "MAMBA_RC=!errorlevel!"
+    ) else (
+        call :log "Removing the old 'pixelpaws' env for a clean rebuild..."
+        call !PKG_MGR! env remove -n pixelpaws -y 1>>"%LOGFILE%" 2>&1
+        call :log "Creating conda env 'pixelpaws' from environment.yml (this can take 10-20 min)..."
+        call !PKG_MGR! env create -f "%PIXELPAWS_ROOT%\installer\environment.yml" 1>>"%LOGFILE%" 2>&1
+        set "MAMBA_RC=!errorlevel!"
+    )
 )
 if not "!MAMBA_RC!"=="0" (
     call :fatal "!PKG_MGR! env create/update failed with exit code !MAMBA_RC!. See %LOGFILE% for details."
@@ -234,20 +252,38 @@ REM installed Miniforge3 to a non-standard drive.
 if not exist "%LOCALAPPDATA%\PixelPaws" mkdir "%LOCALAPPDATA%\PixelPaws" 1>>"%LOGFILE%" 2>&1
 > "%LOCALAPPDATA%\PixelPaws\conda_root.txt" echo !MAMBA_ROOT!
 
+REM -- Detect a previous install in a different folder ----------------------
+set "PREV_ROOT="
+if exist "%LOCALAPPDATA%\PixelPaws\install_root.txt" set /p PREV_ROOT=<"%LOCALAPPDATA%\PixelPaws\install_root.txt"
+if defined PREV_ROOT if /I not "!PREV_ROOT!"=="%PIXELPAWS_ROOT%" (
+    call :log "Previous PixelPaws install detected at: !PREV_ROOT!"
+    call :log "The desktop shortcut will now point at THIS copy. The old folder"
+    call :log "was left untouched (it may contain your project data). Once the"
+    call :log "new version runs, the old app folder can be deleted."
+)
+> "%LOCALAPPDATA%\PixelPaws\install_root.txt" echo %PIXELPAWS_ROOT%
+
 REM -- Seed the default bundle to %LOCALAPPDATA% -----------------------------
 set "STAGE=bundle-seed"
 set "PP_BUNDLES=%LOCALAPPDATA%\PixelPaws\bundles"
 if not exist "%PP_BUNDLES%" mkdir "%PP_BUNDLES%" 1>>"%LOGFILE%" 2>&1
 
 if exist "%PIXELPAWS_ROOT%\default_bundle\pixelpaws_v1\manifest.json" (
-    if not exist "%PP_BUNDLES%\pixelpaws_v1\manifest.json" (
+    set "SEED_BUNDLE=1"
+    if exist "%PP_BUNDLES%\pixelpaws_v1\manifest.json" (
+        REM Refresh only when the shipped bundle differs from the installed
+        REM one - an old install must not pin users to an outdated model.
+        fc /B "%PIXELPAWS_ROOT%\default_bundle\pixelpaws_v1\manifest.json" "%PP_BUNDLES%\pixelpaws_v1\manifest.json" >nul 2>&1
+        if not errorlevel 1 set "SEED_BUNDLE="
+    )
+    if defined SEED_BUNDLE (
         call :log "Seeding default model bundle to %PP_BUNDLES%\pixelpaws_v1 ..."
         xcopy /E /I /Y /Q "%PIXELPAWS_ROOT%\default_bundle\pixelpaws_v1" "%PP_BUNDLES%\pixelpaws_v1\" 1>>"%LOGFILE%" 2>&1
         if errorlevel 1 (
             call :fatal "Bundle copy via xcopy failed. See %LOGFILE%."
         )
     ) else (
-        call :log "Default bundle already present; skipping."
+        call :log "Default bundle already up to date; skipping."
     )
 ) else (
     call :log "NOTE: default_bundle\pixelpaws_v1\manifest.json missing in install root."
