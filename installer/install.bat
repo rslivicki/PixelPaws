@@ -309,14 +309,28 @@ for /f "tokens=2" %%U in ('%SystemRoot%\System32\findstr.exe /B /C:"--extra-inde
 if not defined PP_TORCH_INDEX set "PP_TORCH_INDEX=https://download.pytorch.org/whl/cu126"
 REM RTX 50-series (Blackwell) needs CUDA 12.8 kernels; older cards keep cu126.
 set "PS_GPU=%TEMP%\pp_gpu.ps1"
-> "%PS_GPU%" echo $n = (Get-CimInstance Win32_VideoController ^| Select-Object -ExpandProperty Name) -join '; '
+set "PP_GPU_FLAGS=%TEMP%\pp_gpu_flags.bat"
+> "%PS_GPU%" echo $ErrorActionPreference = 'Continue'
+>> "%PS_GPU%" echo $gpus = @(Get-CimInstance Win32_VideoController)
+>> "%PS_GPU%" echo $n = ($gpus ^| Select-Object -ExpandProperty Name) -join '; '
 >> "%PS_GPU%" echo Write-Host ('GPUs: ' + $n)
->> "%PS_GPU%" echo if ($n -match 'RTX (50\d\d^|PRO \d+ Blackwell)' -or $n -match 'Blackwell') { exit 50 } else { exit 0 }
+>> "%PS_GPU%" echo $nv = $gpus ^| Where-Object { $_.Name -match 'NVIDIA^|GeForce^|Quadro^|Tesla' } ^| Select-Object -First 1
+>> "%PS_GPU%" echo $drv = ''
+>> "%PS_GPU%" echo if ($nv -and $nv.DriverVersion) { $d = ($nv.DriverVersion -replace '\.', ''); if ($d.Length -ge 5) { $drv = $d.Substring($d.Length-5, 3) + '.' + $d.Substring($d.Length-2) } }
+>> "%PS_GPU%" echo $bw = [int](($n -match 'RTX (50\d\d^|PRO \d+ Blackwell)') -or ($n -match 'Blackwell'))
+>> "%PS_GPU%" echo Set-Content -LiteralPath '%PP_GPU_FLAGS%' -Encoding ASCII -Value @("set `"PP_HAS_NVIDIA=$([int][bool]$nv)`"", "set `"PP_NV_DRIVER=$drv`"", "set `"PP_BLACKWELL=$bw`"")
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PS_GPU%" 2>>"%LOGFILE%"
-if errorlevel 50 (
+set "PP_HAS_NVIDIA=0"
+set "PP_NV_DRIVER="
+set "PP_BLACKWELL=0"
+if exist "%PP_GPU_FLAGS%" call "%PP_GPU_FLAGS%"
+set "PP_DRV_MIN=528.33"
+if "!PP_BLACKWELL!"=="1" (
     set "PP_TORCH_INDEX=!PP_TORCH_INDEX:cu126=cu128!"
+    set "PP_DRV_MIN=570.00"
     call :log "RTX 50-series GPU detected - using the CUDA 12.8 PyTorch build."
 )
+if "!PP_HAS_NVIDIA!"=="1" call :log "NVIDIA driver version: !PP_NV_DRIVER! (PyTorch build needs >= !PP_DRV_MIN!)"
 del "%PS_GPU%" >nul 2>&1
 call :log "PyTorch index: !PP_TORCH_INDEX!"
 set "PP_TORCH_SPEC="
@@ -359,6 +373,27 @@ set "STAGE=gpu-check"
 set "PP_GPU_MSG="
 set /p PP_GPU_MSG=<"%TEMP%\pp_gpu.txt"
 if defined PP_GPU_MSG call :log "!PP_GPU_MSG!"
+set "PP_CUDA_OK=0"
+if defined PP_GPU_MSG if not "!PP_GPU_MSG:ready=!"=="!PP_GPU_MSG!" set "PP_CUDA_OK=1"
+if "!PP_HAS_NVIDIA!"=="1" if "!PP_CUDA_OK!"=="0" (
+    call :log "NVIDIA GPU present but PyTorch cannot use it - the NVIDIA driver is most likely too old."
+    echo.
+    echo ============================================================
+    echo   Your NVIDIA graphics driver needs an update
+    echo.
+    echo   Installed driver : !PP_NV_DRIVER!
+    echo   Required         : !PP_DRV_MIN! or newer
+    echo.
+    echo   PixelPaws is installed and will work, but pose tracking will
+    echo   run on the CPU ^(20-30x slower^) until the driver is updated.
+    echo   After updating the driver just relaunch PixelPaws - no
+    echo   reinstall is needed.
+    echo.
+    echo   Download: https://www.nvidia.com/drivers
+    echo ============================================================
+    choice /C YN /N /D Y /T 60 /M "  Open the NVIDIA driver download page now? [Y/N] (auto-Y in 60s): "
+    if not errorlevel 2 start "" "https://www.nvidia.com/drivers"
+)
 
 REM Persist the conda root so run.bat can find it even if the user
 REM installed Miniforge3 to a non-standard drive.
