@@ -116,14 +116,20 @@ def _cuda_arch_supported(torch, index: int) -> bool:
     if not arch_list:
         return True
     cap = major * 10 + minor
-    if f"sm_{cap}" in arch_list:
-        return True
-    # PTX for an older arch JIT-compiles forward within the same major
-    # family and, for CUDA >= 12, across majors up to what the driver
-    # allows; be conservative and require same-or-lower major.
     for a in arch_list:
-        m = re.match(r"compute_(\d+)", a)
-        if m and int(m.group(1)) // 10 == major and int(m.group(1)) <= cap:
+        # SASS (sm_XY) is binary-compatible with any card of the SAME major
+        # and an equal-or-higher minor: the cu126 wheel ships sm_86 and no
+        # sm_89, yet runs on every RTX 40-series (8.9). Demanding an exact
+        # match wrongly pushed all Ada cards to CPU (2026-08-28).
+        m = re.match(r"sm_(\d+)$", a)          # sm_86, sm_120 (three digits)
+        if m:
+            n = int(m.group(1))
+            if n // 10 == major and n % 10 <= minor:
+                return True
+            continue
+        # PTX (compute_XY) JIT-compiles forward onto any capability >= XY.
+        m = re.match(r"compute_(\d+)$", a)
+        if m and int(m.group(1)) <= cap:
             return True
     return False
 
