@@ -205,6 +205,11 @@ call :log "Package manager: !PKG_MGR!"
 call "!MAMBA_ROOT!\Scripts\activate.bat" 1>>"%LOGFILE%" 2>&1
 if errorlevel 1 call :fatal "Failed to activate conda from !MAMBA_ROOT!."
 
+REM Channel notices are cosmetic, and writing their cache file has crashed
+REM conda AFTER a fully successful env build (PermissionError on
+REM notices.cache, conda 26.x, 2026-08-28). Turn them off entirely.
+set "CONDA_NUMBER_CHANNEL_NOTICES=0"
+
 REM -- Create or update the env ----------------------------------------------
 set "STAGE=env-create"
 !PKG_MGR! env list | findstr /B "pixelpaws " >nul
@@ -236,7 +241,21 @@ if errorlevel 1 (
     )
 )
 if not "!MAMBA_RC!"=="0" (
-    call :fatal "!PKG_MGR! env create/update failed with exit code !MAMBA_RC!. See %LOGFILE% for details."
+    REM conda can exit non-zero from post-install housekeeping (notices
+    REM cache, plugin hooks) after the env itself built fine. Trust the
+    REM env over the exit code: if the key packages import, carry on.
+    call :log "!PKG_MGR! exited with code !MAMBA_RC!; checking whether the env is nevertheless complete..."
+    set "PP_CHK=!MAMBA_ROOT!\envs\pixelpaws\python.exe"
+    set "PP_ENV_OK="
+    if exist "!PP_CHK!" (
+        "!PP_CHK!" -c "import torch, cv2, ttkbootstrap, deeplabcut" 1>>"%LOGFILE%" 2>&1
+        if not errorlevel 1 set "PP_ENV_OK=1"
+    )
+    if defined PP_ENV_OK (
+        call :log "Environment verified complete despite the exit code; continuing."
+    ) else (
+        call :fatal "!PKG_MGR! env create/update failed with exit code !MAMBA_RC!. See %LOGFILE% for details."
+    )
 )
 
 REM Verify python landed in the env.
