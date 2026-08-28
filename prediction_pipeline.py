@@ -417,6 +417,11 @@ def PixelPaws_ExtractFeatures(pose_data_file, video_file_path, bp_pixbrt_list,
     Returns:
         DataFrame with all features (pose + brightness)
     """
+    # Windows: paths past 260 chars (Box/OneDrive trees + a DLC file name)
+    # fail in os.path.exists/pandas unless prefixed - see pp_longpath.
+    from pp_longpath import long_path as _lp
+    pose_data_file = _lp(pose_data_file)
+    video_file_path = _lp(video_file_path)
     if not PIXELPAWS_MODULES_AVAILABLE:
         raise ImportError(
             "PixelPaws modules not found. Please ensure these files are in the same directory:\n"

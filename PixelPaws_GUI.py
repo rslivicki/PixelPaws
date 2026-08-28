@@ -74,6 +74,9 @@ import pandas as pd
 import cv2
 
 
+from pp_longpath import path_isfile as _pp_isfile
+
+
 def _robust_unpickle(path):
     """Load a .pkl that may be joblib+LZ4 OR plain pickle.
 
@@ -83,6 +86,8 @@ def _robust_unpickle(path):
     universal loader. Falls back to ``pickle`` only if joblib is
     unavailable/erroring.
     """
+    from pp_longpath import long_path as _lp
+    path = _lp(path)
     try:
         import joblib
         return joblib.load(path)
@@ -279,6 +284,8 @@ def _atomic_pickle_save(data, target_path):
     only replaced once the new one is fully flushed to disk).
     """
     import tempfile
+    from pp_longpath import long_path as _lp
+    target_path = _lp(target_path)
     dir_path = os.path.dirname(target_path) or '.'
     os.makedirs(dir_path, exist_ok=True)
     tmp_fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix='.tmp')
@@ -12642,7 +12649,7 @@ Median: {feature_data.median():.6f}
                     os.path.join(cache_root, f"{name}_features_*.pkl"))
                     if not p.endswith('.version.json')]
                 cache_file = os.path.join(cache_root, f"{name}_features_{cfg_hash}.pkl")
-                cached = os.path.isfile(cache_file)
+                cached = _pp_isfile(cache_file)
                 has_other = bool(existing) and not cached
                 frames = "?"
                 try:
@@ -13251,7 +13258,7 @@ Median: {feature_data.median():.6f}
                 cfg_hash = PixelPawsGUI._feature_hash_key(_cfg_for_hash)
                 cache_file = os.path.join(cache_root, f"{name}_features_{cfg_hash}.pkl")
 
-                if os.path.isfile(cache_file):
+                if _pp_isfile(cache_file):
                     log("  ✓ Already cached - skipping")
                     skipped += 1
                     if progress_fn:
@@ -17081,6 +17088,51 @@ Left/Right       - Previous/Next frame (in video preview)
             total_operations = len(videos) * len(self.batch_classifiers)
             current_operation = 0
 
+            # ── Main-thread UI helpers (this function runs on a worker thread;
+            #    Tk widgets must only be touched via after()) ─────────────────
+            def _ui_progress(value=None, text=None):
+                def _do():
+                    try:
+                        if value is not None:
+                            self.batch_progress['value'] = value
+                        if text is not None:
+                            self.batch_progress_label.config(text=text)
+                    except Exception:
+                        pass
+                self._safe_after(_do)
+
+            def _fmt_left(sec):
+                sec = max(int(sec), 0)
+                return f"{sec // 60} min {sec % 60:02d} s" if sec >= 60 else f"{sec} s"
+
+            def _frame_progress_cb(video_path, label):
+                """Throttled per-frame progress for one feature extraction, so
+                a 30-minute video does not look frozen while it is read."""
+                import time as _t
+                st = {'t0': _t.time(), 'last': 0.0, 'n': 0}
+                try:
+                    _cap = cv2.VideoCapture(video_path)
+                    if _cap.isOpened():
+                        st['n'] = max(int(_cap.get(cv2.CAP_PROP_FRAME_COUNT)), 0)
+                    _cap.release()
+                except Exception:
+                    pass
+
+                def _cb(i, *_a):
+                    now = _t.time()
+                    if now - st['last'] < 0.5:
+                        return
+                    st['last'] = now
+                    n = st['n']
+                    if n and i > 0:
+                        left = (now - st['t0']) * (n - i) / i
+                        _ui_progress(text=f"{label}: frame {i:,}/{n:,} "
+                                          f"({100 * i / n:.0f}%) - about "
+                                          f"{_fmt_left(left)} left")
+                    else:
+                        _ui_progress(text=f"{label}: frame {i:,}")
+                return _cb
+
             # Summary results for final report
             summary_results = []
             batch_timebins_files = []
@@ -17097,7 +17149,6 @@ Left/Right       - Previous/Next frame (in video preview)
                 self._batch_log(f"\n{'='*60}\n")
                 self._batch_log(f"Processing: {video_name}\n")
                 self._batch_log(f"{'='*60}\n")
-                self.root.update_idletasks()
                 
                 # Find DLC file
                 dlc_path = self.find_dlc_for_video(video_path, search_dir, self.batch_prefer_filtered.get())
@@ -17106,9 +17157,7 @@ Left/Right       - Previous/Next frame (in video preview)
                     self._batch_log(f"  ✗ No DLC file found - skipping\n")
                     current_operation += len(self.batch_classifiers)
                     progress = (current_operation / total_operations) * 100
-                    self.batch_progress['value'] = progress
-                    self.batch_progress_label.config(
-                        text=f"Processing {current_operation}/{total_operations} ({progress:.1f}%)")
+                    _ui_progress(progress, f"Processing {current_operation}/{total_operations} ({progress:.1f}%)")
                     continue
                 
                 self._batch_log(f"  DLC: {os.path.basename(dlc_path)}\n\n")
@@ -17127,7 +17176,6 @@ Left/Right       - Previous/Next frame (in video preview)
                     clf_base = os.path.splitext(clf_name)[0]
 
                     self._batch_log(f"  → Running {clf_name}...\n")
-                    self.root.update_idletasks()
                     
                     try:
                         # Load classifier
@@ -17218,10 +17266,7 @@ Left/Right       - Previous/Next frame (in video preview)
                                                     "CSV to re-score)\n")
                                     current_operation += 1
                                     progress = (current_operation / total_operations) * 100
-                                    self.batch_progress['value'] = progress
-                                    self.batch_progress_label.config(
-                                        text=f"Processing {current_operation}/{total_operations} ({progress:.1f}%)")
-                                    self.root.update_idletasks()
+                                    _ui_progress(progress, f"Processing {current_operation}/{total_operations} ({progress:.1f}%)")
                                     continue
                                 except Exception as _e:
                                     self._batch_log(f"     (couldn't reuse existing predictions: {_e}; re-scoring)\n")
@@ -17352,6 +17397,7 @@ Left/Right       - Previous/Next frame (in video preview)
                                         include_optical_flow=clf_data.get('include_optical_flow', False),
                                         bp_optflow_list=clf_data.get('bp_optflow_list', []) or None,
                                         cancel_flag=self._batch_cancel_flag,
+                                        frame_callback=_frame_progress_cb(video_path, "Extracting features"),
                                         clf_data=clf_data,
                                     ),
                                     save_path=cache_file,
@@ -17374,7 +17420,6 @@ Left/Right       - Previous/Next frame (in video preview)
                                     "settings group." + chr(10))
                             else:
                                 self._batch_log(f"     Extracting features (no compatible cache found)...\n")
-                            self.root.update_idletasks()
                             try:
                                 X = PixelPaws_ExtractFeatures(
                                     pose_data_file=dlc_path,
@@ -17387,6 +17432,7 @@ Left/Right       - Previous/Next frame (in video preview)
                                     include_optical_flow=clf_data.get('include_optical_flow', False),
                                     bp_optflow_list=clf_data.get('bp_optflow_list', []) or None,
                                     cancel_flag=self._batch_cancel_flag,
+                                    frame_callback=_frame_progress_cb(video_path, "Extracting features"),
                                     clf_data=clf_data,
                                 )
                             except InterruptedError:
@@ -17406,7 +17452,6 @@ Left/Right       - Previous/Next frame (in video preview)
                         else:
                             self._batch_log(f"     Extracting features (smart defaults)...\n")
                             self._batch_log(f"     Brightness bodyparts: {', '.join(smart_bp_pixbrt)}\n")
-                            self.root.update_idletasks()
                             try:
                                 X = PixelPaws_ExtractFeatures(
                                     pose_data_file=dlc_path,
@@ -17417,6 +17462,7 @@ Left/Right       - Previous/Next frame (in video preview)
                                     pix_threshold=smart_pix_threshold,
                                     config_yaml_path=config_yaml,  # Pass config for crop detection
                                     cancel_flag=self._batch_cancel_flag,
+                                    frame_callback=_frame_progress_cb(video_path, "Extracting features"),
                                     clf_data=clf_data,
                                 )
                             except InterruptedError:
@@ -17438,7 +17484,6 @@ Left/Right       - Previous/Next frame (in video preview)
 
                         # Predict
                         self._batch_log(f"     Running prediction...\n")
-                        self.root.update_idletasks()
 
                         y_proba = predict_with_xgboost(
                             model, X, calibrator=(clf_data.get('prob_calibrator') or clf_data.get('calibrator')), fold_models=clf_data.get('fold_models'))
@@ -17557,11 +17602,7 @@ Left/Right       - Previous/Next frame (in video preview)
                     
                     current_operation += 1
                     progress = (current_operation / total_operations) * 100
-                    self.batch_progress['value'] = progress
-                    self.batch_progress_label.config(
-                        text=f"Processing {current_operation}/{total_operations} ({progress:.1f}%)"
-                    )
-                    self.root.update_idletasks()
+                    _ui_progress(progress, f"Processing {current_operation}/{total_operations} ({progress:.1f}%)")
 
                 # ── Consolidated per-frame sheet for this video (prob + 0/1 per behavior) ──
                 if (getattr(self, 'batch_save_perframe', None) is not None
@@ -17617,7 +17658,7 @@ Left/Right       - Previous/Next frame (in video preview)
                 self._batch_log(f"  - {len(self.batch_classifiers)} classifiers\n")
                 self._batch_log(f"  - {len(summary_results)} successful predictions\n")
             
-            self.batch_progress_label.config(text="Complete!")
+            _ui_progress(100, "Complete!")
 
             # Build completion message
             behaviors_run = list({r['behavior'] for r in summary_results}) if summary_results else []

@@ -13,6 +13,7 @@ is based on the algorithm described in:
     https://github.com/OmerBarkai/BAREfoot
 """
 
+from pp_longpath import long_path as _lp
 import numpy as np
 import pandas as pd
 import cv2
@@ -96,7 +97,7 @@ class PixelBrightnessExtractorOptimized:
         
         # Load DLC data
         if dlc_file.endswith('.h5'):
-            label = pd.read_hdf(dlc_file)
+            label = pd.read_hdf(_lp(dlc_file))
             if isinstance(label.columns, pd.MultiIndex):
                 label.columns = ['_'.join(col).strip() for col in label.columns.values]
                 label.columns = [c.replace('_likelihood', '_prob') for c in label.columns]
@@ -112,7 +113,7 @@ class PixelBrightnessExtractorOptimized:
             pix_threshold = self.pixel_threshold
         
         # Get video info
-        cap = cv2.VideoCapture(video_file)
+        cap = cv2.VideoCapture(_lp(video_file))
         num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -341,7 +342,7 @@ class PixelBrightnessExtractorOptimized:
                 }
         
         brightness_features = [None] * num_frames
-        cap = cv2.VideoCapture(video_file)
+        cap = cv2.VideoCapture(_lp(video_file))
 
         if optical_flow_extractor is not None:
             print("  Co-extracting optical flow in the same video pass...")
@@ -570,7 +571,7 @@ class PixelBrightnessExtractorOptimized:
     def _auto_threshold(self, video_file: str, n_sample: int = 100) -> float:
         """Auto-detect pixel threshold"""
         try:
-            cap = cv2.VideoCapture(video_file)
+            cap = cv2.VideoCapture(_lp(video_file))
             num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             
             # Sample frames uniformly
