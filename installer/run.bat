@@ -7,6 +7,13 @@ pushd "%PIXELPAWS_ROOT%"
 set "PIXELPAWS_ROOT=%CD%"
 popd
 
+REM run.log records every launch from the very first step, so a failure
+REM anywhere in this launcher (not just in the app) can be reported.
+if not exist "%LOCALAPPDATA%\PixelPaws" mkdir "%LOCALAPPDATA%\PixelPaws" >nul 2>&1
+set "PP_LOG=%LOCALAPPDATA%\PixelPaws\run.log"
+> "%PP_LOG%" echo PixelPaws launch %DATE% %TIME%
+>> "%PP_LOG%" echo root=%PIXELPAWS_ROOT%
+
 set "MAMBA_ROOT="
 call :check_conda_root "%LOCALAPPDATA%\PixelPaws\miniforge3"
 if not defined MAMBA_ROOT call :check_conda_root "%USERPROFILE%\miniforge3"
@@ -27,6 +34,7 @@ if not defined MAMBA_ROOT if exist "%LOCALAPPDATA%\PixelPaws\conda_root.txt" (
 )
 
 if not defined MAMBA_ROOT (
+    >> "%PP_LOG%" echo ERROR: no conda install found
     echo ============================================================
     echo  ERROR: Could not find a Miniforge / Mambaforge / Anaconda install.
     echo  Run %~dp0install.bat first.
@@ -37,6 +45,7 @@ if not defined MAMBA_ROOT (
 
 call "!MAMBA_ROOT!\Scripts\activate.bat" pixelpaws
 if errorlevel 1 (
+    >> "%PP_LOG%" echo ERROR: could not activate env pixelpaws under !MAMBA_ROOT!
     echo ============================================================
     echo  ERROR: Could not activate conda env "pixelpaws" under !MAMBA_ROOT!.
     echo  Run %~dp0install.bat to rebuild it.
@@ -46,17 +55,21 @@ if errorlevel 1 (
 )
 
 cd /d "%PIXELPAWS_ROOT%"
-REM Everything python prints to stderr (tracebacks included) is also kept in
-REM run.log so a crash can be reported even if this window closes.
-if not exist "%LOCALAPPDATA%\PixelPaws" mkdir "%LOCALAPPDATA%\PixelPaws" >nul 2>&1
-set "PP_LOG=%LOCALAPPDATA%\PixelPaws\run.log"
-> "%PP_LOG%" echo PixelPaws launch %DATE% %TIME%
->> "%PP_LOG%" echo root=%PIXELPAWS_ROOT%
+REM Everything the app prints (tracebacks included) goes to run.log so a
+REM crash can be reported even if this window closes.
 >> "%PP_LOG%" echo conda=!MAMBA_ROOT!
 >> "%PP_LOG%" where python
-python PixelPaws_GUI.py %* 2>> "%PP_LOG%"
+>> "%PP_LOG%" echo --- app output ---
+call :now PP_T0
+python PixelPaws_GUI.py %* >> "%PP_LOG%" 2>&1
 set "PP_RC=%errorlevel%"
->> "%PP_LOG%" echo exit code %PP_RC%
+call :now PP_T1
+set /a "PP_DT=PP_T1-PP_T0"
+if !PP_DT! LSS 0 set /a "PP_DT+=86400"
+>> "%PP_LOG%" echo --- exit code %PP_RC% after !PP_DT! s ---
+REM A "success" exit within 10 s means the window would have closed before
+REM anyone could read an error - keep it open in that case too.
+if !PP_DT! LSS 10 set "PP_RC=%PP_RC% (closed after !PP_DT! s)"
 if not "%PP_RC%"=="0" (
     echo.
     echo ============================================================
@@ -69,6 +82,11 @@ if not "%PP_RC%"=="0" (
     pause
 )
 endlocal
+exit /b 0
+
+:now
+REM seconds since midnight -> variable named in %1 (leading zeros are not octal)
+for /f "tokens=1-3 delims=:.," %%a in ("%TIME: =0%") do set /a "%~1=(1%%a-100)*3600+(1%%b-100)*60+(1%%c-100)"
 exit /b 0
 
 :check_conda_root
