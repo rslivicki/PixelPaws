@@ -231,9 +231,12 @@ def probe_providers() -> List[ProviderInfo]:
         if v == "nvidia":
             if not cuda_ok:
                 if getattr(torch.version, "cuda", None) is None:
-                    why = (f"the installed PyTorch ({torch.__version__}) has no "
-                           "CUDA support - re-run installer\\install.bat and "
-                           "pick 'Fresh reinstall' to get the GPU build")
+                    import sys as _sys
+                    why = (f"the PyTorch in use ({torch.__version__}, python: "
+                           f"{_sys.executable}) has no CUDA support - if the "
+                           "installer reported the GPU as ready, this is the "
+                           "wrong Python environment; otherwise re-run "
+                           "installer\\install.bat and pick 'Fresh reinstall'")
                 else:
                     why = ("CUDA is not available to PyTorch - update the "
                            "NVIDIA driver (GeForce Experience or nvidia.com) "

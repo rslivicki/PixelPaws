@@ -19,7 +19,15 @@ set "PP_LOG=%LOCALAPPDATA%\PixelPaws\run.log"
 >> "%PP_LOG%" echo root=%PIXELPAWS_ROOT%
 
 set "MAMBA_ROOT="
-call :check_conda_root "%LOCALAPPDATA%\PixelPaws\miniforge3"
+REM The conda root install.bat actually built the env under comes first: a
+REM machine with two condas (e.g. Anaconda in ProgramData and a per-user
+REM Miniforge) may hold two different "pixelpaws" envs, and searching fixed
+REM locations first could activate the stale one.
+if exist "%LOCALAPPDATA%\PixelPaws\conda_root.txt" (
+    set /p "PP_SAVED_ROOT="<"%LOCALAPPDATA%\PixelPaws\conda_root.txt"
+)
+if defined PP_SAVED_ROOT call :check_conda_root "!PP_SAVED_ROOT!"
+if not defined MAMBA_ROOT call :check_conda_root "%LOCALAPPDATA%\PixelPaws\miniforge3"
 if not defined MAMBA_ROOT call :check_conda_root "%USERPROFILE%\miniforge3"
 if not defined MAMBA_ROOT call :check_conda_root "%USERPROFILE%\mambaforge"
 if not defined MAMBA_ROOT call :check_conda_root "%USERPROFILE%\anaconda3"
@@ -32,10 +40,6 @@ if not defined MAMBA_ROOT call :check_conda_root "C:\Anaconda3"
 if not defined MAMBA_ROOT call :check_conda_root "C:\Miniconda3"
 if not defined MAMBA_ROOT call :check_conda_root "C:\ProgramData\Anaconda3"
 
-REM Also honor whatever the install.bat used (saved in a side-pointer file).
-if not defined MAMBA_ROOT if exist "%LOCALAPPDATA%\PixelPaws\conda_root.txt" (
-    set /p "MAMBA_ROOT="<"%LOCALAPPDATA%\PixelPaws\conda_root.txt"
-)
 
 if not defined MAMBA_ROOT (
     >> "%PP_LOG%" echo ERROR: no conda install found
@@ -63,6 +67,7 @@ REM Everything the app prints (tracebacks included) goes to run.log so a
 REM crash can be reported even if this window closes.
 >> "%PP_LOG%" echo conda=!MAMBA_ROOT!
 >> "%PP_LOG%" where python
+python -c "import sys; print('env python:', sys.executable)" >> "%PP_LOG%" 2>&1
 >> "%PP_LOG%" echo --- app output ---
 call :now PP_T0
 python PixelPaws_GUI.py %* >> "%PP_LOG%" 2>&1
