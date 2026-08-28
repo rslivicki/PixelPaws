@@ -589,16 +589,20 @@ class OneClickTab(ttk.Frame):
         if pose_list is None:
             pose_list = self._need_pose
         pose_videos = [v["path"] for v in (pose_list if want_pose else [])]
+        do_transcode = bool(want_transcode
+                            and _sh.which("ffmpeg") is not None)
         settings = {
+            # transcode touches every selected video; pose only the ones
+            # that still need it (the worker filters by "pose_videos").
             "videos": ([v["path"] for v in self._vids]
-                       if (want_transcode and not want_pose)
-                       else pose_videos),
+                       if do_transcode else pose_videos),
+            "pose": bool(want_pose),
+            "pose_videos": pose_videos,
             "device": prov["name"],
             "batch_size": int(self._batch_var.get()),
             "auto_predict": False, "run_gait": False,
             "select_frames": False, "extract_features": False,
-            "transcode": bool(want_transcode
-                              and _sh.which("ffmpeg") is not None),
+            "transcode": do_transcode,
             "bundle": bundle,
         }
         if not settings["videos"]:

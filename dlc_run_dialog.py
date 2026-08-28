@@ -666,6 +666,23 @@ class DLCProgressDialog(tk.Toplevel):
         if self._cancelled:
             self._msg_queue.put(("all_done", None))
             return
+        # The Quick Start wizard can ask for transcode alone ("pose": False)
+        # or for pose on a subset of the transcoded videos ("pose_videos").
+        if not s.get("pose", True):
+            self._msg_queue.put(("log", "Pose tracking not requested - "
+                                        "finished after transcode."))
+            self._msg_queue.put(("all_done", None))
+            return
+        pose_videos = s.get("pose_videos")
+        if pose_videos is not None:
+            keep = {os.path.normcase(os.path.abspath(str(p)))
+                    for p in pose_videos}
+            videos = [v for v in videos
+                      if os.path.normcase(os.path.abspath(v)) in keep]
+            if not videos:
+                self._msg_queue.put(("log", "No videos need pose tracking."))
+                self._msg_queue.put(("all_done", None))
+                return
         bundle = s["bundle"]
         py = _resolve_pose_python()
         script = str(_REPO / "pipeline" / "dlc_analyze.py")
