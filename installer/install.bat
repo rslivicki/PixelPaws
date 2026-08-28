@@ -270,9 +270,24 @@ if not "!MAMBA_RC!"=="0" (
     REM conda can exit non-zero from post-install housekeeping (notices
     REM cache, plugin hooks) after the env itself built fine. Trust the
     REM env over the exit code.
-    if not exist "!PP_PY!" call :fatal "!PKG_MGR! env create/update failed with exit code !MAMBA_RC!. See %LOGFILE% for details."
+    "!MAMBA_ROOT!\Scripts\conda.exe" env list 2>nul | findstr /B "pixelpaws " >nul
+    if errorlevel 1 call :fatal "!PKG_MGR! env create/update failed with exit code !MAMBA_RC!. See %LOGFILE% for details."
     call :log "NOTE: !PKG_MGR! exited with code !MAMBA_RC! but the env exists; continuing."
 )
+
+REM conda does not always put the env under !MAMBA_ROOT!\envs - when that
+REM directory is not writable (system-wide Anaconda in ProgramData) it
+REM silently uses %USERPROFILE%\.conda\envs instead. Ask conda where the
+REM env's python actually is rather than guessing.
+set "PP_ENVPY_TXT=%TEMP%\pp_envpy.txt"
+"!MAMBA_ROOT!\Scripts\conda.exe" run -n pixelpaws python -c "import sys;print(sys.executable)" > "%PP_ENVPY_TXT%" 2>>"%LOGFILE%"
+set "PP_PY_FOUND="
+set /p PP_PY_FOUND=<"%PP_ENVPY_TXT%"
+if defined PP_PY_FOUND set "PP_PY=!PP_PY_FOUND!"
+if not exist "!PP_PY!" (
+    call :fatal "Env 'pixelpaws' was created but its python.exe could not be located (looked at !PP_PY!). See %LOGFILE%."
+)
+call :log "Env python: !PP_PY!"
 
 echo.
 echo ============================================================
@@ -300,7 +315,6 @@ if not "!PIP_RC!"=="0" (
 
 REM Verify python landed in the env.
 set "STAGE=env-verify"
-set "PP_PY=!MAMBA_ROOT!\envs\pixelpaws\python.exe"
 if not exist "!PP_PY!" (
     call :fatal "Python not found at !PP_PY! after env create."
 )
