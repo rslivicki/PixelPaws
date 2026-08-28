@@ -3,28 +3,38 @@ PixelPaws — Quick Install (Windows)
 
 PREREQUISITES
   - Windows 10 or 11, 64-bit
-  - NVIDIA GPU recommended (driver >= 525). Works on CPU but ~25x slower.
-    You do NOT need to install the CUDA Toolkit — just have a recent driver.
+  - NVIDIA GPU recommended (driver >= 528; >= 570 for RTX 50-series).
+    Works on CPU but ~25x slower. You do NOT need to install the CUDA
+    Toolkit — just have a recent driver.
   - ~6 GB free disk space
   - Internet connection (for first-time install of dependencies)
 
 INSTALL
-  1. Unzip this folder anywhere (e.g. Desktop, Documents).
-  2. Right-click `installer\install.bat` and choose "Run as administrator"
-     is NOT required — a normal double-click works.
-     The script will:
+  1. Unzip this folder anywhere (Downloads is fine — it is only the source).
+  2. Double-click `installer\install.bat` (no "Run as administrator" needed).
+     It asks two questions:
+       - Where to install. Press Enter for the default
+         (C:\Users\<you>\PixelPaws, or your previous install folder when
+         upgrading). The app is copied there; the unzipped folder can be
+         deleted afterwards.
+       - Whether to create a desktop shortcut (auto-Yes after 30 s).
+     Then it will, showing progress for each step:
        - Download and silently install Miniforge3 (~80 MB) if you don't
          already have conda/mamba
-       - Create a self-contained conda env called `pixelpaws`
-       - Install PixelPaws, DeepLabCut, PyTorch (with CUDA), and all
-         supporting libraries
+       - Create a self-contained conda env called `pixelpaws` (if one
+         exists from an older version you are offered a fresh rebuild)
+       - Install PyTorch with CUDA, then DeepLabCut and all supporting
+         libraries, and report whether your GPU is usable
        - Copy the bundled DLC model into %LOCALAPPDATA%\PixelPaws\bundles\
-       - Create a PixelPaws shortcut on your Desktop
   3. First install takes ~10-20 minutes depending on internet speed.
+     If it says your NVIDIA driver is too old, update the driver and just
+     relaunch — no reinstall needed.
 
 LAUNCH
-  Double-click the new PixelPaws desktop shortcut, OR run
-  `installer\run.bat` from inside this folder.
+  Double-click the PixelPaws desktop shortcut, OR run
+  `installer\run.bat` inside the install folder.
+  Every launch is recorded in %LOCALAPPDATA%\PixelPaws\run.log — if the
+  app does not open, that file says why; send it when asking for help.
 
   On first launch you'll be asked to pick or create a project folder.
   Then the splash screen will offer:
@@ -39,8 +49,9 @@ TROUBLESHOOTING
   - The Miniforge download is blocked by your AV:
        Whitelist `Miniforge3-Windows-x86_64.exe` and re-run.
   - GPU not detected, but I have an NVIDIA card:
-       Check that your NVIDIA driver is >= 525. Update it from
-       https://www.nvidia.com/Download/index.aspx
+       Check that your NVIDIA driver is >= 528 (>= 570 for RTX 50-series).
+       Update it from https://www.nvidia.com/drivers and relaunch.
+       The Quick Start log line "Pose device: ..." shows what is in use.
   - The classifiers complain about feature hash mismatch:
        That bundle was trained against the DLC model that ships with
        it. Don't swap the snapshot for a different one without also
