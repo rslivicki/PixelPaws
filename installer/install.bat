@@ -2,8 +2,10 @@
 REM ============================================================================
 REM  PixelPaws installer (Windows)
 REM
-REM  Creates a self-contained `pixelpaws` conda environment using Miniforge3,
-REM  drops a desktop shortcut, and seeds the default DLC model bundle to
+REM  Asks where to install (default %USERPROFILE%\PixelPaws), copies the app
+REM  there out of the unzipped folder, creates a self-contained `pixelpaws`
+REM  conda environment, optionally drops a desktop shortcut, and seeds the
+REM  default DLC model bundle to
 REM  %LOCALAPPDATA%\PixelPaws\bundles\pixelpaws_v1\.
 REM
 REM  End-user prerequisites:
@@ -28,6 +30,41 @@ call :log "  Started: %DATE% %TIME%"
 call :log "  Install root: %PIXELPAWS_ROOT%"
 call :log "  Log file:     %LOGFILE%"
 call :log "=================================================="
+
+REM -- Where to install ---------------------------------------------------------
+REM The unzipped folder is usually somewhere in Downloads (often with a
+REM "(1)" suffix); the app is copied to a proper home so the shortcut, the
+REM env and run.bat never depend on that folder surviving.
+set "STAGE=destination"
+set "PP_SRC=%PIXELPAWS_ROOT%"
+set "PP_DEFAULT_DEST=%USERPROFILE%\PixelPaws"
+if exist "%LOCALAPPDATA%\PixelPaws\install_root.txt" (
+    set /p PP_DEFAULT_DEST=<"%LOCALAPPDATA%\PixelPaws\install_root.txt"
+)
+echo.
+echo   Where should PixelPaws be installed?
+echo   Press Enter to accept the default:   !PP_DEFAULT_DEST!
+set "PP_DEST="
+set /p "PP_DEST=  Install folder: "
+if not defined PP_DEST set "PP_DEST=!PP_DEFAULT_DEST!"
+set "PP_DEST=!PP_DEST:"=!"
+if "!PP_DEST:~-1!"=="\" set "PP_DEST=!PP_DEST:~0,-1!"
+if /I "!PP_DEST!"=="!PP_SRC!" (
+    call :log "Installing in place at !PP_DEST!"
+) else (
+    if exist "!PP_DEST!\PixelPaws_GUI.py" (
+        call :log "Updating the existing PixelPaws copy at !PP_DEST!"
+    ) else (
+        call :log "Copying PixelPaws to !PP_DEST! ..."
+    )
+    robocopy "!PP_SRC!" "!PP_DEST!" /E /XF install.log /NFL /NDL /NJH /NJS /NP 1>>"%LOGFILE%" 2>&1
+    if errorlevel 8 (
+        call :fatal "Could not copy the app to !PP_DEST! (robocopy exit !errorlevel!). Choose a folder you can write to."
+    )
+    set "PIXELPAWS_ROOT=!PP_DEST!"
+    call :log "App files are now at !PIXELPAWS_ROOT!"
+)
+echo.
 
 REM -- Find an existing mamba/conda anywhere on this machine ----------------
 set "STAGE=miniforge-detect"
@@ -442,16 +479,22 @@ if exist "%PIXELPAWS_ROOT%\default_bundle\pixelpaws_v1\manifest.json" (
     call :log "      The app will look for an installed bundle on first run."
 )
 
-REM -- Create desktop shortcut (best-effort) ---------------------------------
+REM -- Create desktop shortcut (optional, best-effort) -------------------------
 set "STAGE=shortcut"
+echo.
+choice /C YN /N /D Y /T 30 /M "  Create a desktop shortcut for PixelPaws? [Y/N] (auto-Y in 30s): "
+if errorlevel 2 (
+    call :log "Desktop shortcut skipped by user. Launch via !PIXELPAWS_ROOT!\installer\run.bat"
+    goto :after_shortcut
+)
 call :log "Creating desktop shortcut ..."
 set "PS_TMP=%TEMP%\pp_shortcut.ps1"
 > "%PS_TMP%" echo $ErrorActionPreference = 'Stop'
 >> "%PS_TMP%" echo $sh = New-Object -ComObject WScript.Shell
 >> "%PS_TMP%" echo $lnk = $sh.CreateShortcut([Environment]::GetFolderPath('Desktop') + '\PixelPaws.lnk')
->> "%PS_TMP%" echo $lnk.TargetPath = '%PIXELPAWS_ROOT%\installer\run.bat'
->> "%PS_TMP%" echo $lnk.WorkingDirectory = '%PIXELPAWS_ROOT%'
->> "%PS_TMP%" echo $ico = @('%PIXELPAWS_ROOT%\assets\pixelpaws_icon.ico', '%PIXELPAWS_ROOT%\pixelpaws_icon.ico') ^| Where-Object { Test-Path $_ } ^| Select-Object -First 1
+>> "%PS_TMP%" echo $lnk.TargetPath = '!PIXELPAWS_ROOT!\installer\run.bat'
+>> "%PS_TMP%" echo $lnk.WorkingDirectory = '!PIXELPAWS_ROOT!'
+>> "%PS_TMP%" echo $ico = @('!PIXELPAWS_ROOT!\assets\pixelpaws_icon.ico', '!PIXELPAWS_ROOT!\pixelpaws_icon.ico') ^| Where-Object { Test-Path $_ } ^| Select-Object -First 1
 >> "%PS_TMP%" echo if ($ico) { $lnk.IconLocation = $ico }
 >> "%PS_TMP%" echo $lnk.Save()
 >> "%PS_TMP%" echo Write-Host 'Shortcut created on Desktop.'
@@ -460,6 +503,7 @@ if errorlevel 1 (
     call :log "WARNING: failed to create desktop shortcut. Launch via installer\run.bat instead."
 )
 del "%PS_TMP%" >nul 2>&1
+:after_shortcut
 
 REM -- Done ------------------------------------------------------------------
 set "STAGE=done"
@@ -467,8 +511,9 @@ echo.
 echo ============================================================
 echo   PixelPaws installed successfully.
 echo.
-echo   Launch via the new "PixelPaws" desktop shortcut,
-echo   or run:  %PIXELPAWS_ROOT%\installer\run.bat
+echo   Installed to: !PIXELPAWS_ROOT!
+echo   Launch via the "PixelPaws" desktop shortcut (if created),
+echo   or run:  !PIXELPAWS_ROOT!\installer\run.bat
 echo.
 echo   Full install log: %LOGFILE%
 echo ============================================================
