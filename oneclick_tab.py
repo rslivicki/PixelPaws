@@ -229,7 +229,7 @@ class OneClickTab(ttk.Frame):
         dev.pack(fill="x", pady=(8, 0))
         ttk.Label(dev, text="Device:").pack(side="left")
         self._providers = []
-        self._device_var = tk.StringVar(value="")
+        self._device_var = tk.StringVar(value="detecting devices…")
         self._device_cb = ttk.Combobox(dev, textvariable=self._device_var,
                                        state="readonly", width=22, values=[])
         self._device_cb.pack(side="left", padx=(4, 10))
@@ -582,13 +582,36 @@ class OneClickTab(ttk.Frame):
                 and bundle is None:
             self._fail_stage("pose", "No DLC model bundle installed.")
             return
+        if not self._providers:
+            # Run was pressed before the background device probe finished
+            # (it imports torch + DLC, several seconds). Probe now rather
+            # than silently falling back to CPU.
+            try:
+                from dlc_run_dialog import _probe_providers
+                provs = _probe_providers()
+            except Exception:
+                provs = []
+            if provs:
+                self._providers = provs
+                self._device_cb.configure(
+                    values=[p["display"] for p in provs])
+                if self._device_var.get() not in [p["display"] for p in provs]:
+                    self._device_var.set(provs[0]["display"])
+                    self._batch_var.set(provs[0].get("suggested_batch", 16))
         prov = next((p for p in self._providers
-                     if p["display"] == self._device_var.get()),
-                    {"name": "cpu"})
+                     if p["display"] == self._device_var.get()), None)
+        if prov is None:
+            # best available; the runner degrades to CPU only if it must
+            prov = self._providers[0] if self._providers else \
+                {"name": "cuda", "display": "GPU if available"}
         pose_list = getattr(self, "_pose_list", None)
         if pose_list is None:
             pose_list = self._need_pose
         pose_videos = [v["path"] for v in (pose_list if want_pose else [])]
+        self._pose_videos_n = len(pose_videos)
+        if pose_videos:
+            self._log_line(f"Pose device: {prov.get('display', prov['name'])}"
+                           f"  ·  batch {int(self._batch_var.get())}")
         do_transcode = bool(want_transcode
                             and _sh.which("ffmpeg") is not None)
         settings = {
@@ -644,7 +667,8 @@ class OneClickTab(ttk.Frame):
             if (not in_transcode and cur_txt.strip()
                     and self._stage_state.get("transcode") == "running"):
                 self._set_stage_silent("transcode", "done")
-                if self._stage_state.get("pose") == "pending":
+                if (self._stage_state.get("pose") == "pending"
+                        and getattr(self, "_pose_videos_n", 0)):
                     self._set_stage("pose", "running")
             ov, om = dlg.overall_bar["value"], dlg.overall_bar["maximum"]
             cv = dlg.current_bar["value"]
@@ -832,8 +856,22 @@ class OneClickTab(ttk.Frame):
             return
         th = getattr(tab, "_fit_thread", None)
         if th is None or not th.is_alive():
-            # auto_run logged why it skipped
-            self._log_line("Gait run did not start (see Gait tab log).")
+            # auto_run declined - say why here, not just in the Gait tab
+            why = ""
+            try:
+                ready, issues, _n = tab._check_readiness()
+                if not ready and issues:
+                    why = "; ".join(str(i) for i in issues)
+            except Exception:
+                pass
+            self._log_line("Gait & contour skipped: "
+                           + (why or "not ready (see Gait tab log)")
+                           + ("" if "pose" in why.lower() or "h5" in why.lower()
+                              else "") )
+            if not any(v.get("h5") or not v.get("select_default")
+                       for v in getattr(self, "_vids", [])):
+                self._log_line("  Gait needs pose files - tick "
+                               "'Pose tracking' and run again.")
             self._set_stage_silent("gait", "skipped")
             self._advance(None)
             return

@@ -68,6 +68,10 @@ dependencies:
       - ttkbootstrap>=1.10.0
 
       # Utilities
+      # lz4: six of the Core-8 classifier pkls are joblib LZ4-compressed;
+      # without it they fail to load ("invalid load key, '\x04'"),
+      # found by the fake-project run 2026-08-28.
+      - lz4>=4.0.0
       - tqdm>=4.65.0
       - PyYAML>=6.0
       - openpyxl>=3.1.0
