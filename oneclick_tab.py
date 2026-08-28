@@ -237,6 +237,13 @@ class OneClickTab(ttk.Frame):
         self._batch_var = tk.IntVar(value=16)
         ttk.Spinbox(dev, from_=1, to=64, textvariable=self._batch_var,
                     width=5).pack(side="left", padx=(4, 0))
+        # Why a GPU is not being used (from the device probe), wrapped so
+        # the whole sentence is readable instead of truncated in the box.
+        self._device_note = ttk.Label(steps, text="", foreground="#a60",
+                                      wraplength=420, justify="left")
+        self._device_note.pack(fill="x", pady=(2, 0))
+        self._device_cb.bind("<<ComboboxSelected>>",
+                             lambda _e: self._refresh_device_note())
         self.after(600, self._probe_devices)
 
         run = ttk.LabelFrame(right, text="3.  Run", padding=8)
@@ -361,11 +368,27 @@ class OneClickTab(ttk.Frame):
                 if provs:
                     self._device_var.set(provs[0]["display"])
                     self._batch_var.set(provs[0].get("suggested_batch", 16))
+                self._refresh_device_note()
             try:
                 self.after(0, _apply)
             except Exception:
                 pass
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _refresh_device_note(self):
+        """Explain a CPU-only choice under the device box."""
+        prov = next((p for p in self._providers
+                     if p["display"] == self._device_var.get()), None)
+        txt = ""
+        if prov is not None and not prov.get("is_gpu"):
+            note = (prov.get("notes") or "").strip()
+            txt = "⚠ CPU is 10-30× slower than GPU."
+            if note and not note.startswith("No GPU acceleration"):
+                txt += " " + note
+        try:
+            self._device_note.config(text=txt)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ log
 

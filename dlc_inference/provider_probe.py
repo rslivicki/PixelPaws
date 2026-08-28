@@ -231,9 +231,9 @@ def probe_providers() -> List[ProviderInfo]:
         if v == "nvidia":
             if not cuda_ok:
                 if getattr(torch.version, "cuda", None) is None:
-                    why = ("this PyTorch was installed without CUDA support "
-                           "(CPU-only wheel) - re-run installer\\install.bat "
-                           "and pick 'Fresh reinstall'")
+                    why = (f"the installed PyTorch ({torch.__version__}) has no "
+                           "CUDA support - re-run installer\\install.bat and "
+                           "pick 'Fresh reinstall' to get the GPU build")
                 else:
                     why = ("CUDA is not available to PyTorch - update the "
                            "NVIDIA driver (GeForce Experience or nvidia.com) "
@@ -253,9 +253,11 @@ def probe_providers() -> List[ProviderInfo]:
     if not out and not cpu_notes and not adapters:
         cpu_notes.append("no GPU detected")
 
+    # Keep the dropdown text short; the full reason travels in `notes` and
+    # the UIs show it as a wrapped line under the device box.
     cpu_label = "CPU"
     if not out and cpu_notes:
-        cpu_label = "CPU - " + cpu_notes[0]
+        cpu_label = "CPU (a GPU was found but cannot be used - see note)"
     out.append(ProviderInfo(
         name="cpu",
         display_name=cpu_label,

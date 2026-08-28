@@ -71,9 +71,10 @@ def _probe_providers() -> List[dict]:
         pass
     return [
         {"name": "cuda", "display": "NVIDIA CUDA (if available)", "is_gpu": True,
-         "vram_gb": None, "suggested_batch": 16},
+         "vram_gb": None, "suggested_batch": 16, "notes": ""},
         {"name": "cpu", "display": "CPU (slow)", "is_gpu": False,
-         "vram_gb": None, "suggested_batch": 4},
+         "vram_gb": None, "suggested_batch": 4,
+         "notes": "Device probe did not run; CUDA will be used if PyTorch can see it."},
     ]
 
 
@@ -306,7 +307,8 @@ class DLCRunDialog(tk.Toplevel):
                   justify="left").grid(row=6, column=0, columnspan=3,
                                        sticky="w", padx=(24, 0), pady=(2, 0))
 
-        self.cpu_warn = ttk.Label(cfg, text="", foreground="#a60")
+        self.cpu_warn = ttk.Label(cfg, text="", foreground="#a60",
+                                  wraplength=620, justify="left")
         self.cpu_warn.grid(row=7, column=0, columnspan=3, sticky="w", pady=(6, 0))
         self._refresh_cpu_warning()
 
@@ -394,8 +396,11 @@ class DLCRunDialog(tk.Toplevel):
     def _refresh_cpu_warning(self):
         prov = self._provider_by_display(self.provider_var.get())
         if not prov.get("is_gpu"):
-            self.cpu_warn.config(
-                text="⚠ CPU mode is 10-30× slower than GPU.")
+            txt = "⚠ CPU mode is 10-30× slower than GPU."
+            note = (prov.get("notes") or "").strip()
+            if note and not note.startswith("No GPU acceleration"):
+                txt += "\n" + note
+            self.cpu_warn.config(text=txt)
         else:
             self.cpu_warn.config(text="")
 

@@ -59,12 +59,14 @@ def _probe() -> int:
                 "is_gpu": p.is_gpu,
                 "vram_gb": p.vram_gb,
                 "suggested_batch": p.suggested_batch,
+                "notes": p.notes,
             }
             for p in probe_providers()
         ]
     except Exception as e:
-        provs = [{"name": "cpu", "display": f"CPU (probe failed: {e})",
-                  "is_gpu": False, "vram_gb": None, "suggested_batch": 4}]
+        provs = [{"name": "cpu", "display": "CPU (device probe failed - see note)",
+                  "is_gpu": False, "vram_gb": None, "suggested_batch": 4,
+                  "notes": f"Device probe failed: {e}"}]
     _emit("PROVIDERS " + json.dumps(provs))
     return 0
 

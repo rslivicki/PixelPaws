@@ -399,6 +399,19 @@ if not "!PIP_RC!"=="0" (
     )
 )
 
+REM -- 2c: make sure the CUDA torch survived the rest of the install ------------
+REM If any requirement pulled PyPI's CPU-only torch back in, put the CUDA
+REM build back (no-deps: the dependency set is already complete).
+if "!PP_HAS_NVIDIA!"=="1" (
+    "!PP_PY!" -c "import torch,sys; sys.exit(0 if torch.version.cuda else 1)" 1>>"%LOGFILE%" 2>&1
+    if errorlevel 1 (
+        call :log "PyTorch lost its CUDA build during package install - reinstalling it from !PP_TORCH_INDEX! ..."
+        set "PP_CMD="!PP_PY!" -m pip install --progress-bar off --force-reinstall --no-deps --index-url !PP_TORCH_INDEX! "!PP_TORCH_SPEC!" torchvision"
+        call :run_stream
+        if errorlevel 1 call :log "WARNING: CUDA torch reinstall failed; pose tracking will run on CPU."
+    )
+)
+
 REM Verify python landed in the env.
 set "STAGE=env-verify"
 if not exist "!PP_PY!" (
