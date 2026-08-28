@@ -17,18 +17,21 @@ dependencies:
   - pip
   - pip:
       # ---------------------------------------------------------------
-      # PyTorch with bundled CUDA 11.8 runtime.
+      # PyTorch with bundled CUDA runtime (no CUDA Toolkit needed).
       #
-      # The default `pip install torch` on Windows pulls the CPU-only
-      # wheel — GPU support requires PyTorch's dedicated wheel index.
-      # cu118 is chosen because:
-      #   * the torch wheel ships the CUDA 11.8 runtime DLLs (no
-      #     separate CUDA Toolkit install needed)
-      #   * driver requirement is NVIDIA >= 450 (broader compatibility
-      #     than cu121 which needs >= 525)
-      #   * matches the version DLC 3.0.0rc13 has been tested against.
+      # The plain `pip install torch` on Windows is the CPU-only wheel.
+      # install.bat installs torch + torchvision FIRST, from the index
+      # below with --index-url (not extra), so PyPI's CPU wheel cannot
+      # win the version tie - which is exactly what happened with the
+      # old cu118 line: cu118 wheels stop at torch 2.7.1, so pip took
+      # 2.13.0+cpu from PyPI and every install ran pose on CPU
+      # (found 2026-08-28).
+      #
+      # cu126: NVIDIA driver >= 528 on Windows, GPUs from GTX 900 up to
+      # RTX 40-series. install.bat swaps this to cu128 automatically
+      # when it sees an RTX 50-series (Blackwell) card.
       # ---------------------------------------------------------------
-      - --extra-index-url https://download.pytorch.org/whl/cu118
+      - --extra-index-url https://download.pytorch.org/whl/cu126
       - torch>=2.7.0,<3.0
       - torchvision
 

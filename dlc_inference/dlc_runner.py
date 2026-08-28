@@ -127,8 +127,15 @@ def run_dlc_on_video(
             f"{out_h5_path} already exists. Pass overwrite=True to replace."
         )
 
-    if device.startswith("cuda") and not torch.cuda.is_available():
-        device = "cpu"
+    # Any backend torch cannot actually drive right now (CUDA missing or an
+    # unsupported architecture, no XPU/MPS) degrades to CPU instead of
+    # crashing mid-video.
+    from .provider_probe import resolve_device
+    requested = device
+    device = resolve_device(device)
+    if device != requested:
+        print(f"device {requested!r} not usable here - running on {device}",
+              flush=True)
 
     runner = _build_runner(bundle, device=device, batch_size=batch_size)
     model = runner.model

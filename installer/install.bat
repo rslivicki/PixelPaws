@@ -298,6 +298,41 @@ echo   fetched or installed; the "Installing collected packages" line
 echo   near the end is the last long pause.
 echo ============================================================
 set "PIP_DISABLE_PIP_VERSION_CHECK=1"
+
+REM -- 2a: PyTorch from its own CUDA index -----------------------------------
+REM With --extra-index-url PyPI's CPU-only torch wins the version tie (that
+REM shipped CPU-only pose to every user until 2026-08-28). Install torch and
+REM torchvision first, from the CUDA index alone, so the rest of the
+REM requirements see them already satisfied.
+set "PP_TORCH_INDEX="
+for /f "tokens=2" %%U in ('%SystemRoot%\System32\findstr.exe /B /C:"--extra-index-url" "%PP_REQS%"') do set "PP_TORCH_INDEX=%%U"
+if not defined PP_TORCH_INDEX set "PP_TORCH_INDEX=https://download.pytorch.org/whl/cu126"
+REM RTX 50-series (Blackwell) needs CUDA 12.8 kernels; older cards keep cu126.
+set "PS_GPU=%TEMP%\pp_gpu.ps1"
+> "%PS_GPU%" echo $n = (Get-CimInstance Win32_VideoController ^| Select-Object -ExpandProperty Name) -join '; '
+>> "%PS_GPU%" echo Write-Host ('GPUs: ' + $n)
+>> "%PS_GPU%" echo if ($n -match 'RTX (50\d\d^|PRO \d+ Blackwell)' -or $n -match 'Blackwell') { exit 50 } else { exit 0 }
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PS_GPU%" 2>>"%LOGFILE%"
+if errorlevel 50 (
+    set "PP_TORCH_INDEX=!PP_TORCH_INDEX:cu126=cu128!"
+    call :log "RTX 50-series GPU detected - using the CUDA 12.8 PyTorch build."
+)
+del "%PS_GPU%" >nul 2>&1
+call :log "PyTorch index: !PP_TORCH_INDEX!"
+set "PP_TORCH_SPEC="
+for /f "usebackq delims=" %%T in (`%SystemRoot%\System32\findstr.exe /B /R /C:"torch[<>=]" "%PP_REQS%"`) do set "PP_TORCH_SPEC=%%T"
+if not defined PP_TORCH_SPEC set "PP_TORCH_SPEC=torch>=2.7.0,<3.0"
+set "PP_CMD="!PP_PY!" -m pip install --progress-bar off --upgrade --index-url !PP_TORCH_INDEX! "!PP_TORCH_SPEC!" torchvision"
+call :run_stream
+set "PIP_RC=!errorlevel!"
+if not "!PIP_RC!"=="0" (
+    call :fatal "PyTorch install failed with exit code !PIP_RC! (index !PP_TORCH_INDEX!). Scroll up for the first line starting with ERROR, or see %LOGFILE%."
+)
+
+REM -- 2b: everything else from PyPI -----------------------------------------
+echo.
+echo   ... PyTorch done. Now the remaining packages (DeepLabCut, OpenCV, ...).
+echo.
 set "PP_CMD="!PP_PY!" -m pip install --progress-bar off -r "%PP_REQS%""
 call :run_stream
 set "PIP_RC=!errorlevel!"
@@ -319,6 +354,11 @@ if not exist "!PP_PY!" (
     call :fatal "Python not found at !PP_PY! after env create."
 )
 call :log "Verified python at: !PP_PY!"
+set "STAGE=gpu-check"
+"!PP_PY!" -c "import torch; ok=torch.cuda.is_available(); print('GPU: ' + (torch.cuda.get_device_name(0) + ' ready (CUDA ' + str(torch.version.cuda) + ')' if ok else 'no CUDA GPU available to PyTorch ' + str(torch.__version__) + ' - pose tracking will run on CPU'))" > "%TEMP%\pp_gpu.txt" 2>>"%LOGFILE%"
+set "PP_GPU_MSG="
+set /p PP_GPU_MSG=<"%TEMP%\pp_gpu.txt"
+if defined PP_GPU_MSG call :log "!PP_GPU_MSG!"
 
 REM Persist the conda root so run.bat can find it even if the user
 REM installed Miniforge3 to a non-standard drive.
