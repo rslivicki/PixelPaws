@@ -212,12 +212,29 @@ set "CONDA_NUMBER_CHANNEL_NOTICES=0"
 
 REM -- Create or update the env ----------------------------------------------
 set "STAGE=env-create"
+
+REM environment.yml stays the single source of truth, but it is split here so
+REM the two slow phases run separately and each one shows live progress:
+REM   conda part (python + pip)   -> %TEMP%\pp_env_base.yml
+REM   pip part (everything else)  -> %TEMP%\pp_requirements.txt
+set "PP_YML_BASE=%TEMP%\pp_env_base.yml"
+set "PP_REQS=%TEMP%\pp_requirements.txt"
+set "PS_SPLIT=%TEMP%\pp_split.ps1"
+> "%PS_SPLIT%" echo $ErrorActionPreference = 'Stop'
+>> "%PS_SPLIT%" echo $lines = @(Get-Content -LiteralPath '%PIXELPAWS_ROOT%\installer\environment.yml')
+>> "%PS_SPLIT%" echo $i = [array]::IndexOf([string[]]($lines ^| ForEach-Object { $_.Trim() }), '- pip:')
+>> "%PS_SPLIT%" echo if ($i -lt 0) { throw 'environment.yml has no pip section' }
+>> "%PS_SPLIT%" echo $lines[0..($i-1)] ^| Set-Content -LiteralPath '%PP_YML_BASE%' -Encoding ASCII
+>> "%PS_SPLIT%" echo $lines[($i+1)..($lines.Count-1)] ^| ForEach-Object { $_.Trim() } ^| Where-Object { $_ -like '- *' } ^| ForEach-Object { $_.Substring(2).Trim() } ^| Set-Content -LiteralPath '%PP_REQS%' -Encoding ASCII
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PS_SPLIT%" 1>>"%LOGFILE%" 2>&1
+if errorlevel 1 call :fatal "Could not parse installer\environment.yml (see %LOGFILE%)."
+set "PP_NREQ=?"
+for /f %%N in ('type "%PP_REQS%" ^| %SystemRoot%\System32\find.exe /c /v ""') do set "PP_NREQ=%%N"
+set "PP_PY=!MAMBA_ROOT!\envs\pixelpaws\python.exe"
+
+set "PP_MODE=create"
 !PKG_MGR! env list | findstr /B "pixelpaws " >nul
-if errorlevel 1 (
-    call :log "Creating conda env 'pixelpaws' from environment.yml (this can take 10-20 min)..."
-    call !PKG_MGR! env create -f "%PIXELPAWS_ROOT%\installer\environment.yml" 1>>"%LOGFILE%" 2>&1
-    set "MAMBA_RC=!errorlevel!"
-) else (
+if not errorlevel 1 (
     REM An env from an older PixelPaws (or an interrupted install) already
     REM exists. A fresh rebuild is the reliable upgrade path; in-place
     REM update is offered for users who added their own packages.
@@ -229,32 +246,55 @@ if errorlevel 1 (
     echo     2^) Update in place - faster, keeps extra packages you added
     choice /C 12 /N /D 1 /T 30 /M "  Choose 1 or 2 (auto-picks 1 after 30s): "
     if errorlevel 2 (
-        call :log "Updating existing 'pixelpaws' env from environment.yml..."
-        call !PKG_MGR! env update -n pixelpaws -f "%PIXELPAWS_ROOT%\installer\environment.yml" --prune 1>>"%LOGFILE%" 2>&1
-        set "MAMBA_RC=!errorlevel!"
+        set "PP_MODE=update"
     ) else (
         call :log "Removing the old 'pixelpaws' env for a clean rebuild..."
         call !PKG_MGR! env remove -n pixelpaws -y 1>>"%LOGFILE%" 2>&1
-        call :log "Creating conda env 'pixelpaws' from environment.yml (this can take 10-20 min)..."
-        call !PKG_MGR! env create -f "%PIXELPAWS_ROOT%\installer\environment.yml" 1>>"%LOGFILE%" 2>&1
-        set "MAMBA_RC=!errorlevel!"
     )
 )
+
+echo.
+echo ============================================================
+echo   Step 1 of 3 - base Python 3.11 environment   (about 1-2 min)
+echo ============================================================
+if "!PP_MODE!"=="update" (
+    call :log "Updating existing 'pixelpaws' env (python/pip layer)..."
+    set "PP_CMD="!MAMBA_ROOT!\Scripts\!PKG_MGR!.exe" env update -n pixelpaws -f "%PP_YML_BASE%""
+) else (
+    call :log "Creating conda env 'pixelpaws' (python/pip layer)..."
+    set "PP_CMD="!MAMBA_ROOT!\Scripts\!PKG_MGR!.exe" env create -f "%PP_YML_BASE%""
+)
+call :run_stream
+set "MAMBA_RC=!errorlevel!"
 if not "!MAMBA_RC!"=="0" (
     REM conda can exit non-zero from post-install housekeeping (notices
     REM cache, plugin hooks) after the env itself built fine. Trust the
-    REM env over the exit code: if the key packages import, carry on.
-    call :log "!PKG_MGR! exited with code !MAMBA_RC!; checking whether the env is nevertheless complete..."
-    set "PP_CHK=!MAMBA_ROOT!\envs\pixelpaws\python.exe"
+    REM env over the exit code.
+    if not exist "!PP_PY!" call :fatal "!PKG_MGR! env create/update failed with exit code !MAMBA_RC!. See %LOGFILE% for details."
+    call :log "NOTE: !PKG_MGR! exited with code !MAMBA_RC! but the env exists; continuing."
+)
+
+echo.
+echo ============================================================
+echo   Step 2 of 3 - Python packages   (!PP_NREQ! packages, about 3 GB)
+echo   Includes PyTorch with CUDA and DeepLabCut - typically 10-20 min
+echo   on a fast connection. Each line below is one package being
+echo   fetched or installed; the "Installing collected packages" line
+echo   near the end is the last long pause.
+echo ============================================================
+set "PIP_DISABLE_PIP_VERSION_CHECK=1"
+set "PP_CMD="!PP_PY!" -m pip install --progress-bar off -r "%PP_REQS%""
+call :run_stream
+set "PIP_RC=!errorlevel!"
+if not "!PIP_RC!"=="0" (
+    call :log "pip exited with code !PIP_RC!; checking whether the env is nevertheless complete..."
     set "PP_ENV_OK="
-    if exist "!PP_CHK!" (
-        "!PP_CHK!" -c "import torch, cv2, ttkbootstrap, deeplabcut" 1>>"%LOGFILE%" 2>&1
-        if not errorlevel 1 set "PP_ENV_OK=1"
-    )
+    "!PP_PY!" -c "import torch, cv2, ttkbootstrap, deeplabcut" 1>>"%LOGFILE%" 2>&1
+    if not errorlevel 1 set "PP_ENV_OK=1"
     if defined PP_ENV_OK (
         call :log "Environment verified complete despite the exit code; continuing."
     ) else (
-        call :fatal "!PKG_MGR! env create/update failed with exit code !MAMBA_RC!. See %LOGFILE% for details."
+        call :fatal "Package install failed with exit code !PIP_RC!. Scroll up for the first line starting with ERROR, or see %LOGFILE%."
     )
 )
 
@@ -283,6 +323,10 @@ if defined PREV_ROOT if /I not "!PREV_ROOT!"=="%PIXELPAWS_ROOT%" (
 > "%LOCALAPPDATA%\PixelPaws\install_root.txt" echo %PIXELPAWS_ROOT%
 
 REM -- Seed the default bundle to %LOCALAPPDATA% -----------------------------
+echo.
+echo ============================================================
+echo   Step 3 of 3 - model bundle and desktop shortcut   (under a minute)
+echo ============================================================
 set "STAGE=bundle-seed"
 set "PP_BUNDLES=%LOCALAPPDATA%\PixelPaws\bundles"
 if not exist "%PP_BUNDLES%" mkdir "%PP_BUNDLES%" 1>>"%LOGFILE%" 2>&1
@@ -360,6 +404,21 @@ if exist "%~1\Scripts\conda.exe" (
     exit /b 0
 )
 exit /b 0
+
+:run_stream
+REM Run %PP_CMD% with its output shown live AND appended to the log, and
+REM report how long it took. Exit code is the command's own.
+set "PS_RUN=%TEMP%\pp_run.ps1"
+set "PP_LOGFILE=%LOGFILE%"
+> "%PS_RUN%" echo $ErrorActionPreference = 'Continue'
+>> "%PS_RUN%" echo $t0 = Get-Date
+>> "%PS_RUN%" echo ^& cmd.exe /c $env:PP_CMD 2^>^&1 ^| ForEach-Object { $s = [string]$_; if ($s.Trim().Length -gt 0) { Write-Host $s; Add-Content -LiteralPath $env:PP_LOGFILE -Value $s } }
+>> "%PS_RUN%" echo $rc = $LASTEXITCODE
+>> "%PS_RUN%" echo $dt = (Get-Date) - $t0
+>> "%PS_RUN%" echo Write-Host ('  [done in {0}m {1:00}s, exit code {2}]' -f [int]$dt.TotalMinutes, $dt.Seconds, $rc)
+>> "%PS_RUN%" echo exit $rc
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PS_RUN%"
+exit /b %errorlevel%
 
 :log
 echo %~1
