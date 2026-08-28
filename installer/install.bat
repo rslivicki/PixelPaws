@@ -299,7 +299,8 @@ set "PS_TMP=%TEMP%\pp_shortcut.ps1"
 >> "%PS_TMP%" echo $lnk = $sh.CreateShortcut([Environment]::GetFolderPath('Desktop') + '\PixelPaws.lnk')
 >> "%PS_TMP%" echo $lnk.TargetPath = '%PIXELPAWS_ROOT%\installer\run.bat'
 >> "%PS_TMP%" echo $lnk.WorkingDirectory = '%PIXELPAWS_ROOT%'
->> "%PS_TMP%" echo if (Test-Path '%PIXELPAWS_ROOT%\pixelpaws_icon.ico') { $lnk.IconLocation = '%PIXELPAWS_ROOT%\pixelpaws_icon.ico' }
+>> "%PS_TMP%" echo $ico = @('%PIXELPAWS_ROOT%\assets\pixelpaws_icon.ico', '%PIXELPAWS_ROOT%\pixelpaws_icon.ico') ^| Where-Object { Test-Path $_ } ^| Select-Object -First 1
+>> "%PS_TMP%" echo if ($ico) { $lnk.IconLocation = $ico }
 >> "%PS_TMP%" echo $lnk.Save()
 >> "%PS_TMP%" echo Write-Host 'Shortcut created on Desktop.'
 powershell -ExecutionPolicy Bypass -File "%PS_TMP%" 1>>"%LOGFILE%" 2>&1

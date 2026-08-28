@@ -39,21 +39,33 @@ call "!MAMBA_ROOT!\Scripts\activate.bat" pixelpaws
 if errorlevel 1 (
     echo ============================================================
     echo  ERROR: Could not activate conda env "pixelpaws" under !MAMBA_ROOT!.
-    echo  Run %~dp0install.bat to (re)create it.
+    echo  Run %~dp0install.bat to rebuild it.
     echo ============================================================
     pause
     exit /b 1
 )
 
 cd /d "%PIXELPAWS_ROOT%"
-python PixelPaws_GUI.py %*
+REM Everything python prints to stderr (tracebacks included) is also kept in
+REM run.log so a crash can be reported even if this window closes.
+if not exist "%LOCALAPPDATA%\PixelPaws" mkdir "%LOCALAPPDATA%\PixelPaws" >nul 2>&1
+set "PP_LOG=%LOCALAPPDATA%\PixelPaws\run.log"
+> "%PP_LOG%" echo PixelPaws launch %DATE% %TIME%
+>> "%PP_LOG%" echo root=%PIXELPAWS_ROOT%
+>> "%PP_LOG%" echo conda=!MAMBA_ROOT!
+>> "%PP_LOG%" where python
+python PixelPaws_GUI.py %* 2>> "%PP_LOG%"
 set "PP_RC=%errorlevel%"
+>> "%PP_LOG%" echo exit code %PP_RC%
 if not "%PP_RC%"=="0" (
     echo.
     echo ============================================================
     echo  PixelPaws exited with code %PP_RC%
-    echo  Scroll up for the error message ^(or check the log if any^).
     echo ============================================================
+    type "%PP_LOG%"
+    echo.
+    echo  This output is saved at: %PP_LOG%
+    echo  Please send that file when reporting the problem.
     pause
 )
 endlocal
