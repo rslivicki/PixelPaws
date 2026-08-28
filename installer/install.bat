@@ -510,15 +510,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%PS_RUN%"
 exit /b %errorlevel%
 
 :log
-echo %~1
-echo %~1 >> "%LOGFILE%"
+REM Delayed expansion so "(", ")" and ">=" in a message are printed, not
+REM parsed (echo %~1 turned ">= 570.00)" into a redirect to a junk file).
+set "PP_MSG=%~1"
+echo(!PP_MSG!
+>> "%LOGFILE%" echo(!PP_MSG!
 exit /b 0
 
 :fatal
 echo.
 echo ============================================================
 echo   INSTALL FAILED  (stage: %STAGE%^)
-echo   %~1
+set "PP_MSG=%~1"
+echo(  !PP_MSG!
 echo.
 echo   Full log:  %LOGFILE%
 echo   Please share the log if you need help diagnosing.

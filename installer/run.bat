@@ -2,6 +2,10 @@
 REM Launch PixelPaws in its dedicated conda env.
 
 setlocal EnableDelayedExpansion
+REM NOTE: %-expansion happens when a whole if (...) block is parsed, so an
+REM unquoted path containing ")" (e.g. "...win64(1)\PixelPaws") closes the
+REM block early and cmd aborts. Inside blocks use !delayed! expansion only.
+set "PP_INSTALLER_DIR=%~dp0"
 set "PIXELPAWS_ROOT=%~dp0.."
 pushd "%PIXELPAWS_ROOT%"
 set "PIXELPAWS_ROOT=%CD%"
@@ -37,7 +41,7 @@ if not defined MAMBA_ROOT (
     >> "%PP_LOG%" echo ERROR: no conda install found
     echo ============================================================
     echo  ERROR: Could not find a Miniforge / Mambaforge / Anaconda install.
-    echo  Run %~dp0install.bat first.
+    echo  Run !PP_INSTALLER_DIR!install.bat first.
     echo ============================================================
     pause
     exit /b 1
@@ -48,7 +52,7 @@ if errorlevel 1 (
     >> "%PP_LOG%" echo ERROR: could not activate env pixelpaws under !MAMBA_ROOT!
     echo ============================================================
     echo  ERROR: Could not activate conda env "pixelpaws" under !MAMBA_ROOT!.
-    echo  Run %~dp0install.bat to rebuild it.
+    echo  Run !PP_INSTALLER_DIR!install.bat to rebuild it.
     echo ============================================================
     pause
     exit /b 1
@@ -70,14 +74,14 @@ if !PP_DT! LSS 0 set /a "PP_DT+=86400"
 REM A "success" exit within 10 s means the window would have closed before
 REM anyone could read an error - keep it open in that case too.
 if !PP_DT! LSS 10 set "PP_RC=%PP_RC% (closed after !PP_DT! s)"
-if not "%PP_RC%"=="0" (
+if not "!PP_RC!"=="0" (
     echo.
     echo ============================================================
-    echo  PixelPaws exited with code %PP_RC%
+    echo  PixelPaws exited with code !PP_RC!
     echo ============================================================
-    type "%PP_LOG%"
+    type "!PP_LOG!"
     echo.
-    echo  This output is saved at: %PP_LOG%
+    echo  This output is saved at: !PP_LOG!
     echo  Please send that file when reporting the problem.
     pause
 )
