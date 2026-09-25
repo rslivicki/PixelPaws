@@ -1,0 +1,84 @@
+# Conda env spec for the PixelPaws end-user distribution build.
+#
+# Bundles PixelPaws + DLC PyTorch inference into a single env named
+# `pixelpaws`. The DLC PyTorch engine ships its own bundled CUDA runtime
+# via the `torch` wheel — end users do NOT need to install the CUDA Toolkit.
+#
+# Prerequisites for end users:
+#   - Windows 10/11 (64-bit)
+#   - For GPU mode: NVIDIA driver >= 528, 570 for RTX 50-series (driver, NOT toolkit)
+#   - ~6 GB free disk space (torch+CUDA + DLC + PixelPaws deps)
+
+name: pixelpaws
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  # ffmpeg (conda-forge build) lands in the env's Library/bin, which run.bat
+  # puts on PATH: the intake transcode, Crop for DLC and frame-rate
+  # normalization all shutil.which("ffmpeg") and were silently skipped on
+  # machines without a system ffmpeg.
+  - ffmpeg
+  - pip:
+      # ---------------------------------------------------------------
+      # PyTorch with bundled CUDA runtime (no CUDA Toolkit needed).
+      #
+      # The plain `pip install torch` on Windows is the CPU-only wheel.
+      # install.bat installs torch + torchvision FIRST, from the index
+      # below with --index-url (not extra), so PyPI's CPU wheel cannot
+      # win the version tie - which is exactly what happened with the
+      # old cu118 line: cu118 wheels stop at torch 2.7.1, so pip took
+      # 2.13.0+cpu from PyPI and every install ran pose on CPU
+      # (found 2026-08-28).
+      #
+      # cu126: NVIDIA driver >= 528 on Windows, GPUs from GTX 900 up to
+      # RTX 40-series. install.bat swaps this to cu128 automatically
+      # when it sees an RTX 50-series (Blackwell) card.
+      # ---------------------------------------------------------------
+      - --extra-index-url https://download.pytorch.org/whl/cu126
+      - torch>=2.7.0,<3.0
+      - torchvision
+
+      # Core scientific
+      # numpy MUST stay <2: every deeplabcut 3.0.x pins numpy<2, and
+      # numpy>=2 here made the whole env unresolvable (install failed
+      # with ResolutionImpossible on end-user machines, 2026-08-27).
+      - numpy>=1.24,<2
+      # pandas 3 requires numpy>=2; cap to the tested major.
+      - pandas>=2.0.0,<3
+      - scipy>=1.11.0
+      - scikit-learn>=1.3.0
+      - xgboost>=3.0.0
+      - shap>=0.43.0
+      - statsmodels>=0.14.0
+      - optuna>=3.0.0
+
+      # Computer vision
+      - opencv-python>=4.8.0
+      - Pillow>=10.0.0
+
+      # Visualization
+      - matplotlib>=3.7.0
+      - seaborn>=0.12.0
+
+      # DLC .h5 support
+      - h5py>=3.8.0
+      - tables>=3.8.0
+
+      # GUI
+      - ttkbootstrap>=1.10.0
+
+      # Utilities
+      # lz4: six of the Core-8 classifier pkls are joblib LZ4-compressed;
+      # without it they fail to load ("invalid load key, '\x04'"),
+      # found by the fake-project run 2026-08-28.
+      - lz4>=4.0.0
+      - tqdm>=4.65.0
+      - PyYAML>=6.0
+      - openpyxl>=3.1.0
+
+      # DLC PyTorch inference engine (pinned to the version PixelPaws
+      # was tested against; pip will accept the pre-release because the
+      # specifier explicitly mentions rc13).
+      - deeplabcut>=3.0.0rc13,<3.1

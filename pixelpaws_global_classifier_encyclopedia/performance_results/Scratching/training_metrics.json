@@ -1,0 +1,49 @@
+{
+  "cv_f1_mean": 0.9521558881387115,
+  "cv_f1_std": 0.003379022993982275,
+  "cv_f1_per_fold": [
+    0.9527326440177253,
+    0.9519586104951958,
+    0.9475229357798165,
+    0.9579025110782866,
+    0.9506627393225331
+  ],
+  "oof_best_f1": 0.9661946094106898,
+  "best_thresh": 0.8600000000000001,
+  "min_bout": 1.0,
+  "min_after_bout": 0.0,
+  "max_gap": 0.0,
+  "n_train_sessions": 5,
+  "training_sessions": [
+    "251030_S1_Rimonabant",
+    "251030_S2_Rimonabant",
+    "251030_S3_Rimonabant",
+    "251031_S4_F_Rimonabant",
+    "251031_S5_F_Rimonabant"
+  ],
+  "feature_schema": {
+    "pose_feature_version": 5,
+    "brightness_feature_version": 1,
+    "include_optical_flow": false,
+    "square_size": [
+      40,
+      40,
+      15
+    ],
+    "bp_pixbrt_list": [
+      "hrpaw",
+      "hlpaw",
+      "snout"
+    ]
+  },
+  "expected_fps": 60,
+  "diagnostics": {
+    "cv_f1": 0.9521558881387115,
+    "oof_proba_mean": 0.014562301337718964,
+    "oof_proba_median": 6.1543378251371905e-06,
+    "oof_proba_above_0_5_frac": 0.014203158230325629,
+    "oof_n_frames": 495594
+  },
+  "status": "KEEP",
+  "source_cohort": "2510_Blackbox_Rimonabant"
+}

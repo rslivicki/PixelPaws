@@ -1,0 +1,119 @@
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# ── Project data / outputs ───────────────────────────────────────────────────
+videos/
+features/
+results/
+analysis/
+evaluations/
+
+# ── Trained classifiers ──────────────────────────────────────────────────────
+*.pkl
+classifiers/
+
+# ── Large research files ─────────────────────────────────────────────────────
+*.tif
+*.tiff
+*.h5
+*.hdf5
+
+# ── Backup / old GUI versions ─────────────────────────────────────────────────
+PixelPaws_GUI_v2.py
+PixelPaws_GUI_FIXED.py
+PixelPaws_GU.py
+brightness_features_backup.py
+brightness_features_cpu_backup.py
+enable_pytorch_gpu_fixed.py
+*.bak
+*.vscode-overwrite-*
+
+# ── Project config (user-specific) ───────────────────────────────────────────
+PixelPaws_project.json
+
+
+# ── Syncthing conflict artifacts (never commit) ──────────────────────────────
+*.sync-conflict-*
+
+# ── OS / IDE ─────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# ── Pre-refactor snapshot (kept locally only) ────────────────────────────────
+backup_pre_refactor_20260418/
+
+# ── Local research materials (papers, datasheets, raw screenshots) ───────────
+# These were moved into _research_artifacts/ during the 2026-05-01 folder
+# restructure — keeping the legacy root patterns ignored too in case any
+# stragglers reappear.
+_research_artifacts/
+lupe.pdf
+lupe_page*.png
+s41467-021-25420-x.pdf
+263001 ImageJ IL10 juv v adult.xlsx
+screenshot_*.png
+theme_*.png
+
+# ── Local working notes (not part of the shipped project) ────────────────────
+behavior_labeling_guide.md
+
+# Private (webhooks, lab-internal notes)
+docs/private/
+
+# ── Secrets: real Discord webhook URLs live here, never commit ────────────────
+pp_secrets.py
+**/pp_secrets.py
+.env
+
+# ── Research run artifacts / logs / outputs (not code) ───────────────────────
+encyclopedia_runs/
+analysis_output/
+_audit_screenshots/
+_logs/
+**/telemetry/
+**/batch_extract_logs/
+*.log
+*.log.fail
+*.npz
+# ...except the pose-feature golden, which the test needs on a fresh clone
+!tests/golden/pose_features_synthetic.npz
+*blinding_key*.json
+scripts/research/*.png
+scripts/research/*.svg
+
+# ── PawCapture build artefacts (ffmpeg is downloaded by build.bat) ───────────
+/pawcapture/ffmpeg/
+/pawcapture/build/
+/pawcapture/dist/
+/pawcapture/installer_output/
+/pawcapture/build_log.txt
+
+# ── Example project shipped with the app: clips + key only, no outputs ──────
+# (the user runs pose tracking and the classifiers on it themselves)
+!example_project/
+!example_project/videos/
+!example_project/videos/*.mp4
+!example_project/PixelPaws_project.json
+# ...and never its run outputs (the release build zips untracked, non-ignored
+# files too, so a test run inside the repo would otherwise ship)
+example_project/videos/raw/
+example_project/videos/*.h5
+example_project/videos/*.pickle
+example_project/features/
+example_project/results/
+example_project/paw_contour/
+example_project/gait_limb_analysis/
+example_project/analysis/
+example_project/evaluations/
+example_project/behavior_labels/
+example_project/classifiers/
