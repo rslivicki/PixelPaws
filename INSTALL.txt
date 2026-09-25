@@ -1,0 +1,85 @@
+PixelPaws Quick Install (Windows)
+====================================
+
+PREREQUISITES
+  - Windows 10 or 11, 64-bit
+  - NVIDIA GPU recommended (driver >= 528; >= 570 for RTX 50-series).
+    Works on CPU but ~25x slower. You do NOT need to install the CUDA
+    Toolkit. A recent driver is enough.
+  - ~6 GB free disk space
+  - Internet connection (for first-time install of dependencies)
+
+INSTALL
+  1. Unzip this folder anywhere (Downloads is fine, it is only the source):
+     right-click the zip, Extract All. Running the installer from inside
+     the zip does not work. The folder contains this file,
+     `Install PixelPaws.bat`, and a PixelPaws folder with the app.
+  2. Double-click `Install PixelPaws.bat` (no "Run as administrator" needed).
+     If Windows says "Windows protected your PC", click More info, then
+     Run anyway (the installer is not code-signed).
+     It runs PixelPaws\installer\install.bat.
+     First it asks where to install. Press Enter for the default
+     (C:\Users\<you>\PixelPaws, or your previous install folder when
+     upgrading). The app is copied there; the unzipped folder can be
+     deleted afterwards.
+     Then it will, showing progress for each step:
+       - Download and silently install Miniforge3 (~80 MB) if you don't
+         already have conda/mamba (it asks which drive to put it on)
+       - Create a self-contained conda env called `pixelpaws` (if one
+         exists from an older version you are offered a fresh rebuild)
+       - Install PyTorch with CUDA, then DeepLabCut and all supporting
+         libraries, and report whether your GPU is usable
+       - Copy the bundled DLC model into %LOCALAPPDATA%\PixelPaws\bundles\
+     At the end it asks whether to create a desktop shortcut (auto-Yes
+     after 30 s).
+  3. First install takes ~10-20 minutes depending on internet speed.
+     If it says your NVIDIA driver is too old, update the driver and just
+     relaunch. No reinstall needed.
+
+LAUNCH
+  Double-click the PixelPaws desktop shortcut, OR `Run PixelPaws.bat`
+  inside the install folder.
+  Every launch is recorded in %LOCALAPPDATA%\PixelPaws\run.log. If the
+  app does not open, that file says why; send it when asking for help.
+
+TRY IT
+  The install folder has an `example_project` folder: six 60-second
+  formalin clips (3 vehicle, 3 drug, with PawCapture calibration so
+  Locomotion reports centimeters) and a key file. Nothing is
+  precomputed. Click "Open the example project" in the setup window that
+  opens when PixelPaws starts (or File > Load Project), then
+  press Run pipeline on the Quick Start tab. Pose tracking takes about a
+  minute per clip on a GPU; when it finishes the Analyze tabs fill in and
+  Review scoring plays the calls on video.
+
+  For your own data: in the setup window make a new project folder, then
+  add videos on the Quick Start tab and press Run pipeline.
+
+TROUBLESHOOTING
+  - "Cannot find conda/mamba" after running install.bat:
+       Re-run `installer\install.bat`. It is idempotent and resumes
+       cleanly.
+  - The Miniforge download is blocked by your AV:
+       Whitelist `Miniforge3-Windows-x86_64.exe` and re-run.
+  - GPU not detected, but I have an NVIDIA card:
+       Check that your NVIDIA driver is >= 528 (>= 570 for RTX 50-series).
+       Update it from https://www.nvidia.com/drivers and relaunch.
+       The Quick Start log line "Pose device: ..." shows what is in use.
+  - The classifiers complain about feature hash mismatch:
+       That bundle was trained against the DLC model that ships with
+       it. Don't swap the snapshot for a different one without also
+       updating the classifiers.
+  - Something else went wrong during the install:
+       In the folder you unzipped, run `PixelPaws\installer\diagnose.bat`.
+       It prints what the installer can see on this computer (disk
+       space, conda installs, PixelPaws app data) and the end of the
+       install log. Open an issue at
+       https://github.com/rslivicki/PixelPaws/issues and attach that
+       output with `PixelPaws\install.log` from the same unzipped folder
+       (the log stays where the installer ran, not in the install folder).
+
+For the full user guide see docs\pixelpaws.md in the PixelPaws folder (Help >
+Documentation opens it; README.md has the overview and Quick Start). Both are
+rendered at https://github.com/rslivicki/PixelPaws. PawCapture, the companion
+camera recorder, is a separate download on the same Releases page; its guide
+is pawcapture\README.md.

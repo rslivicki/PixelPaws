@@ -1,0 +1,68 @@
+{
+  "bundle_id": "pixelpaws_v1",
+  "display_name": "PixelPaws - SlivickiR_WangH (Jul26)",
+  "bundle_version": "1.2.0",
+  "release_date": "2026-09-24",
+  "pixelpaws_min_version": "1.0.0",
+  "inference_backend": "dlc_pytorch",
+  "dlc": {
+    "source_project": "PixelPaws_SlivickiR_WangH_train_20260713",
+    "task": "pixelpaws",
+    "scorer": "SlivickiR_WangH",
+    "date": "Jul26",
+    "model_name": "pixelpawsJul26",
+    "engine": "pytorch",
+    "shuffle": 4,
+    "training_fraction": 0.95,
+    "snapshot": "snapshot-best-200",
+    "snapshot_epoch": 200,
+    "snapshot_file": "snapshot.pt",
+    "snapshot_sha256": "78acc1751570d70a770efd1c93fbc8b8ea7acac62a40ec30b3efac8863f5ac53",
+    "pytorch_config_file": "pytorch_config.yaml",
+    "pytorch_config_sha256": "8f0801f2d8a34ba75e1508d663e5d1a2ef3c2ec8330ddd223ce4fb88b72d5709",
+    "net_type": "resnet_50",
+    "backbone": "resnet50_gn",
+    "deeplabcut_version_min": "3.0.0rc13",
+    "keypoints": [
+      "tailtip",
+      "tailbase",
+      "centroid",
+      "neck",
+      "snout",
+      "hlpaw",
+      "hrpaw",
+      "flpaw",
+      "frpaw"
+    ],
+    "dlc_h5_scorer_string": "DLC_Resnet50_pixelpawsJul26shuffle4_snapshot_best-200",
+    "eval_note": "shuffle 4 of the 2026-07-13 retrain (80 labeled folders, 95% train): test RMSE 10.5 px raw / 4.7 px at pcutoff 0.6, test mAP 96.2 / mAR 97.1. Replaces shuffle 1 snapshot-best-930 of the 2026-07-06 project (bundle 1.1.0); this is the network the lab's cohort analyses use."
+  },
+  "features": {
+    "config_hash": "8aed1c22",
+    "bp_pixbrt_list": [
+      "hrpaw",
+      "hlpaw",
+      "snout"
+    ],
+    "square_size": [
+      40,
+      40,
+      40
+    ],
+    "pix_threshold": 0.3,
+    "include_optical_flow": true,
+    "bp_optflow_list": [
+      "hrpaw",
+      "hlpaw",
+      "snout"
+    ]
+  },
+  "classifiers": {},
+  "group_analysis_defaults": {
+    "exclude_noise": true,
+    "collapse_self_transitions": true,
+    "fps": 60,
+    "assign_mode": "argmax",
+    "smooth_ms": 100
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "cv_f1_mean": 0.906255317369946,
+  "cv_f1_std": 0.026170715825143475,
+  "cv_f1_per_fold": [
+    0.902927036199095,
+    0.9398420433540582,
+    0.8759968725566849
+  ],
+  "oof_best_f1": null,
+  "best_thresh": 0.5299999999999998,
+  "min_bout": 3.0,
+  "min_after_bout": 1.0,
+  "max_gap": 5.0,
+  "n_train_sessions": 3,
+  "training_sessions": [
+    "251114_Formalin_S1",
+    "251114_Formalin_S2",
+    "251114_Formalin_S3"
+  ],
+  "feature_schema": {
+    "pose_feature_version": 5,
+    "brightness_feature_version": 1,
+    "include_optical_flow": false,
+    "square_size": [
+      40,
+      40,
+      40
+    ],
+    "bp_pixbrt_list": [
+      "hrpaw",
+      "hlpaw",
+      "snout"
+    ]
+  },
+  "expected_fps": 60,
+  "diagnostics": {
+    "cv_f1": 0.906255317369946
+  },
+  "status": "KEEP",
+  "source_cohort": "260506_RS_THC_Withdrawal"
+}

@@ -1,0 +1,24 @@
+{
+  "project_folder": "E:\\Code\\PixelPaws\\example_project",
+  "video_ext": ".mp4",
+  "behaviors": [],
+  "behavior_name": "",
+  "bp_include_list": null,
+  "bp_pixbrt_list": [],
+  "square_size": [
+    40,
+    40,
+    40
+  ],
+  "pix_threshold": 0.3,
+  "include_optical_flow": false,
+  "bp_optflow_list": [],
+  "roi_size": 40,
+  "dlc_config": "",
+  "last_classifier": "",
+  "key_file": "key.csv",
+  "process_fps": null,
+  "source_fps_note": "",
+  "calibration_mode": "off",
+  "fixed_mm_per_pixel": null
+}

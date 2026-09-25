@@ -1,0 +1,6 @@
+dlc_model/*.pt filter=lfs diff=lfs merge=lfs -text
+default_bundle/**/*.pt filter=lfs diff=lfs merge=lfs -text
+# Windows batch / Inno Setup scripts must be CRLF: cmd.exe cannot find call/goto
+# labels in LF-only files (install.bat failed instantly from a working-tree zip, 2026-09-16)
+*.bat text eol=crlf
+*.iss text eol=crlf

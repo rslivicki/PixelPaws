@@ -1,0 +1,404 @@
+{
+  "encyclopedia_version": "1.1.0",
+  "build_date": "2026-08-21",
+  "expected_fps": 60,
+  "feature_schema_canonical": {
+    "hash": "8aed1c22",
+    "pose_feature_version": 5,
+    "brightness_feature_version": 1,
+    "include_optical_flow": true,
+    "square_size": [
+      40,
+      40,
+      40
+    ],
+    "bp_pixbrt_list": [
+      "hrpaw",
+      "hlpaw",
+      "snout"
+    ],
+    "bp_optflow_list": [
+      "hrpaw",
+      "hlpaw",
+      "snout"
+    ],
+    "note": "Some KEEPs use sq=[40,40,15] (Scratching) — their pkls declare the exact extraction config."
+  },
+  "tiers": {
+    "Tier 1 (KEEP)": "frame F1 >= 0.85",
+    "Tier 2 (BOUT_USEFUL)": "frame F1 < 0.85 BUT bout F1 >= 0.5 AND bout-count Pearson r >= 0.7. Use when bout counts/durations matter more than per-frame accuracy.",
+    "Tier 3 (BELOW_GATE)": "Below both gates. Shipped for completeness, marked experimental. Not recommended for production analyses."
+  },
+  "classifiers": [
+    {
+      "name": "Scratching",
+      "tier": 1,
+      "status": "KEEP",
+      "definition": "Mouse rapidly scratches with a hindpaw, typically targeting head/neck/back.",
+      "frame_f1": 0.7391,
+      "frame_f1_std": 0.0819,
+      "bout_f1": 0.0,
+      "bout_count_pearson_r": 0.0,
+      "best_thresh": 0.5,
+      "min_bout": 3,
+      "min_after_bout": 0,
+      "max_gap": 10,
+      "n_train_sessions": 5,
+      "n_pos_frames": 0,
+      "feature_schema": {
+        "include_optical_flow": true,
+        "square_size": [
+          40,
+          40,
+          40
+        ],
+        "bp_pixbrt_list": [
+          "hrpaw",
+          "hlpaw",
+          "snout"
+        ],
+        "pose_feature_version": 5,
+        "brightness_feature_version": 1
+      },
+      "path": "classifiers/classifier_Scratching.pkl",
+      "docs": "docs/Scratching.md",
+      "performance_dir": "performance_results/Scratching/",
+      "note": "2026-08-23: retrained with the standard extraction settings (pix 0.3, squares [40,40,40], flow on) so Scratching shares the 8aed1c22 feature-cache group with the rest of the Core 8. frame_f1 is now HONEST session-level GroupKFold CV (0.739 ± 0.082); the previous 0.952 ± 0.003 was frame-level CV, which leaks adjacent frames of the same bout and inflates F1. The old features scored 0.720 ± 0.128 under the same honest protocol, so the settings change costs nothing. v1 artifact: superseded/classifier_Scratching_v1_oldsettings_20260823.pkl"
+    },
+    {
+      "name": "Left_licking",
+      "tier": 1,
+      "status": "KEEP",
+      "definition": "Mouse licks its left hindpaw (pain/itch response).",
+      "frame_f1": 0.906255317369946,
+      "frame_f1_std": 0.026170715825143475,
+      "bout_f1": 0.0,
+      "bout_count_pearson_r": 0.0,
+      "best_thresh": 0.5299999999999998,
+      "min_bout": 3,
+      "min_after_bout": 1,
+      "max_gap": 5,
+      "n_train_sessions": 3,
+      "n_pos_frames": 0,
+      "feature_schema": {
+        "include_optical_flow": false,
+        "square_size": [
+          40,
+          40,
+          40
+        ],
+        "bp_pixbrt_list": [
+          "hrpaw",
+          "hlpaw",
+          "snout"
+        ],
+        "pose_feature_version": 5,
+        "brightness_feature_version": 1
+      },
+      "path": "classifiers/classifier_Left_licking.pkl",
+      "docs": "docs/Left_licking.md",
+      "performance_dir": "performance_results/Left_licking/"
+    },
+    {
+      "name": "Facial_grooming",
+      "tier": 1,
+      "status": "KEEP",
+      "definition": "Mouse grooms the face with one or both forepaws.",
+      "frame_f1": 0.8997053331023919,
+      "frame_f1_std": 0.03791370137248125,
+      "bout_f1": 0.0,
+      "bout_count_pearson_r": 0.0,
+      "best_thresh": 0.85,
+      "min_bout": 15,
+      "min_after_bout": 1,
+      "max_gap": 5,
+      "n_train_sessions": 7,
+      "n_pos_frames": 0,
+      "feature_schema": {
+        "include_optical_flow": true,
+        "square_size": [
+          40,
+          40,
+          40
+        ],
+        "bp_pixbrt_list": [
+          "hrpaw",
+          "hlpaw",
+          "snout"
+        ],
+        "pose_feature_version": 5,
+        "brightness_feature_version": 1
+      },
+      "path": "classifiers/classifier_Facial_grooming.pkl",
+      "docs": "docs/Facial_grooming.md",
+      "performance_dir": "performance_results/Facial_grooming/",
+      "suppressed_by": [
+        "Left_licking"
+      ],
+      "suppression_note": "Trained on 260506_RS_THC_Withdrawal, which has no hind-paw licking; from below, a mouse curled over its hind paw scores as face grooming with p~0.96. Frames where Left_licking fires are zeroed before bout filtering when the batch applies exclusion rules."
+    },
+    {
+      "name": "jump",
+      "tier": 1,
+      "path": "classifiers/classifier_jump.pkl",
+      "docs": "docs/jump.md",
+      "note": "naloxone-precipitated withdrawal readout; trained on the AOW cohort with S6 held out; analysed as discrete events, not a mutually exclusive state"
+    },
+    {
+      "name": "rearing",
+      "tier": 1,
+      "status": "KEEP",
+      "definition": "Mouse stands on its hindpaws, forepaws lifted (supported or unsupported).",
+      "frame_f1": 0.8548707963665892,
+      "frame_f1_std": 0.027791606268418898,
+      "bout_f1": 0.0,
+      "bout_count_pearson_r": 0.0,
+      "best_thresh": 0.54,
+      "min_bout": 1,
+      "min_after_bout": 1,
+      "max_gap": 5,
+      "n_train_sessions": 7,
+      "n_pos_frames": 0,
+      "feature_schema": {
+        "include_optical_flow": true,
+        "square_size": [
+          40,
+          40,
+          40
+        ],
+        "bp_pixbrt_list": [
+          "hrpaw",
+          "hlpaw",
+          "snout"
+        ],
+        "pose_feature_version": 5,
+        "brightness_feature_version": 1
+      },
+      "path": "classifiers/classifier_rearing_v2.pkl",
+      "docs": "docs/rearing.md",
+      "performance_dir": "performance_results/rearing/",
+      "note": "v2 rebuild; original (min_bout=1) in superseded/"
+    },
+    {
+      "name": "moving",
+      "tier": 2,
+      "status": "BOUT_USEFUL",
+      "definition": "Mouse moving through the arena (walking or running).",
+      "frame_f1": 0.7828248759053207,
+      "frame_f1_std": 0.04648557973554943,
+      "bout_f1": 0.7905274371090656,
+      "bout_count_pearson_r": 0.0,
+      "best_thresh": 0.35,
+      "min_bout": 15,
+      "min_after_bout": 1,
+      "max_gap": 20,
+      "n_train_sessions": 7,
+      "n_pos_frames": 0,
+      "feature_schema": {
+        "include_optical_flow": true,
+        "square_size": [
+          40,
+          40,
+          40
+        ],
+        "bp_pixbrt_list": [
+          "hrpaw",
+          "hlpaw",
+          "snout"
+        ],
+        "pose_feature_version": 5,
+        "brightness_feature_version": 1
+      },
+      "path": "classifiers/classifier_moving.pkl",
+      "docs": "docs/moving.md",
+      "performance_dir": "performance_results/moving/"
+    },
+    {
+      "name": "still",
+      "tier": 2,
+      "status": "BOUT_USEFUL",
+      "definition": "Mouse not moving (no locomotion, rearing or grooming).",
+      "frame_f1": 0.7672762919805778,
+      "frame_f1_std": 0.08295049277729712,
+      "bout_f1": 0.7996184217499602,
+      "bout_count_pearson_r": 0.0,
+      "best_thresh": 0.25,
+      "min_bout": 12,
+      "min_after_bout": 1,
+      "max_gap": 20,
+      "n_train_sessions": 7,
+      "n_pos_frames": 0,
+      "feature_schema": {
+        "include_optical_flow": true,
+        "square_size": [
+          40,
+          40,
+          40
+        ],
+        "bp_pixbrt_list": [
+          "hrpaw",
+          "hlpaw",
+          "snout"
+        ],
+        "pose_feature_version": 5,
+        "brightness_feature_version": 1
+      },
+      "path": "classifiers/classifier_still.pkl",
+      "docs": "docs/still.md",
+      "performance_dir": "performance_results/still/"
+    },
+    {
+      "name": "body_grooming",
+      "tier": 2,
+      "status": "BOUT_USEFUL",
+      "definition": "Mouse grooms torso/back/belly area with forepaws or by twisting around.",
+      "frame_f1": 0.6985480046908012,
+      "frame_f1_std": 0.08647546946536147,
+      "bout_f1": 0.5187986418943068,
+      "bout_count_pearson_r": 0.736698972353102,
+      "best_thresh": 0.85,
+      "min_bout": 30,
+      "min_after_bout": 1,
+      "max_gap": 40,
+      "n_train_sessions": 7,
+      "n_pos_frames": 56095,
+      "feature_schema": {
+        "include_optical_flow": true,
+        "square_size": [
+          40,
+          40,
+          40
+        ],
+        "bp_pixbrt_list": [
+          "hrpaw",
+          "hlpaw",
+          "snout"
+        ],
+        "pose_feature_version": 5,
+        "brightness_feature_version": 1
+      },
+      "path": "classifiers/classifier_body_grooming_v2.pkl",
+      "docs": "docs/body_grooming.md",
+      "performance_dir": "performance_results/body_grooming/",
+      "note": "v2 rebuild excluding unreviewed frames; original in superseded/",
+      "suppressed_by": [
+        "Left_licking"
+      ],
+      "suppression_note": "Trained on uninjured baseline sessions (260318_JG), which have no hind-paw licking; a mouse twisted around to lick its hind paw can score as body grooming. Frames where Left_licking fires are zeroed before bout filtering when the batch applies exclusion rules."
+    },
+    {
+      "name": "belly_groom",
+      "tier": 3,
+      "status": "BELOW_GATE",
+      "definition": "Mouse grooms the belly specifically.",
+      "frame_f1": 0.4303361773764567,
+      "frame_f1_std": 0.2795341665427463,
+      "bout_f1": 0.3618145012881855,
+      "bout_count_pearson_r": 0.2746133319159817,
+      "best_thresh": 0.35,
+      "min_bout": 30,
+      "min_after_bout": 1,
+      "max_gap": 40,
+      "n_train_sessions": 7,
+      "n_pos_frames": 8046,
+      "feature_schema": {
+        "include_optical_flow": true,
+        "square_size": [
+          40,
+          40,
+          40
+        ],
+        "bp_pixbrt_list": [
+          "hrpaw",
+          "hlpaw",
+          "snout"
+        ],
+        "pose_feature_version": 5,
+        "brightness_feature_version": 1
+      },
+      "path": "classifiers/classifier_belly_groom.pkl",
+      "docs": "docs/belly_groom.md",
+      "performance_dir": "performance_results/belly_groom/"
+    },
+    {
+      "name": "back_groom",
+      "tier": 3,
+      "status": "BELOW_GATE",
+      "definition": "Mouse grooms the back specifically.",
+      "frame_f1": 0.3658165016607285,
+      "frame_f1_std": 0.14815816466535964,
+      "bout_f1": 0.2754166353237561,
+      "bout_count_pearson_r": -0.023678008979098185,
+      "best_thresh": 0.5,
+      "min_bout": 30,
+      "min_after_bout": 1,
+      "max_gap": 20,
+      "n_train_sessions": 6,
+      "n_pos_frames": 11785,
+      "feature_schema": {
+        "include_optical_flow": true,
+        "square_size": [
+          40,
+          40,
+          40
+        ],
+        "bp_pixbrt_list": [
+          "hrpaw",
+          "hlpaw",
+          "snout"
+        ],
+        "pose_feature_version": 5,
+        "brightness_feature_version": 1
+      },
+      "path": "classifiers/classifier_back_groom.pkl",
+      "docs": "docs/back_groom.md",
+      "performance_dir": "performance_results/back_groom/"
+    }
+  ],
+  "changelog_1_1_0": "rearing and body_grooming now point at the v2 rebuilds the manuscript deploys (originals in superseded/: rearing shipped min_bout=1, body_grooming trained on 83,640 unreviewed frames as negatives). Scratching operating point corrected to the deployed 0.5/3/10 recipe (stored 0.86/1/0 accepted 17 ms bouts; original in superseded/). classifier_jump added -- the naloxone-withdrawal readout, trained on the AOW cohort with session S6 held out. L_flinching withheld from this distribution (superseded/).",
+  "version": "1.2.0",
+  "priority_order": [
+    "Left_licking",
+    "Scratching",
+    "jump",
+    "rearing",
+    "body_grooming",
+    "back_groom",
+    "belly_groom",
+    "Facial_grooming",
+    "moving",
+    "still"
+  ],
+  "priority_note": "Highest first; the same order the Multi-Classifier and Sequencing tabs resolve states in. With exclusion rules on (the default), the batch zeroes each behavior on frames where a behavior above it fired, before bout filtering and in the final calls, so a frame keeps only its highest-priority call and every behavior's total adds up with the others.",
+  "changelog": [
+    {
+      "version": "1.2.0",
+      "date": "2026-09-19",
+      "changes": [
+        "priority_order: every Core 8 behavior is overridden by the ones ranked above it (licking > scratching > jump > rearing > body grooming > facial grooming > moving > still). Raw calls overlapped on 4.7% of frames across 27 one-hour formalin sessions (still & moving 113k frames, rearing & moving 28k, scratching & moving 70% of scratching frames)."
+      ]
+    },
+    {
+      "version": "1.1.3",
+      "date": "2026-09-18",
+      "changes": [
+        "walking renamed moving: classifier_moving.pkl (same model), docs/moving.md, performance_results/moving/.",
+        "body_grooming: suppressed_by=[Left_licking]. On the example project, body grooming was called on 55 and 66 licking frames of two vehicle formalin mice (9% and 30% of their body-grooming frames); the classifier was trained on baseline sessions with no hind-paw licking."
+      ]
+    },
+    {
+      "version": "1.1.2",
+      "date": "2026-09-17",
+      "changes": [
+        "Facial_grooming: suppressed_by=[Left_licking]. In the example project 91% of facial-grooming frames of a vehicle formalin mouse fell inside licking bouts (grooming p median 0.96, above the 0.85 threshold). The batch zeroes a suppressed behavior on frames where the overriding behavior fired (opt-out checkbox on Run Classifiers)."
+      ]
+    },
+    {
+      "version": "1.1.1",
+      "date": "2026-08-28",
+      "changes": [
+        "classifier_Scratching.pkl: corrected include_optical_flow False->True (model requires hrpaw/hlpaw/snout Flow features; extraction config was self-contradictory and batch prediction failed). Pre-fix copy in superseded/."
+      ]
+    }
+  ]
+}
