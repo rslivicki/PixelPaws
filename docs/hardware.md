@@ -36,6 +36,7 @@ Acrylic sheets are ordered cut-to-size from [TAP Plastics](https://www.tapplasti
 - **Source:** [TAP Plastics: Acrylic Sheets Color](https://www.tapplastics.com/product/plastics/cut_to_size_plastic/acrylic_sheets_color/341)
 - **Material:** Chemcast® Cast Acrylic (opaque/translucent color options)
 - **Width:** 110 mm
+- **Length:** 160 mm
 - **Quantity:** 4 sheets per box
 - **Notes:** Box sides only. The filming box top and mouse chamber top are both 3D printed. See [3D Printed Enclosure](#️-3d-printed-enclosure) section below.
 
@@ -44,6 +45,7 @@ Acrylic sheets are ordered cut-to-size from [TAP Plastics](https://www.tapplasti
 - **Source:** [TAP Plastics: Cast Clear Acrylic](https://www.tapplastics.com/product/plastics/cut_to_size_plastic/acrylic_sheets_cast_clear/510)
 - **Material:** Chemcast® Cell Cast Clear Acrylic
 - **Width:** 189 mm
+- **Length:** 189 mm
 - **Quantity:** 1 sheet per box
 - **Notes:** Optical clarity with 92% light transmission. UV stable and non-yellowing.
 
